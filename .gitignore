@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 数据库（可再生的大文件，不入库）
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
+# 环境与密钥
+.env
+*.local
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# opencode 子项目依赖（保留 skills，忽略依赖）
+.opencode/node_modules/

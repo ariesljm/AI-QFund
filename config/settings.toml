@@ -1,0 +1,43 @@
+# AI-QFund 项目配置文件
+# 说明：仅保留运行必需的可调参数，由代码以只读方式加载。
+
+# ============ 数据源接口 ============
+[api]
+# 基金全量列表（天天基金排行接口，按类型分页拉取，返回 代码|名称|类型|...）
+fund_list_url = "https://fundapi.eastmoney.com/fundtradenew.aspx"
+# 单只基金历史净值（东方财富 pingzhongdata，{code} 替换为基金代码，仅首次全量用）
+pingzhongdata_url = "http://fund.eastmoney.com/pingzhongdata/{code}.js"
+# 单只基金历史净值分页接口（支持日期范围，用于真·增量更新）
+lsjz_url = "https://api.fund.eastmoney.com/f10/lsjz"
+# 单只基金季报持仓明细（天天基金 f10，返回 HTML，含股票代码/名称/占净值比例）
+holdings_url = "https://fundf10.eastmoney.com/FundArchivesDatas.aspx"
+# 宽基指数日线（新浪财经 K 线接口，返回标准 JSON）
+index_url = "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData"
+# 沪深300 在新浪接口中的标的代号（sh=上海，000300=沪深300）
+hs300_symbol = "sh000300"
+# push2 实时行情接口（需 TLS 指纹伪装，见 fetch.py）
+push2_kline_url = "https://82.push2.eastmoney.com/api/qt/stock/kline/get"
+push2_clist_url = "https://82.push2.eastmoney.com/api/qt/clist/get"
+push2_history_url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+
+# ============ LLM 配置（OpenAI 兼容接口，Phase 2 启用） ============
+[llm]
+# API 基地址，兼容任意 OpenAI 格式服务（如本地 Ollama、第三方代理）
+base_url = "https://api.openai.com/v1"
+# API 密钥；接入 LLM 前必须填入
+api_key = ""
+# 使用的模型名称
+model = "gpt-4o-mini"
+# 生成温度，越低越确定
+temperature = 0.2
+# 单次生成最大 token 数
+max_tokens = 1024
+
+# ============ 策略阈值参数（Phase 3 启用） ============
+[thresholds]
+# 最大回撤止损线（负值为亏损比例），触发则退出
+max_drawdown_exit = -0.15
+# 风格漂移判定权重（重仓股暴露偏离阈值）
+style_drift_weight = 0.5
+# 大盘状态机使用的均线窗口（交易日）
+regime_ma_window = 60
