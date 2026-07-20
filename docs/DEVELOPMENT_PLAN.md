@@ -14,7 +14,7 @@
 | LLM 接口 | OpenAI 兼容 API（通用格式，模型名通过 `config/settings.toml` 配置）|
 | 调度方式 | 开发期：手动逐模块执行；生产期：Linux Crontab |
 | 回测 | 不需要 |
-| Web 深度 | 完整多页仪表板（FastAPI + Streamlit + Plotly）|
+| Web 深度 | 完整多页仪表板（FastAPI 只读 API + 前端，框架待定，需求见 README 第 9 章）|
 | DB Schema | 由 AI 根据业务描述设计 |
 | Python 版本 | 3.11 + uv 已安装 |
 
@@ -28,8 +28,8 @@
 
 | # | 任务 | 说明 |
 |---|------|------|
-| 0.1 | `uv init` 初始化项目，配置 `pyproject.toml` | 依赖：`requests`, `numpy`, `scipy`, `lightgbm`, `fastapi`, `streamlit`, `plotly`, `jinja2`, `openai` |
-| 0.2 | 创建目录结构与空壳文件 | `config/settings.toml`, `data/`, `web/`, `data_foundation.py`, `recommend.py`, `monitor.py`, `evolve.py`, `evolution_rules.json` |
+| 0.1 | `uv init` 初始化项目，配置 `pyproject.toml` | 依赖：`requests`, `numpy`, `scipy`, `lightgbm`, `fastapi`, `jinja2`, `openai`（前端框架与图表库待 Phase 5 确定） |
+| 0.2 | 创建目录结构与空壳文件 | `config/settings.toml`, `data/`, `web/`, `data_foundation.py`, `recommend.py`, `monitor.py`, `evolve.py` |
 | 0.3 | 编写 `config/settings.toml` 模板 | API base_url、LLM 配置、阈值参数、调度时间 |
 | 0.4 | **接口验证脚本** `probe_apis.py` | 验证 3 条核心接口能否成功请求并解析 |
 | 0.5 | 设计并创建 SQLite 表结构 `data/schema.sql` | 所有表 DDL（详见下文 Schema） |
@@ -224,7 +224,7 @@ def calc_features(code: str, regime: str) -> dict:
 | 2.1 | **LightGBM 标注数据准备** | 从 `fund_nav` 计算 Y = R_fund(t+20) - R_hs300(t+20)，构建训练集 |
 | 2.2 | **LightGBM 模型训练** | 用当前特征 X 预测 Y，输出排序打分；保存模型文件 |
 | 2.3 | **Top 10 筛选** | 对所有可投基金打分，取前 10，剔除异常值 |
-| 2.4 | **宏观摘要获取** | 获取当日财经新闻摘要、领涨/领跌行业、ETF 净流入 |
+| 2.4 | **宏观摘要获取** | 获取当日财经新闻摘要、领涨/领跌行业、ETF 净流入（已实现：东财板块排行+快讯实时抓取，写入 `macro_news` 表） |
 | 2.5 | **LLM 顺位否决** | 构造 Prompt（系统状态 + 宏观摘要 + Top 10 特征 → 逐位验证否决），调用 OpenAI 兼容 API |
 | 2.6 | **推荐入库** | 将最终选定基金写入 `recommend_log`（含排名、打分、买入理由、否决记录） |
 
@@ -368,7 +368,7 @@ def run_monitor() -> None:
 
 ## Phase 4：进化引擎 (`evolve.py`)
 
-**目标**：月末从亏损 EXIT 交易中提取教训，生成硬规则写入 `evolution_rules.json`。
+**目标**：月末从亏损 EXIT 交易中提取教训，生成硬规则写入 `evolution_rules` 表（单一真相源，不额外维护 JSON 文件）。
 
 ### 任务
 
@@ -377,28 +377,14 @@ def run_monitor() -> None:
 | 4.1 | **亏损交易筛选** | 查询当月 EXIT 且收益 < -5% 的交易记录 |
 | 4.2 | **LLM 规则生成** | 以系统优化架构师视角，输入亏损交易的 `buy_reason` + `sell_reason`，输出一条硬规则 |
 | 4.3 | **规则冲突检查** | 新规则不与已有规则矛盾（简单关键词重叠检测） |
-| 4.4 | **规则追加** | 写入 `evolution_rules.json`，同步到 `evolution_rules` 表 |
+| 4.4 | **规则追加** | 写入 `evolution_rules` 表（单一真相源，不维护额外 JSON 文件） |
 
-### 进化规则 JSON 格式
+### 进化规则表结构（`evolution_rules`）
 
-```json
-[
-  {
-    "id": "R20260731_001",
-    "rule": "若基金RBSA第一大暴露行业为房地产且行业ETF近5日净流出，则禁止推荐",
-    "source_trade_id": 42,
-    "created_date": "2026-07-31",
-    "active": true
-  },
-  {
-    "id": "R20260731_002",
-    "rule": "BULL环境下，Hurst指数低于0.45的基金禁止推荐（趋势持续性不足）",
-    "source_trade_id": 57,
-    "created_date": "2026-07-31",
-    "active": true
-  }
-]
-```
+规则以 `evolution_rules` 表为单一真相源，字段：`id`、`rule`、`source_trade_id`、`created_date`、`active`。示例：
+
+- `R20260731_001`：若基金 RBSA 第一大暴露行业为房地产且行业 ETF 近 5 日净流出，则禁止推荐（来源交易 42）
+- `R20260731_002`：BULL 环境下，Hurst 指数低于 0.45 的基金禁止推荐（趋势持续性不足，来源交易 57）
 
 ### LLM Meta-Prompt（系统优化架构师视角）
 
@@ -434,8 +420,8 @@ def generate_rule(trade: dict) -> dict:
 def check_conflict(new_rule: str, existing_rules: list) -> bool:
     """检查新规则是否与已有规则冲突"""
 
-def append_rule(rule: dict) -> None:
-    """追加规则到 JSON 文件和数据库"""
+def append_rule(rule: dict, source_trade_id: int) -> None:
+    """追加规则到 evolution_rules 表（单一真相源，不额外维护 JSON 文件）"""
 
 def run_evolve() -> None:
     """进化引擎主入口"""
@@ -443,8 +429,7 @@ def run_evolve() -> None:
 
 ### 验证
 - 查询 `evolution_rules` 表确认新规则已追加。
-- `evolution_rules.json` 文件格式合法。
-- 生成的规则可被 `recommend.py` 的 Prompt 模板正确引用。
+- 生成的规则可被 `recommend.py` 的 Prompt 模板正确引用（作为 LLM 否决的"核心宪法"）。
 
 ---
 
@@ -459,23 +444,23 @@ def run_evolve() -> None:
 | 5.1 | **FastAPI 后端** | 只读 REST API 层，端点：`/api/recommendations`, `/api/holdings`, `/api/rules`, `/api/dashboard` |
 | 5.2 | **仪表盘页面** | 当前大盘状态、最新推荐、HOLD 持仓一览 |
 | 5.3 | **推荐历史页面** | 推荐记录表格 + 状态筛选（HOLD/EXIT）+ 收益统计 |
-| 5.4 | **持仓追踪页面** | 当前 HOLD 的净值曲线图（Plotly）+ 三道防线状态指示 |
+| 5.4 | **持仓追踪页面** | 当前 HOLD 的净值曲线图 + 三道防线状态指示 |
 | 5.5 | **进化规则页面** | 进化规则列表，支持启用/停用 |
-| 5.6 | **Streamlit 集成** | `web/app.py` 整合所有页面为多页 Streamlit 应用 |
+| 5.6 | **前端集成** | 整合所有页面为多页仪表板（框架待定，需求见 README 第 9 章） |
 
 ### 目录结构
 
 ```
 web/
 ├── api.py              # FastAPI 路由定义
-├── app.py              # Streamlit 多页入口
+├── app.py              # 前端多页入口
 ├── db.py               # SQLite 只读连接层
 ├── pages/
 │   ├── dashboard.py    # 仪表盘：大盘状态 + 最新推荐 + HOLD 概览
 │   ├── history.py      # 推荐历史：表格 + 筛选 + 收益统计
 │   ├── holdings.py     # 持仓追踪：净值曲线 + 三道防线状态
 │   └── rules.py        # 进化规则：规则列表 + 启用/停用
-└── templates/          # Jinja2 模板（如需要服务端渲染）
+└── templates/          # 模板（如需要服务端渲染）
 ```
 
 ### API 端点设计
@@ -490,8 +475,7 @@ GET /api/features/{code}  → 单只基金的特征详情
 
 ### 验证
 - FastAPI `/api/dashboard` 返回 JSON 格式正确。
-- Streamlit 多页面均可从 SQLite 正常加载数据。
-- Plotly 图表渲染无报错。
+- 仪表板各页面均可从 SQLite 正常加载数据。
 
 ---
 
@@ -506,19 +490,18 @@ AI-QFund/
 │   └── schema.sql               # 数据库 DDL
 ├── web/
 │   ├── api.py                   # FastAPI REST 接口
-│   ├── app.py                   # Streamlit 多页仪表板
+│   ├── app.py                   # 前端多页仪表板入口
 │   ├── db.py                    # SQLite 只读连接层
 │   ├── pages/
 │   │   ├── dashboard.py         # 仪表盘
 │   │   ├── history.py           # 推荐历史
 │   │   ├── holdings.py          # 持仓追踪
 │   │   └── rules.py             # 进化规则
-│   └── templates/               # Jinja2 模板
+│   └── templates/               # 模板
 ├── data_foundation.py           # 数据基座与特征工程
 ├── recommend.py                 # 推荐引擎（LightGBM + LLM 否决）
 ├── monitor.py                   # 虚拟池监控引擎（三道防线）
 ├── evolve.py                    # 进化引擎（错题本规则生成）
-├── evolution_rules.json         # 进化规则持久化
 ├── probe_apis.py                # 接口验证脚本（开发期使用）
 ├── pyproject.toml               # 项目配置与依赖声明
 └── docs/
@@ -532,9 +515,9 @@ AI-QFund/
 
 | Phase | 任务 | 状态 | 验证方式 |
 |-------|------|------|---------|
-| **0** | 项目骨架与数据接口验证 | ⬜ | `probe_apis.py` 通过，DB schema 创建成功 |
-| **1** | 数据基座与特征工程 | ⬜ | 基金列表过滤正确，净值序列连续无断崖，Regime 判断正确 |
-| **2** | 推荐引擎 | ⬜ | LightGBM 打分 + LLM 否决链路跑通，`recommend_log` 有数据 |
-| **3** | 虚拟池监控引擎 | ⬜ | 追踪止损/风格漂移/逻辑证伪三道防线均可触发 |
-| **4** | 进化引擎 | ⬜ | 月末能自动生成规则并追加到 JSON |
+| **0** | 项目骨架与数据接口验证 | ✅ | `probe_apis.py` 通过，DB schema 创建成功 |
+| **1** | 数据基座与特征工程 | ✅ | 基金列表过滤正确，净值序列连续无断崖，Regime 判断正确 |
+| **2** | 推荐引擎 | ✅ | LightGBM 打分 + LLM 否决链路跑通，`recommend_log` 有数据；实时新闻源已接入 |
+| **3** | 虚拟池监控引擎 | ✅ | 追踪止损/风格漂移/逻辑证伪三道防线均可触发，EXIT 入库正确 |
+| **4** | 进化引擎 | ✅ | 亏损 EXIT → LLM 生成量化规则 → 入库 `evolution_rules` 表（单一真相源，不维护额外 JSON） |
 | **5** | Web 展现层 | ⬜ | 多页仪表板正常运行，数据实时刷新 |

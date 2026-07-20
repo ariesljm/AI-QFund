@@ -111,9 +111,9 @@ def main():
     ]:
         try:
             results[name] = fn(settings)
-            print(f"  ✅ {name} 通过")
+            print(f"  [PASS] {name}")
         except Exception as e:  # noqa: BLE001
-            print(f"  ❌ {name} 失败：{e}")
+            print(f"  [FAIL] {name}: {e}")
             results[name] = None
 
     failed = [k for k, v in results.items() if v is None]

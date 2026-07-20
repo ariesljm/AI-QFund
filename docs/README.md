@@ -15,8 +15,8 @@
 | 02:00 | 数据基座与状态机 | 获取上一交易日收盘后全市场基金复权净值/累计净值与宏观宽基指数，判断大盘环境 |
 | 02:30 | 虚拟池监控 | 对 HOLD 状态的历史推荐记录盯盘，触发止损或逻辑证伪则标记 EXIT |
 | 03:00 | 顺位推荐引擎 | 运行 LightGBM 特征打分输出 Top 10，调用 LLM 进行顺位否决，输出唯一 HOLD 推荐入库 |
-| 月末 23:00 | 双轨进化引擎 | 重训 LightGBM 模型权重，清洗错题本规则 |
-| 日间 | Web 展现层 | FastAPI + Streamlit 仅对 SQLite 提供只读读取服务 |
+| 月末 23:00 | 双轨进化引擎 | 从亏损 EXIT 交易生成硬规则，写入 `evolution_rules` 表 |
+| 日间 | Web 展现层 | 规划中（Phase 5），仅对 SQLite 提供只读读取服务 |
 
 ---
 
@@ -27,7 +27,7 @@
 ### 2.1 核心数据获取规范
 
 - **净值标准**：强制使用累计净值 (Cumulative NAV) 或复权净值 (Adjusted NAV)，绝不使用单位净值
-- **增量更新**：建立本地 HDF5 或 SQLite 历史数据池，每日仅增量 Fetch T-1 日数据，避免被东方财富等接口源封禁 IP
+- **增量更新**：建立本地 SQLite 历史数据池，每日仅增量 Fetch T-1 日数据，避免被东方财富等接口源封禁 IP
 
 ### 2.2 宏观大盘状态机 (Regime Switch)
 
@@ -67,7 +67,7 @@ Y = R_fund(t+20) - R_hs300(t+20)
 
 **Prompt 模板结构：**
 
-1. **【系统状态与规则】** 当前大盘状态、策略侧重、核心宪法（来自进化 JSON）
+1. **【系统状态与规则】** 当前大盘状态、策略侧重、核心宪法（来自 `evolution_rules` 表）
 2. **【今日宏观文本与资金流向】** 财经新闻摘要、领涨/领跌行业、ETF 净流入数据
 3. **【候选名单 (按超额收益动能排序)】** 代码、真实重仓行业 (RBSA)、核心量化特征
 4. **【任务指令】** 严格从第 1 名开始向下验证；若重仓行业符合宏观资金流向且无政策利空，立即选定并停止；若有明确利空或违背核心宪法，行使否决权并记录理由
@@ -100,8 +100,8 @@ Y = R_fund(t+20) - R_hs300(t+20)
 
 - 查询当月所有 EXIT 且亏损超过 **-5%** 的交易记录
 - 提取 `buy_reason` + `sell_reason`，调用 LLM（Meta-Prompting 视角: 系统优化架构师）
-- 要求输出一条硬规则，追加到 `evolution_rules.json`
-- 次日推荐引擎自动吸纳扩充的错题记忆
+- 要求输出一条硬规则，追加到 `evolution_rules` 表（单一真相源，不额外维护 JSON 文件）
+- 次日推荐引擎自动吸纳扩充的错题记忆（作为 LLM 否决的"核心宪法"）
 
 ---
 
@@ -112,13 +112,12 @@ Y = R_fund(t+20) - R_hs300(t+20)
 | 语言 | Python 3.11 |
 | 包管理 | uv |
 | 数据库 | SQLite (WAL 模式) |
-| HTTP 客户端 | requests + ThreadPoolExecutor |
-| 量化计算 | NumPy / SciPy / LightGBM |
-| LLM 接口 | DeepSeek API |
-| Web 框架 | FastAPI + Jinja2 |
-| 前端 | Streamlit + Plotly |
-| 调度 | Crontab + ulimit 内存隔离 |
-| 部署 | Docker Compose + Nginx |
+| HTTP 客户端 | requests（异步并发用 aiohttp） |
+| 量化计算 | NumPy / LightGBM |
+| LLM 接口 | OpenAI 兼容 API（base_url / api_key / model 见 config/settings.toml） |
+| Web 框架 | Phase 5 定义中（FastAPI 只读 API，详见第 9 章） |
+| 前端 | Phase 5 定义中（多页仪表板，详见第 9 章） |
+| 调度 | 手动 / Crontab |
 
 ---
 
@@ -127,14 +126,17 @@ Y = R_fund(t+20) - R_hs300(t+20)
 ```
 AI-QFund/
 ├── config/
-│   └── settings.json          # 配置（API key、执行时间、阈值参数）
-├── data/                      # SQLite 数据库 + 历史数据
-├── web/                       # FastAPI / Streamlit 展示层
+│   └── settings.toml          # 配置（API key、LLM、阈值参数）
+├── data/                      # SQLite 数据库（WAL）+ schema.sql
+├── models/                    # LightGBM 模型文件（lgb_model.txt）
+├── docs/                      # 开发计划、用户故事、README
 ├── data_foundation.py         # 数据基座与特征工程
-├── recommend.py               # 推荐引擎
-├── monitor.py                 # 虚拟池监控引擎
-├── evolve.py                  # 进化引擎
-└── evolution_rules.json       # 错题本（LLM 生成的硬规则）
+├── recommend.py               # 推荐引擎（LightGBM + LLM 否决）
+├── monitor.py                 # 虚拟池监控引擎（三道防线）
+├── evolve.py                  # 进化引擎（错题本规则生成）
+├── fetch.py                   # push2 实时行情统一请求层（TLS 指纹伪装 + 三级降级）
+├── probe_apis.py              # 接口验证脚本（开发期）
+└── init_db.py                 # 建库脚本
 ```
 
 ---
@@ -145,3 +147,48 @@ AI-QFund/
 - **零驻留**：每个脚本执行完毕即被内核销毁，不常驻内存
 - **去中间件化**：原生 requests 直连东方财富/天天基金 API，不用 AkShare 等重型库
 - **正则提取**：HTML 表格用编译期正则匹配，避免 BeautifulSoup 等 DOM 解析器的内存开销
+
+---
+
+## 9. Web 展现层（Phase 5：只读多页仪表板）
+
+面向个人投资者 / 策略研究者，日间只读展示系统每日产出的推荐、监控与进化结果，**无任何交易下单能力**。视觉与交互细节（配色、字体、组件库）交由设计阶段决定，此处仅定义功能需求。
+
+### 9.1 页面与模块
+
+**页面 1：总览仪表板**
+- 大盘环境状态条：BULL（顺势）/ BEAR（防御/反弹）二态切换，附指数与 MA60 对比、乖离率。
+- 今日运行概览：推荐日期、本日新推荐数、当前持仓数、今日平仓数。
+- 今日推荐卡片：唯一 HOLD 推荐的代码、名称、推荐日期、评分、所属环境、买入逻辑（LLM 自然语言）、RBSA 第一大重仓行业及权重。
+- 候选 Top 10 漏斗：表格展示候选代码、名称、评分、重仓行业、是否被 LLM 否决及否决理由。
+- 持仓虚拟池列表：每只基金当前累计净值、相对最高点回撤、状态（HOLD/EXIT）、平仓理由与日期。
+- 宏观摘要卡：财经新闻摘要、领涨/领跌行业、ETF 净流入数据。
+
+**页面 2：持仓监控详情**
+- 单只基金累计净值走势（累计净值 vs 持仓期间最高点 `highest_nav`）。
+- 三道防线可视化：① 追踪止损（当前回撤 vs 2×ATR 阈值）；② 风格漂移（买入时与当前 RBSA 第一大行业权重差值，超 15% 醒目标识）；③ 逻辑证伪（买入逻辑 `buy_reason` 与最新新闻对比状态）。
+- 状态徽章：HOLD（持有）/ EXIT（已平仓）。
+
+**页面 3：进化错题本**
+- 规则列表：规则文本、来源亏损交易 ID、创建日期、是否启用（active）。
+- 说明区：系统从每月亏损超 -5% 的 EXIT 交易中学到的硬规则，作为次日 LLM 否决的"核心宪法"。
+
+### 9.2 数据字段映射
+
+| 用途 | 来源表 / 字段 |
+|------|---------------|
+| 大盘环境 | fund_features / recommend_log 的 `regime`、index_daily 指数与 `ma60`、fund_features `bias_60d` |
+| 推荐与评分 | recommend_log（`score`、`buy_reason`、`status`） |
+| 持仓与回撤 | recommend_log（`highest_nav`、`sell_reason`、`exit_date`） |
+| 量化特征 | fund_features（`hurst_60d`、`momentum_20d`、`calmar`、`rbsa_industry_1`、`rbsa_weight_1` 等） |
+| 宏观信息 | macro_news（`news_summary`、`top_gainers`、`top_losers`、`etf_net_flow`） |
+| 进化规则 | evolution_rules（`rule`、`active`、`source_trade_id`、`created_date`） |
+
+### 9.3 交互与约束
+- 纯只读展示，无表单提交、无交易操作。
+- 支持手动刷新 / 定时轮询只读 API（后端 FastAPI 规划中）。
+- 需提供空数据与有数据两种状态展示。
+- 组件需标注数据绑定字段，便于后端对接。
+
+### 9.4 交付要求
+高保真可点击原型，覆盖上述 3 个页面，含空 / 有数据状态，并标注组件命名与数据绑定。

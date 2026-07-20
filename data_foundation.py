@@ -314,7 +314,8 @@ async def _async_batch_fetch(
     """并发拉取一批基金净值，返回 {code: [nav_list]}。"""
     semaphore = asyncio.Semaphore(concurrency)
     headers = _HEADERS_ASYNC.copy()
-    connector = aiohttp.TCPConnector(limit=concurrency, force_close=True)
+    # ponytail: 复用 TCP/TLS 连接（keep-alive），关闭 force_close 显著提速
+    connector = aiohttp.TCPConnector(limit=concurrency, ttl_dns_cache=300, enable_cleanup_closed=True)
 
     async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
         tasks = [_async_fetch_one(session, c, url_template, semaphore) for c in codes]
@@ -508,7 +509,8 @@ async def async_update_nav_incremental(
         return 0
 
     semaphore = asyncio.Semaphore(concurrency)
-    connector = aiohttp.TCPConnector(limit=concurrency, force_close=True)
+    # ponytail: 复用连接提速
+    connector = aiohttp.TCPConnector(limit=concurrency, ttl_dns_cache=300, enable_cleanup_closed=True)
     total_new = 0
     total_done = 0
     start_time = time.monotonic()
@@ -862,10 +864,30 @@ async def async_download_all_holdings(
             "SELECT code FROM fund_basic WHERE is_buyable = 1"
         ).fetchall()
     ]
+
+    # 增量对齐：以本地最新季报期为准，已持有该期持仓的基金跳过，
+    # 仅拉取无持仓或持仓期更早的基金（季报切换日才会大批量更新）。
+    row = conn.execute("SELECT MAX(report_date) FROM fund_holdings").fetchone()
+    latest_report = row[0] if row and row[0] else None
+    if latest_report:
+        local_latest = dict(
+            conn.execute(
+                "SELECT code, MAX(report_date) FROM fund_holdings GROUP BY code"
+            ).fetchall()
+        )
+        all_codes = [
+            c for c in all_codes
+            if local_latest.get(c) != latest_report
+        ]
+        logger.info(
+            "持仓增量模式：跳过已最新(%s) %d 只, 待下载 %d 只",
+            latest_report, len(local_latest) - len(all_codes), len(all_codes),
+        )
     logger.info("待下载持仓基金: %d 只, 并发数: %d", len(all_codes), concurrency)
 
     semaphore = asyncio.Semaphore(concurrency)
-    connector = aiohttp.TCPConnector(limit=concurrency, force_close=True)
+    # ponytail: 复用连接提速
+    connector = aiohttp.TCPConnector(limit=concurrency, ttl_dns_cache=300, enable_cleanup_closed=True)
     total_rows = 0
     total_done = 0
     funds_with_holdings = 0
@@ -1027,11 +1049,12 @@ def calc_features(code: str, conn: sqlite3.Connection) -> dict:
         features["downside_vol"] = 0.0
 
     # 向上/向下捕获率（相对沪深300）
-    # 获取沪深300数据
+    # 获取沪深300数据（同时取成交量用于 ETF 资金流斜率代理）
     cur_idx = conn.execute(
-        "SELECT date, close FROM index_daily WHERE code = 'sh000300' ORDER BY date ASC",
+        "SELECT date, close, volume FROM index_daily WHERE code = 'sh000300' ORDER BY date ASC",
     )
     idx_rows = cur_idx.fetchall()
+    idx_volumes = np.array([r[2] for r in idx_rows], dtype=float) if idx_rows else np.array([])
     if len(idx_rows) >= 60 and len(returns) >= 60:
         idx_dates = [r[0] for r in idx_rows]
         idx_closes = np.array([r[1] for r in idx_rows], dtype=float)
@@ -1065,6 +1088,20 @@ def calc_features(code: str, conn: sqlite3.Connection) -> dict:
         features["bias_60d"] = float((navs[-1] - ma60) / ma60 * 100)
     else:
         features["bias_60d"] = 0.0
+
+    # ETF 资金流斜率（近5日成交量对数回归斜率，代理市场资金流向）
+    # ponytail: 用沪深300指数成交量近似，真实 ETF 净申购额需另接份额接口
+    if len(idx_volumes) >= 5:
+        vol_window = idx_volumes[-5:]
+        vol_window = vol_window[vol_window > 0]
+        if len(vol_window) >= 2:
+            x = np.arange(len(vol_window), dtype=float)
+            y = np.log(vol_window)
+            features["etf_flow_slope_5d"] = float(np.polyfit(x, y, 1)[0])
+        else:
+            features["etf_flow_slope_5d"] = 0.0
+    else:
+        features["etf_flow_slope_5d"] = 0.0
 
     return features
 
@@ -1112,26 +1149,62 @@ def calc_all_features(regime: str | None = None, batch_commit: int = 500) -> int
         ).fetchall()
     ]
     total = len(all_codes)
-    logger.info("待计算特征基金: %d 只, 当前 regime=%s", total, regime)
+
+    # 增量对齐：仅重算「本地特征日期 < 该基金最新净值日期」的基金，
+    # 即只有净值新增的基金才需重算特征，其余跳过。
+    local_feat = dict(
+        conn.execute("SELECT code, date FROM fund_features").fetchall()
+    )
+    nav_latest = dict(
+        conn.execute("SELECT code, MAX(date) FROM fund_nav GROUP BY code").fetchall()
+    )
+    skip_codes = {
+        c for c in all_codes
+        if c in local_feat and c in nav_latest and local_feat[c] >= nav_latest[c]
+    }
+    logger.info(
+        "待计算特征基金: %d 只, 跳过已最新 %d 只, 当前 regime=%s",
+        total - len(skip_codes), len(skip_codes), regime,
+    )
 
     done = 0
     saved = 0
     start_time = time.monotonic()
     for code in all_codes:
+        if code in skip_codes:
+            done += 1
+            continue
         features = calc_features(code, conn)
         done += 1
         if features:
+            # RBSA 行业暴露（取最新季报重仓股计算，写入第1大行业）
+            rbsa_industry_1, rbsa_weight_1 = "", 0.0
+            cur_h = conn.execute(
+                "SELECT stock_code, stock_name, weight FROM fund_holdings "
+                "WHERE code = ? AND report_date = "
+                "(SELECT MAX(report_date) FROM fund_holdings WHERE code = ?)",
+                (code, code),
+            )
+            holdings = [{"stock_code": r[0], "stock_name": r[1], "weight": r[2]} for r in cur_h.fetchall()]
+            if holdings:
+                top = calc_rbsa(holdings)[:1]
+                if top:
+                    rbsa_industry_1, rbsa_weight_1 = top[0]["industry"], top[0]["weight"]
+
             conn.execute(
                 "INSERT OR REPLACE INTO fund_features "
                 "(code, date, regime, hurst_60d, momentum_20d, calmar, downside_vol, "
-                "capture_up, capture_down, bias_60d) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "capture_up, capture_down, bias_60d, rbsa_industry_1, rbsa_weight_1, "
+                "etf_flow_slope_5d) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     features["code"], features["date"], regime,
                     features.get("hurst_60d"), features.get("momentum_20d"),
                     features.get("calmar"), features.get("downside_vol"),
                     features.get("capture_up"), features.get("capture_down"),
                     features.get("bias_60d"),
+                    rbsa_industry_1, rbsa_weight_1,
+                    features.get("etf_flow_slope_5d"),
                 ),
             )
             saved += 1
@@ -1164,20 +1237,18 @@ def run_pipeline(steps: list[int] | None = None):
         logger.info("=== Step 1: 基金列表获取与过滤 ===")
         update_fund_list_weekly(settings)
 
-    # Step 2: 净值增量更新
+    # Step 2: 净值更新
+    #   首次（本地无净值数据）→ async_download_all_nav：pingzhongdata 单请求/基金，高并发全量
+    #   日常（已有数据）→ async_update_nav_incremental：lsjz 按日期真·增量，仅补缺失
     if 2 in steps:
-        logger.info("=== Step 2: 净值增量更新 ===")
-        cur = conn.execute("SELECT code FROM fund_basic WHERE is_buyable = 1")
-        codes = [r[0] for r in cur.fetchall()]
-        total_new = 0
-        for i, code in enumerate(codes[:10]):  # 先测前10只
-            new_count = fetch_fund_nav_incremental(code, conn, settings)
-            total_new += new_count
-            if (i + 1) % 5 == 0:
-                logger.info("进度 %d/%d，新增 %d 条", i + 1, len(codes), total_new)
-            time.sleep(0.5)
-        conn.commit()
-        logger.info("净值增量更新完成，共新增 %d 条", total_new)
+        has_nav = conn.execute("SELECT 1 FROM fund_nav LIMIT 1").fetchone()
+        if has_nav:
+            logger.info("=== Step 2: 净值增量更新（并发增量）===")
+            total_new = asyncio.run(async_update_nav_incremental(concurrency=20))
+        else:
+            logger.info("=== Step 2: 净值首次全量下载（pingzhongdata 高并发）===")
+            total_new = asyncio.run(async_download_all_nav(concurrency=50))
+        logger.info("净值更新完成，共新增 %d 条", total_new)
 
     # Step 3: 宏观指数（EMA60 增量）
     if 3 in steps:

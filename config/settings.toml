@@ -23,15 +23,15 @@ push2_history_url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
 # ============ LLM 配置（OpenAI 兼容接口，Phase 2 启用） ============
 [llm]
 # API 基地址，兼容任意 OpenAI 格式服务（如本地 Ollama、第三方代理）
-base_url = "https://api.openai.com/v1"
+base_url = "http://192.168.1.222:20128/v1"
 # API 密钥；接入 LLM 前必须填入
-api_key = ""
+api_key = "sk-504b55bfddc021bc-7f4de9-59f7c582"
 # 使用的模型名称
-model = "gpt-4o-mini"
+model = "alpha-radar"
 # 生成温度，越低越确定
 temperature = 0.2
 # 单次生成最大 token 数
-max_tokens = 1024
+max_tokens = 10000
 
 # ============ 策略阈值参数（Phase 3 启用） ============
 [thresholds]
