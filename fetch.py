@@ -7,8 +7,10 @@
     - 内置速率限制：push2 域名最多 10 次/分钟
 """
 
+import asyncio
 import json
 import logging
+import random
 import re
 import subprocess
 import time
@@ -28,6 +30,65 @@ def _is_push2(url: str) -> bool:
     """判断 URL 是否属于 push2 域名族。"""
     host = urlparse(url).hostname or ""
     return bool(_PUSH2_RE.search(host))
+
+
+# ========== push2 多 host 池（请求分布 + 故障切换）==========
+
+# 东方财富存在多个 push2/push2his 解析 IP，单 host 被频控时可切备用
+_PUSH2_HOSTS = [
+    "push2.eastmoney.com",
+    "17.push2.eastmoney.com",
+    "29.push2.eastmoney.com",
+    "79.push2.eastmoney.com",
+    "91.push2.eastmoney.com",
+]
+
+_PUSH2HIS_HOSTS = [
+    "push2his.eastmoney.com",
+    "7.push2his.eastmoney.com",
+    "17.push2his.eastmoney.com",
+    "33.push2his.eastmoney.com",
+    "63.push2his.eastmoney.com",
+    "91.push2his.eastmoney.com",
+]
+
+
+def _resolve_push2_urls(url: str) -> list[str]:
+    """返回待尝试的 host URL 列表（原始 host 优先，其余打乱顺序）。"""
+    parsed = urlparse(url)
+    original_host = parsed.hostname or ""
+
+    pool = (
+        _PUSH2HIS_HOSTS if "push2his" in original_host
+        else _PUSH2_HOSTS
+    )
+    # 原始 host 优先，其余打乱做 fallback
+    others = [h for h in pool if h != original_host]
+    random.shuffle(others)
+    ordered = [original_host] + others if original_host in pool else [original_host] + pool
+
+    return [
+        url.replace(original_host, host, 1)
+        for host in ordered
+    ]
+
+
+# ========== 错误分类与重试 ==========
+
+_RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504}
+_MAX_RETRIES = 2
+_BASE_DELAY = 1.0
+
+
+def _is_retryable(e: Exception) -> bool:
+    """判断错误是否值得重试（网络/超时/服务端错误可重试，4xx 除 429 外不可）。"""
+    if isinstance(e, (requests.ConnectionError, requests.Timeout)):
+        return True
+    if isinstance(e, requests.HTTPError):
+        return e.response.status_code in _RETRYABLE_HTTP_CODES
+    if isinstance(e, ConnectionError):
+        return True  # push2 三级降级全部失败
+    return False
 
 
 # ========== 速率限制 ==========
@@ -140,51 +201,77 @@ def _fetch_curl_subprocess(url: str, params: dict | None = None, timeout: float 
 
 # ========== 统一入口 ==========
 
+def _try_tls_paths(url: str, params: dict | None, timeout: float) -> requests.Response:
+    """对单 host 依次尝试三级降级（tls-client → curl_cffi → curl.exe）。"""
+    errors: list[str] = []
+
+    for name, fn in [
+        ("tls-client", _fetch_tls_client),
+        ("curl_cffi", _fetch_curl_cffi),
+        ("curl.exe", _fetch_curl_subprocess),
+    ]:
+        try:
+            resp = fn(url, params, timeout)
+            logger.debug("push2 %s 成功: %s", name, url)
+            return resp
+        except Exception as e:
+            msg = f"{name}: {type(e).__name__}: {str(e)[:80]}"
+            errors.append(msg)
+            logger.debug("push2 %s 失败: %s", name, msg)
+
+    raise ConnectionError(f"三级降级均失败: {'; '.join(errors)}")
+
+
+def _fetch_push2(url: str, params: dict | None = None, timeout: float = 15) -> requests.Response:
+    """push2 域名专用：速率限制 + 多 host 容错 + TLS 三级降级。
+
+    先试原始 host（三级降级），全失败则依次尝试其他 push2 host（仅 tls-client），
+    应对单 host 被频控或临时不可用场景。
+    """
+    _push2_limiter.wait_if_needed()
+    candidates = _resolve_push2_urls(url)
+
+    host_errors: list[str] = []
+    for i, host_url in enumerate(candidates):
+        try:
+            if i == 0:
+                # 原始 host：完整三级降级
+                return _try_tls_paths(host_url, params, timeout)
+            # 备用 host：仅 tls-client（降级路径大概率同因失败，不浪费时间）
+            return _fetch_tls_client(host_url, params, timeout)
+        except Exception as e:
+            host = urlparse(host_url).hostname
+            host_errors.append(f"{host}: {e}")
+            logger.debug("push2 host %s 失败: %s", host, e)
+
+    raise ConnectionError(
+        f"push2 所有 host 均失败: {'; '.join(host_errors)}"
+    )
+
+
 def fetch(url: str, params: dict | None = None, timeout: float = 15) -> requests.Response:
-    """发起 GET 请求。
+    """发起 GET 请求（带重试）。
 
     - push2 域名：速率限制 + TLS 指纹伪装三级降级
     - 其他域名：普通 requests（trust_env=False 绕过系统代理）
+    - 网络/超时/服务端错误自动指数退避重试
     """
-    if not _is_push2(url):
-        return _fetch_regular(url, params, timeout)
+    last_error: Exception | None = None
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            if _is_push2(url):
+                return _fetch_push2(url, params, timeout)
+            return _fetch_regular(url, params, timeout)
+        except Exception as e:
+            last_error = e
+            if not _is_retryable(e) or attempt == _MAX_RETRIES:
+                raise
+            delay = _BASE_DELAY * (2 ** attempt)
+            logger.warning("请求失败(第%d次重试), %.1f秒后重试: %s", attempt + 1, delay, e)
+            time.sleep(delay)
 
-    # push2 域名：速率限制 + 三级降级
-    _push2_limiter.wait_if_needed()
-
-    errors: list[str] = []
-
-    # 路径 1: tls-client
-    try:
-        resp = _fetch_tls_client(url, params, timeout)
-        logger.debug("push2 tls-client 成功: %s", url)
-        return resp
-    except Exception as e:
-        errors.append(f"tls-client: {type(e).__name__}: {str(e)[:80]}")
-        logger.debug("tls-client 失败: %s", errors[-1])
-
-    # 路径 2: curl_cffi
-    try:
-        resp = _fetch_curl_cffi(url, params, timeout)
-        logger.debug("push2 curl_cffi 成功: %s", url)
-        return resp
-    except Exception as e:
-        errors.append(f"curl_cffi: {type(e).__name__}: {str(e)[:80]}")
-        logger.debug("curl_cffi 失败: %s", errors[-1])
-
-    # 路径 3: subprocess curl.exe -4
-    try:
-        resp = _fetch_curl_subprocess(url, params, timeout)
-        logger.debug("push2 curl.exe 成功: %s", url)
-        return resp
-    except Exception as e:
-        errors.append(f"curl.exe: {type(e).__name__}: {str(e)[:80]}")
-        logger.debug("curl.exe 失败: %s", errors[-1])
-
-    # 全部失败
-    raise ConnectionError(
-        f"push2 所有降级路径均失败: {'; '.join(errors)}"
-    )
+    # 不应到达此处，但保持类型安全
+    raise RuntimeError("unreachable") from last_error
 
 
 def _fetch_regular(url: str, params: dict | None = None, timeout: float = 15) -> requests.Response:
@@ -194,3 +281,43 @@ def _fetch_regular(url: str, params: dict | None = None, timeout: float = 15) ->
     resp = s.get(url, params=params, headers=_HEADERS, timeout=timeout)
     resp.raise_for_status()
     return resp
+
+
+async def fetch_async(
+    session: "aiohttp.ClientSession",
+    url: str,
+    params: dict | None = None,
+    timeout: float = 15,
+    headers: dict | None = None,
+) -> "aiohttp.ClientResponse":
+    """异步 GET 请求（带重试），供 data_foundation.py 的异步批量下载使用。
+
+    与 sync fetch() 共享重试策略：网络/超时/5xx 自动指数退避重试。
+    """
+    import aiohttp
+
+    last_error: Exception | None = None
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            resp = await session.get(
+                url, params=params, headers=headers,
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            )
+            resp.raise_for_status()
+            return resp
+        except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as e:
+            last_error = e
+            if attempt == _MAX_RETRIES:
+                raise
+            delay = _BASE_DELAY * (2 ** attempt)
+            logger.warning("异步请求失败(第%d次重试), %.1f秒后重试: %s", attempt + 1, delay, e)
+            await asyncio.sleep(delay)
+        except aiohttp.ClientResponseError as e:
+            if e.status in _RETRYABLE_HTTP_CODES and attempt < _MAX_RETRIES:
+                delay = _BASE_DELAY * (2 ** attempt)
+                logger.warning("异步请求 HTTP %d(第%d次重试), %.1f秒后重试", e.status, attempt + 1, delay)
+                await asyncio.sleep(delay)
+                continue
+            raise
+
+    raise RuntimeError("unreachable") from last_error

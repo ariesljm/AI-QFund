@@ -78,12 +78,14 @@ CREATE TABLE IF NOT EXISTS recommend_log (
     name TEXT,
     rank INTEGER,
     score REAL,
+    combo REAL,
     regime TEXT,
     buy_reason TEXT,
     sell_reason TEXT,
     status TEXT DEFAULT 'HOLD',
-    exit_date TEXT,
+    exit_date REAL,
     highest_nav REAL,
+    return_rate REAL,
     created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -109,4 +111,12 @@ CREATE TABLE IF NOT EXISTS macro_news (
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT
+);
+
+-- 股票→申万二级行业映射（由 akshare 定期更新）
+CREATE TABLE IF NOT EXISTS stock_industry_map (
+    stock_code TEXT PRIMARY KEY,
+    industry_code TEXT,
+    industry_name TEXT,
+    update_date TEXT
 );

@@ -1,0 +1,957 @@
+<!DOCTYPE html>
+<html class="light" lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<meta content="AI驱动的基金智能筛选与量化投研终端，实时追踪基金推荐、板块轮动与资金流向" name="description"/>
+<meta content="AI量化投研,基金推荐,智能选基,板块轮动,资金流向" name="keywords"/>
+<meta content="AlphaSignals" property="og:title"/>
+<meta content="AI驱动的基金智能筛选与量化投研终端" property="og:description"/>
+<meta content="website" property="og:type"/>
+<link href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%231A1A1A'/><text x='16' y='22' font-size='18' font-weight='900' text-anchor='middle' fill='white' font-family='Inter'>α</text></svg>" rel="icon"/>
+<title>AlphaSignals | AI量化投研终端</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&amp;family=Inter:wght@400;500;600;700;900&amp;family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script>
+tailwind.config = {
+  darkMode: "class",
+  theme: {
+    extend: {
+      colors: {
+        "primary": "#1A1A1A",
+        "on-primary": "#FFFFFF",
+        "primary-container": "#EAEAEA",
+        "on-primary-container": "#4A4A4A",
+        "secondary": "#5C5C5C",
+        "on-secondary": "#FFFFFF",
+        "background": "#FDFBF7",
+        "on-background": "#1A1A1A",
+        "surface": "#FDFBF7",
+        "surface-dim": "#EBE7DF",
+        "surface-bright": "#FFFFFF",
+        "surface-container": "#F4F1EA",
+        "surface-container-low": "#F9F7F2",
+        "surface-container-high": "#F0EDE4",
+        "surface-variant": "#F2F0E9",
+        "on-surface": "#1A1A1A",
+        "on-surface-variant": "#605E58",
+        "outline": "#A09B8E",
+        "outline-variant": "#D6D1C4",
+        "tertiary": "#D32F2F",
+        "on-tertiary": "#FFFFFF",
+        "up": "#D32F2F",
+        "down": "#2E7D32",
+        "error": "#B71C1C",
+        "on-error": "#FFFFFF",
+        "error-container": "#FFEBEE",
+        "on-error-container": "#B71C1C",
+        "outline-error": "#B71C1C"
+      },
+      borderRadius: { DEFAULT: "0px", lg: "2px", xl: "4px", full: "9999px" },
+      spacing: { lg: "24px", md: "16px", xl: "32px", base: "4px", xs: "8px", gutter: "20px", sm: "12px", "container-max": "1440px" },
+      fontFamily: {
+        sans: ['Inter', 'PingFang SC', 'Microsoft YaHei', 'sans-serif'],
+        "headline-xl": ["Playfair Display", "serif"],
+        "headline-lg": ["Playfair Display", "serif"],
+        "display-data": ["Inter", "sans-serif"],
+        "body-md": ["Inter", "PingFang SC", "Microsoft YaHei", "sans-serif"],
+        "label-sm": ["Inter", "PingFang SC", "Microsoft YaHei", "sans-serif"],
+        "subcaption-en": ["Inter", "sans-serif"]
+      },
+      fontSize: {
+        "headline-xl": ["48px", {"lineHeight": "52px", "letterSpacing": "-0.03em", "fontWeight": "900"}],
+        "headline-lg": ["32px", {"lineHeight": "40px", "letterSpacing": "-0.02em", "fontWeight": "800"}],
+        "display-data": ["26px", {"lineHeight": "32px", "letterSpacing": "-0.015em", "fontWeight": "700"}],
+        "body-md": ["15px", {"lineHeight": "1.7", "fontWeight": "400"}],
+        "label-sm": ["13px", {"lineHeight": "18px", "letterSpacing": "0.04em", "fontWeight": "600"}],
+        "subcaption-en": ["11px", {"lineHeight": "14px", "letterSpacing": "0.12em", "fontWeight": "700"}]
+      }
+    }
+  }
+}
+</script>
+<style>
+body { background-color: #FDFBF7; -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums; scroll-behavior: smooth; }
+section { scroll-margin-top: 6rem; }
+body::before { content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 9999; opacity: 0.3; background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); background-repeat: repeat; background-size: 256px 256px; }
+.editorial-card { background: white; border: 1px solid #E6E2D3; box-shadow: 2px 2px 0px rgba(0,0,0,0.05); transition: all 0.2s ease; }
+.editorial-card:hover { box-shadow: 4px 4px 0px rgba(0,0,0,0.08); }
+.editorial-card:active { transform: scale(0.998); }
+.marquee-vertical-container { height: 84px; overflow: hidden; position: relative; }
+.marquee-vertical-content { display: flex; flex-direction: column; animation: marquee-vertical-continuous 40s linear infinite; }
+@keyframes marquee-vertical-continuous { 0% { transform: translateY(0); } 100% { transform: translateY(-50%); } }
+.pulse-dot { animation: pulse 2s infinite; }
+@keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(1.2); } 100% { opacity: 1; transform: scale(1); } }
+.scrollbar-hide::-webkit-scrollbar { display: none; }
+.material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
+.news-ticker-border { border-top: 2px solid #1A1A1A; border-bottom: 1px solid #1A1A1A; }
+h1, h2, h3, h4 { letter-spacing: -0.01em; text-wrap: balance; }
+p { text-wrap: pretty; }
+.bar-up { background-color: #D32F2F; }
+.bar-down { background-color: #2E7D32; }
+button:active { transform: scale(0.97); }
+button:focus-visible { outline: 2px solid #1A1A1A; outline-offset: 2px; }
+.skel { background: linear-gradient(90deg, #EBE7DF 25%, #F4F1EA 50%, #EBE7DF 75%); background-size: 200% 100%; animation: skel-shimmer 1.5s ease-in-out infinite; border-radius: 2px; }
+@keyframes skel-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+.skel-chart { position: relative; overflow: hidden; }
+.skel-chart::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.3) 50%, transparent 100%); animation: skel-sweep 2s ease-in-out infinite; }
+@keyframes skel-sweep { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
+</style>
+</head>
+<body class="bg-background text-on-background font-body-md min-h-screen">
+<a href="#main-content" class="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-[9999] focus:bg-primary focus:text-white focus:px-4 focus:py-2 focus:font-black focus:uppercase focus:tracking-widest">跳转到主要内容</a>
+<main id="main-content" class="min-h-screen flex flex-col">
+<!-- Top Bar -->
+<header class="fixed top-0 right-0 left-0 bg-background/95 backdrop-blur-md border-b-2 border-primary z-50 h-16 md:h-20 flex items-center px-md md:px-lg justify-between">
+<div class="flex items-center gap-sm md:gap-lg">
+<div class="flex flex-col">
+<h1 class="font-headline-xl text-[22px] md:text-[32px] text-primary font-black tracking-tighter leading-none">ALPHASIGNALS</h1>
+<span class="font-subcaption-en text-[11px] md:text-[14px] uppercase tracking-[0.3em] font-black text-on-surface-variant hidden md:block">AI驱动的基金智能筛选与量化投研终端</span>
+</div>
+</div>
+<div class="flex items-center gap-sm md:gap-md">
+
+<button class="w-11 h-11 md:w-10 md:h-10 hover:bg-surface-container transition-colors flex items-center justify-center relative" onclick="openModal('systemLogModal')">
+<span class="material-symbols-outlined">notifications</span>
+<span class="absolute top-2 right-2 w-2 h-2 bg-tertiary"></span>
+</button>
+<button class="w-11 h-11 md:w-10 md:h-10 hover:bg-surface-container transition-colors flex items-center justify-center" onclick="openPasswordPrompt()">
+<span class="material-symbols-outlined">settings</span>
+</button>
+</div>
+</header>
+
+<div class="mt-16 md:mt-24 px-sm md:px-lg space-y-md md:space-y-lg max-w-[1440px] mx-auto w-full">
+<!-- Hero Section -->
+<div class="relative -mx-sm md:-mx-lg px-sm md:px-lg pt-sm md:pt-lg pb-sm md:pb-sm mb-md md:mb-lg"
+     style="background:linear-gradient(180deg, #F4F1EA 0%, #FDFBF7 60%, transparent 100%);">
+<div class="absolute inset-0 pointer-events-none opacity-[0.04]"
+     style="background-image:url('https://picsum.photos/seed/alphaqfund/1920/600');background-size:cover;background-position:center 30%;"></div>
+<div class="relative">
+<!-- Market Insight Row -->
+<section class="grid grid-cols-1 lg:grid-cols-12 gap-gutter border-b-2 border-primary pb-lg md:pb-xl">
+<div class="lg:col-span-4 flex flex-col justify-center pr-lg lg:border-r border-outline-variant">
+<div class="flex items-center justify-between mb-sm md:mb-md">
+<span class="text-on-surface-variant font-label-sm text-[13px] md:text-[14px] uppercase tracking-[0.2em] font-black">MARKET OVERVIEW / 核心指数</span>
+<span class="text-[13px] font-black">大盘状态：{% if latest and latest.regime == 'BULL' %}<span class="text-up">牛市</span>{% elif latest and latest.regime == 'BEAR' %}<span class="text-down">熊市</span>{% else %}中性{% endif %}</span>
+</div>
+<div class="grid grid-cols-2 gap-md md:gap-xl">
+<div class="flex flex-col">
+<span class="font-label-sm text-[11px] md:text-[13px] text-on-surface-variant font-black uppercase mb-1">CSI 300 / 沪深 300</span>
+<span id="idx-300-value" class="font-display-data text-[26px] md:text-[32px] leading-none tracking-tight text-on-surface-variant">—</span>
+<span id="idx-300-change" class="text-on-surface-variant text-[13px] font-black mt-1">
+<span id="idx-300-pct">—</span>
+<span id="idx-300-icon" class="material-symbols-outlined text-[14px] align-middle">remove</span>
+</span>
+</div>
+<div class="flex flex-col">
+<span class="font-label-sm text-[11px] md:text-[13px] text-on-surface-variant font-black uppercase mb-1">SSE / 上证指数</span>
+<span id="idx-sse-value" class="font-display-data text-[26px] md:text-[32px] leading-none tracking-tight text-on-surface-variant">—</span>
+<span id="idx-sse-change" class="text-on-surface-variant text-[13px] font-black mt-1">
+<span id="idx-sse-pct">—</span>
+<span id="idx-sse-icon" class="material-symbols-outlined text-[14px] align-middle">remove</span>
+</span>
+</div>
+</div>
+</div>
+<div class="lg:col-span-8 flex flex-col justify-center">
+<div class="news-ticker-border py-2 md:py-4 px-sm md:px-md relative overflow-hidden bg-white/50">
+<div class="flex items-start gap-sm md:gap-md">
+<div class="flex-shrink-0 flex items-center gap-xs bg-primary text-white px-2 py-0.5 md:px-3 md:py-1 font-black text-[11px] md:text-[13px] uppercase tracking-tighter mt-0.5">
+FLASH / 实时快讯
+</div>
+<div class="flex-1 marquee-vertical-container">
+<div class="marquee-vertical-content">
+{% for item in macro.news_items %}
+<div class="h-[24px] md:h-[28px] flex items-center text-primary font-bold text-[12px] md:text-[13px]">
+<span class="line-clamp-1">{{ item }}</span>
+</div>
+{% endfor %}
+{% for item in macro.news_items %}
+<div class="h-[24px] md:h-[28px] flex items-center text-primary font-bold text-[12px] md:text-[13px]">
+<span class="line-clamp-1">{{ item }}</span>
+</div>
+{% endfor %}
+</div>
+</div>
+</div>
+</div>
+
+</div>
+</section>
+
+<!-- Bento Stats Grid -->
+<section class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-gutter mt-lg md:mt-xl">
+<div class="editorial-card p-lg overflow-hidden relative">
+<div class="absolute inset-0 pointer-events-none opacity-[0.06]"
+     style="background-image:url('https://picsum.photos/seed/sectorflow/800/600');background-size:cover;background-position:center;"></div>
+<div class="relative">
+<div class="flex justify-between items-start mb-sm">
+<span class="text-on-surface-variant font-label-sm text-[14px] uppercase font-black tracking-widest">板块轮动 / SECTOR</span>
+<span class="material-symbols-outlined text-primary">grid_view</span>
+</div>
+{% if sector_gainers %}
+<div class="grid grid-cols-3 gap-[6px]">
+{% for s in sector_gainers %}
+<div class="rounded-[5px] py-[10px] text-center min-w-0 flex flex-col items-center justify-center bg-surface-container">
+<div class="text-[12px] font-black leading-tight truncate text-primary">{{ s.name }}</div>
+<div class="text-[13px] font-bold leading-tight text-on-surface-variant">{{ s.pct }}</div>
+</div>
+{% endfor %}
+</div>
+{% else %}
+<h3 class="font-headline-lg text-[32px] font-black">{{ uptime_days }} <span class="text-[14px] font-bold text-on-surface-variant italic">天</span></h3>
+{% endif %}
+</div>
+</div>
+<div class="editorial-card p-lg border-t-4 border-t-primary">
+<div class="flex justify-between items-start mb-sm">
+<span class="text-on-surface-variant font-label-sm text-[14px] uppercase font-black tracking-widest">资金流向 / CAPITAL FLOW</span>
+<span class="material-symbols-outlined text-primary">account_balance</span>
+</div>
+{% if flow_inflows or flow_outflows %}
+<div class="grid grid-cols-2 gap-x-4 gap-y-0">
+<div>
+<p class="text-[11px] font-black uppercase tracking-wider text-up mb-0.5">净流入</p>
+{% for s in flow_inflows %}
+<div class="flex items-center justify-between py-[1px]">
+<span class="text-[12px] font-bold truncate">{{ s.name }}</span>
+<span class="text-[12px] font-black whitespace-nowrap text-up">+{{ (s.flow|float / 1e4)|round(1) }}亿</span>
+</div>
+{% endfor %}
+</div>
+<div>
+<p class="text-[11px] font-black uppercase tracking-wider text-down mb-0.5">净流出</p>
+{% for s in flow_outflows %}
+<div class="flex items-center justify-between py-[1px]">
+<span class="text-[12px] font-bold truncate">{{ s.name }}</span>
+<span class="text-[12px] font-black whitespace-nowrap text-down">{{ (s.flow|float / 1e4)|round(1) }}亿</span>
+</div>
+{% endfor %}
+</div>
+</div>
+{% set sum_in = flow_inflows|map(attribute="flow")|map("float")|sum %}
+{% set sum_out = flow_outflows|map(attribute="flow")|map("float")|sum %}
+{% set net = sum_in + sum_out %}
+<div class="flex items-center justify-between mt-1.5 pt-1 border-t border-outline-variant">
+<span class="text-[11px] font-black uppercase tracking-wider text-on-surface-variant">净额</span>
+<span class="text-[13px] font-black {% if net >= 0 %}text-up{% else %}text-down{% endif %}">{{ "+" if net >= 0 else "-" }}{{ (net|abs / 1e4)|round(1) }}亿</span>
+</div>
+{% else %}
+<p class="text-on-surface-variant text-[12px] flex items-center gap-1"><span class="material-symbols-outlined text-[14px]">info</span>暂无数据</p>
+{% endif %}
+</div>
+<div class="editorial-card p-lg bg-surface-container">
+<div class="flex justify-between items-start mb-sm">
+<span class="text-on-surface-variant font-label-sm text-[14px] uppercase font-black tracking-widest">累计收益率 / TOTAL ROI</span>
+<span class="material-symbols-outlined text-up">trending_up</span>
+</div>
+<h3 class="font-headline-lg text-[32px] font-black {% if total_return >= 0 %}text-up{% else %}text-down{% endif %}">
+{% if total_return is not none %}{{ "%+.2f"|format(total_return) }}%{% else %}--{% endif %}
+</h3>
+<div class="mt-sm pt-sm border-t border-outline-variant flex gap-xl">
+<p class="text-on-surface-variant text-[13px] font-black uppercase">推荐数量: <span class="text-on-surface">{{ rec_count }}</span></p>
+<p class="text-on-surface-variant text-[13px] font-black uppercase">命中率: <span class="{% if hit_rate >= 50 %}text-up{% else %}text-down{% endif %}">{{ hit_rate }}%</span></p>
+</div>
+</div>
+<div class="editorial-card p-lg">
+<div class="flex justify-between items-start mb-sm">
+<span class="text-on-surface-variant font-label-sm text-[14px] uppercase font-black tracking-widest">累计超额收益 / EXCESS ALPHA</span>
+<span class="material-symbols-outlined text-primary">insights</span>
+</div>
+<h3 class="font-headline-lg text-[32px] font-black {% if alpha is not none and alpha >= 0 %}text-up{% elif alpha is not none %}text-down{% endif %}">
+{% if alpha is not none %}{{ "%+.2f"|format(alpha) }}%{% else %}--{% endif %}
+</h3>
+{% if alpha_svg %}
+<div class="h-[80px] relative">
+<svg class="absolute inset-0 w-full h-full" viewBox="0 0 200 100" preserveAspectRatio="none">
+<line x1="0" y1="{{ alpha_baseline_y|round(1) }}" x2="200" y2="{{ alpha_baseline_y|round(1) }}" stroke="currentColor" stroke-width="0.3" stroke-dasharray="2" class="text-outline-variant" vector-effect="non-scaling-stroke"/>
+<path d="{{ alpha_svg }}" fill="none" stroke="currentColor" stroke-width="1.5" class="text-up" vector-effect="non-scaling-stroke"/>
+</svg>
+</div>
+{% endif %}
+</div>
+</section>
+</div>
+</div>
+
+<!-- Main Recommendation Row -->
+<section class="editorial-card overflow-hidden relative">
+<div class="absolute inset-0 pointer-events-none opacity-[0.03]"
+     style="background-image:url('https://picsum.photos/seed/alpharecommend/1920/600');background-size:cover;background-position:center 20%;"></div>
+<div class="relative grid grid-cols-1 lg:grid-cols-12">
+<div class="lg:col-span-8 px-md md:px-xl py-md md:py-lg flex flex-col justify-between border-b lg:border-b-0 lg:border-r border-outline-variant">
+<div>
+<div class="mb-sm md:mb-lg">
+<span class="bg-primary text-white px-3 py-1 font-black text-[11px] md:text-[13px] uppercase tracking-widest">本期主推 / EDITOR'S CHOICE</span>
+</div>
+<div class="mb-sm md:mb-lg flex flex-wrap items-baseline gap-x-sm gap-y-0">
+<span class="font-display-data text-on-surface-variant text-[20px] md:text-[24px] font-bold">{{ latest.code if latest else '--' }}</span>
+<h2 class="font-headline-xl text-primary font-black text-[24px] md:text-[28px] leading-tight">{{ latest.name if latest else '暂无推荐数据' }}</h2>
+{% if latest and latest.type %}
+<span class="text-[13px] md:text-[14px] text-on-surface-variant font-bold">{{ latest.type }}</span>
+{% endif %}
+</div>
+<div class="mt-md">
+{% if sector_reasoning %}
+<div class="mb-sm">
+<h3 class="text-[14px] font-black uppercase mb-xs text-on-surface-variant">今日分析 / TODAY'S ANALYSIS</h3>
+<p class="text-on-surface text-[13px] leading-snug">{{ sector_reasoning }}</p>
+</div>
+{% endif %}
+<h3 class="text-[14px] font-black uppercase mb-xs text-on-surface-variant">推荐理由 / REASON</h3>
+<p class="text-on-surface text-[13px] leading-snug line-clamp-3">
+{{ latest.reason if latest else '暂无推荐，请先运行推荐引擎。' }}
+</p>
+</div>
+{% if top_holdings %}
+<div class="mt-lg pt-md border-t border-outline-variant">
+<h3 class="text-[14px] font-black uppercase mb-xs text-on-surface-variant">前十大持仓 / TOP HOLDINGS</h3>
+<div class="grid grid-cols-1 md:grid-cols-2 gap-x-lg gap-y-1">
+{% for h in top_holdings %}
+<div class="flex items-center gap-xs text-[14px]">
+<span class="font-bold w-[5.5em] truncate text-on-surface" title="{{ h.name }}">{{ h.name }}</span>
+<div class="flex-1 h-2 bg-surface-container relative">
+<div class="absolute inset-y-0 left-0 bg-primary/50" style="width: {{ h.weight * 3 }}%;"></div>
+</div>
+<span class="font-black w-[3em] text-right text-on-surface-variant">{{ "%.1f"|format(h.weight) }}%</span>
+{% if h.industry %}
+<span class="text-[13px] text-on-surface-variant ml-xs uppercase">{{ h.industry[:4] }}</span>
+{% endif %}
+</div>
+{% endfor %}
+</div>
+</div>
+{% endif %}
+</div>
+</div>
+<div class="lg:col-span-4 px-md md:px-xl py-md md:py-lg bg-surface-container-low">
+<div class="flex justify-between items-end mb-sm border-b border-primary pb-xs">
+<div>
+<h4 class="font-headline-lg text-[16px] font-black uppercase tracking-tight">基金走势 / FUND TREND</h4>
+<span class="text-[12px] text-on-surface-variant font-bold">近3个月涨跌幅对比</span>
+</div>
+<div class="flex gap-sm font-black text-[11px] uppercase">
+<div class="flex items-center gap-xs"><div class="w-4 h-0.5 bg-primary"></div><span>本基金</span></div>
+<div class="flex items-center gap-xs"><div class="w-4 h-0.5 bg-outline"></div><span>沪深300</span></div>
+</div>
+</div>
+<div class="h-[160px] md:h-[220px] relative mt-sm">
+{% if fund_svg %}
+<svg class="absolute inset-0 w-full h-full" viewBox="0 0 200 100" preserveAspectRatio="none">
+<line x1="0" y1="{{ baseline_y|round(1) }}" x2="200" y2="{{ baseline_y|round(1) }}" stroke="currentColor" stroke-width="0.5" stroke-dasharray="2" class="text-outline" vector-effect="non-scaling-stroke"/>
+<path d="{{ fund_svg }}" fill="none" stroke="currentColor" stroke-width="2" class="text-primary" vector-effect="non-scaling-stroke"/>
+<path d="{{ hs_svg }}" fill="none" stroke="currentColor" stroke-width="1.5" class="text-outline" vector-effect="non-scaling-stroke"/>
+</svg>
+{% else %}
+<div class="skel-chart absolute inset-0 bg-surface-container-low rounded-[2px] flex items-center justify-center">
+<svg class="w-3/4 h-1/2" viewBox="0 0 200 80" preserveAspectRatio="none">
+<path d="M0,60 L20,55 L40,65 L60,40 L80,45 L100,30 L120,35 L140,20 L160,25 L180,15 L200,20" fill="none" stroke="currentColor" stroke-width="1.5" class="text-outline-variant" stroke-dasharray="3 3"/>
+<path d="M0,70 L20,68 L40,72 L60,65 L80,67 L100,62 L120,64 L140,58 L160,60 L180,55 L200,58" fill="none" stroke="currentColor" stroke-width="1" class="text-outline-variant" stroke-dasharray="2 4"/>
+</svg>
+</div>
+{% endif %}
+</div>
+<div class="flex justify-between text-[9px] leading-none font-bold text-on-surface-variant uppercase">
+{% if nav_dates %}
+{% for d in nav_dates %}
+{% if loop.index0 % 20 == 0 or loop.last %}
+<span>{{ d[-5:] }}</span>
+{% endif %}
+{% endfor %}
+{% else %}
+<span>--</span>
+{% endif %}
+</div>
+<div class="mt-5 flex gap-xs flex-wrap">
+{% for label in ['月', '季', '半年'] %}
+{% set ret = period_ret.get(label) %}
+{% set hs_ret = period_ret.get(label + '_hs') %}
+<div class="flex-1 min-w-[100px] bg-surface-container-high rounded-[2px] px-3 py-2">
+<div class="text-[11px] font-bold text-on-surface-variant uppercase tracking-wider">{{ label }}涨跌幅</div>
+<div class="font-display-data text-[16px] font-black {% if ret is not none and ret >= 0 %}text-up{% elif ret is not none %}text-down{% endif %}">
+{% if ret is not none %}{{ "%+.2f"|format(ret) }}%{% else %}--{% endif %}
+</div>
+{% if hs_ret is not none %}
+<div class="text-[10px] font-bold text-on-surface-variant mt-0.5">沪深300 {{ "%+.2f"|format(hs_ret) }}%</div>
+{% endif %}
+</div>
+{% endfor %}
+</div>
+</div>
+</div>
+</section>
+
+<!-- Signal Table -->
+<section class="editorial-card" id="trackingSection">
+<div class="p-lg border-b border-primary flex items-baseline gap-md">
+<h2 class="font-headline-lg text-[24px] font-black uppercase tracking-tight">追踪监控 / TRACKING</h2>
+<span class="text-[13px] font-black text-on-surface-variant uppercase tracking-widest">实时 Alpha 监控系统</span>
+</div>
+<div class="overflow-x-auto">
+<table class="w-full text-left border-collapse" id="trackingTable">
+<thead>
+<tr class="text-on-surface font-black text-[13px] uppercase tracking-wider bg-surface-container-high border-b border-primary">
+<th class="px-sm md:px-lg py-2 md:py-4 whitespace-nowrap">基金代码</th>
+<th class="px-sm md:px-lg py-2 md:py-4 whitespace-nowrap">基金名称</th>
+<th class="px-sm md:px-lg py-2 md:py-4 whitespace-nowrap">推荐日期</th>
+<th class="px-sm md:px-lg py-2 md:py-4 whitespace-nowrap">推荐净值</th>
+<th class="px-sm md:px-lg py-2 md:py-4 whitespace-nowrap">当前净值</th>
+<th class="px-sm md:px-lg py-2 md:py-4 whitespace-nowrap">累计收益率</th>
+<th class="px-sm md:px-lg py-2 md:py-4 whitespace-nowrap text-center">推荐次数</th>
+<th class="px-sm md:px-lg py-2 md:py-4 whitespace-nowrap">信号</th>
+</tr>
+</thead>
+<tbody class="text-[13px] font-bold divide-y divide-outline-variant" id="trackingBody">
+{% for c in candidates %}
+<tr data-page="{{ (loop.index0 // 15) + 1 }}" class="hover:bg-surface-container-low transition-colors cursor-pointer" onclick="openFundDetail('{{ c.code }}')">
+<td class="px-sm md:px-lg py-3 md:py-5 font-display-data whitespace-nowrap">{{ c.code }}</td>
+<td class="px-sm md:px-lg py-3 md:py-5 text-primary whitespace-nowrap max-w-[120px] md:max-w-none truncate">{{ c.name }}</td>
+<td class="px-sm md:px-lg py-3 md:py-5 font-display-data whitespace-nowrap">{{ c.first_date[:10] if c.first_date else '--' }}</td>
+<td class="px-sm md:px-lg py-3 md:py-5 font-display-data whitespace-nowrap">{% if c.first_nav is not none %}{{ "%.4f"|format(c.first_nav) }}{% else %}--{% endif %}</td>
+<td class="px-sm md:px-lg py-3 md:py-5 font-display-data whitespace-nowrap">{% if c.cur_nav is not none %}{{ "%.4f"|format(c.cur_nav) }}{% else %}--{% endif %}</td>
+<td class="px-sm md:px-lg py-3 md:py-5 font-display-data whitespace-nowrap {% if c.return is not none and c.return >= 0 %}text-up{% elif c.return is not none and c.return < 0 %}text-down{% endif %}">
+{% if c.return is not none %}{{ "%+.2f"|format(c.return) }}%{% else %}--{% endif %}
+</td>
+<td class="px-sm md:px-lg py-3 md:py-5 text-center whitespace-nowrap">{{ c.rec_count }}</td>
+<td class="px-sm md:px-lg py-3 md:py-5 whitespace-nowrap">
+{% if c.status == 'HOLD' or c.status == 'PASS' %}
+<span class="border-2 border-up text-up px-2 md:px-3 py-0.5 md:py-1 text-[11px] md:text-[14px] font-black uppercase">持有</span>
+{% elif c.status == 'ADD' %}
+<span class="border-2 border-primary text-primary px-2 md:px-3 py-0.5 md:py-1 text-[11px] md:text-[14px] font-black uppercase">加仓</span>
+{% elif c.status == 'CAUTION' %}
+<span class="border-2 border-tertiary text-tertiary px-2 md:px-3 py-0.5 md:py-1 text-[11px] md:text-[14px] font-black uppercase">警惕</span>
+{% elif c.status == 'EXIT' or c.status == 'REJECT' %}
+<span class="border-2 border-down text-down px-2 md:px-3 py-0.5 md:py-1 text-[11px] md:text-[14px] font-black uppercase">离场</span>
+{% else %}
+<span class="border-2 border-outline text-on-surface-variant px-2 md:px-3 py-0.5 md:py-1 text-[11px] md:text-[14px] font-black uppercase">{{ c.status }}</span>
+{% endif %}
+</td>
+</tr>
+{% else %}
+<tr><td colspan="8" class="px-lg py-10 text-center">
+<div class="flex flex-col items-center gap-sm">
+<span class="material-symbols-outlined text-outline-variant text-[32px]">database</span>
+<p class="text-on-surface-variant font-bold text-[14px]">暂无追踪数据</p>
+<p class="text-on-surface-variant text-[13px]">运行推荐引擎后自动填充</p>
+</div>
+</td></tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+<div class="flex items-center justify-between px-lg py-3 border-t border-outline-variant" id="paginationBar">
+<div class="text-[12px] text-on-surface-variant font-bold"><span id="totalCount">{{ candidates|length }}</span> 只基金</div>
+<div class="flex items-center gap-1" id="paginationControls"></div>
+</div>
+</section>
+</div>
+
+<!-- Footer -->
+<footer class="mt-xl border-t-2 border-primary py-lg px-lg bg-surface-container-high">
+<div class="max-w-[1440px] mx-auto flex flex-col md:flex-row justify-between items-center gap-md">
+<p class="font-subcaption-en text-[13px] uppercase tracking-[0.4em] font-black text-on-surface-variant">© 2026 AI量化投研终端 · 智能选基系统</p>
+<div class="flex gap-lg text-[13px] font-black uppercase tracking-widest">
+<a href="#" class="text-on-surface-variant hover:text-primary transition-colors">隐私政策</a>
+<a href="#" class="text-on-surface-variant hover:text-primary transition-colors">服务条款</a>
+<a href="#" class="text-on-surface-variant hover:text-primary transition-colors">数据来源</a>
+</div>
+</div>
+<p class="max-w-[1440px] mx-auto text-[13px] text-on-surface-variant mt-3 font-bold tracking-wider text-center">风险提示：投资有风险，入市需谨慎。数据仅供参考，不作为决策依据。</p>
+</footer>
+</main>
+
+<!-- System Log Modal -->
+<div class="fixed inset-0 bg-primary/80 backdrop-blur-sm z-[10000] hidden flex items-center justify-center p-sm md:p-md" id="systemLogModal">
+<div class="bg-background w-full max-w-2xl border-2 border-primary flex flex-col shadow-[12px_12px_0px_rgba(0,0,0,1)] overflow-hidden max-h-[90vh]">
+<div class="p-md border-b border-primary flex justify-between items-center bg-primary text-white">
+<h3 class="font-label-sm text-[14px] uppercase font-black flex items-center gap-xs tracking-widest">
+<span class="material-symbols-outlined text-[18px]">terminal</span>
+LIVE LOG STREAM / 系统实时日志
+</h3>
+<button class="material-symbols-outlined hover:rotate-90 transition-transform" onclick="closeModal('systemLogModal')">close</button>
+</div>
+        <div class="flex-1 p-md font-mono text-[14px] overflow-y-auto max-h-[400px] scrollbar-hide bg-surface-container-low text-primary" id="logContainer">
+          <div class="space-y-1">
+            {% for i in range(6) %}
+            <p class="skel h-4 w-{{ ['full', '3/4', '5/6', '2/3', '4/5', '3/5'][i] }}" style="animation-delay:{{ i * 0.15 }}s"></p>
+            {% endfor %}
+          </div>
+        </div>
+        <p id="pipelineStatus" class="text-[12px] font-bold text-on-surface-variant mt-2 px-md hidden"></p>
+        <pre id="pipelineLog" class="text-[11px] font-mono text-on-surface bg-surface-container p-2 mt-1 mx-md mb-md max-h-[200px] overflow-y-auto hidden whitespace-pre-wrap"></pre>
+</div>
+</div>
+
+
+<!-- Password Prompt Modal -->
+<div class="fixed inset-0 bg-primary/80 backdrop-blur-sm z-[10000] hidden flex items-center justify-center p-sm md:p-md" id="passwordModal">
+<div class="bg-background w-full max-w-sm border-2 border-primary flex flex-col shadow-[12px_12px_0px_rgba(0,0,0,1)]">
+<div class="p-md border-b border-primary flex justify-between items-center bg-primary text-white">
+<h3 class="font-label-sm text-[14px] uppercase font-black flex items-center gap-xs tracking-widest">
+<span class="material-symbols-outlined text-[18px]">lock</span>
+访问验证
+</h3>
+<button class="material-symbols-outlined hover:rotate-90 transition-transform" onclick="closeModal('passwordModal')">close</button>
+</div>
+<div class="p-lg space-y-md">
+<p class="text-[13px] font-bold text-on-surface-variant">请输入设置密码</p>
+<input id="passwordInput" type="password" class="w-full p-lg border border-outline-variant bg-background font-bold text-[14px] focus:border-primary focus:outline-none" placeholder="密码" onkeydown="if(event.key==='Enter')submitPassword()"/>
+<p id="passwordError" class="text-error font-black text-[13px] hidden">密码错误</p>
+</div>
+<div class="p-lg border-t border-outline-variant">
+<button class="w-full bg-primary text-white py-3 font-black uppercase tracking-[0.2em] hover:bg-black transition-all" onclick="submitPassword()">确认</button>
+</div>
+</div>
+</div>
+
+<!-- Settings Modal -->
+<div class="fixed inset-0 bg-primary/80 backdrop-blur-sm z-[10000] hidden flex items-center justify-center md:items-center md:justify-end" id="settingsModal">
+<div class="bg-background w-full md:w-full md:max-w-md md:h-full border-l-2 border-primary md:shadow-[-20px_0px_0px_rgba(0,0,0,0.2)] flex flex-col md:max-h-none max-h-screen overflow-y-auto">
+<div class="p-xl border-b-2 border-primary flex justify-between items-center">
+<h2 class="font-headline-lg text-[24px] font-black uppercase">终端设置</h2>
+<button class="material-symbols-outlined" onclick="closeModal('settingsModal')">close</button>
+</div>
+<div class="p-xl flex-1 overflow-y-auto space-y-xl">
+<section>
+<h3 class="font-black text-[13px] uppercase tracking-[0.2em] mb-md border-b border-outline-variant pb-1">PIPELINE SCHEDULE / 管线定时启动</h3>
+<p class="text-[13px] font-bold text-on-surface-variant mb-sm">选择每日定时执行推荐管线的时间</p>
+<div class="flex items-center gap-md">
+<select id="schedHour" class="flex-1 p-lg border border-outline-variant bg-background font-bold text-[14px] focus:border-primary focus:outline-none">
+<option value="">关闭</option>
+<script>for(var i=0;i<24;i++){var h=('0'+i).slice(-2);document.write('<option value="'+h+'">'+h+' 时</option>')}</script>
+</select>
+<select id="schedMinute" class="flex-1 p-lg border border-outline-variant bg-background font-bold text-[14px] focus:border-primary focus:outline-none">
+<script>{[0,15,30,45].forEach(function(m){var s=('0'+m).slice(-2);document.write('<option value="'+s+'">'+s+' 分</option>')})}</script>
+</select>
+</div>
+<p class="text-[13px] font-bold text-on-surface-variant mt-2">下次执行时间可在系统日志中查看</p>
+</section>
+<section>
+<h3 class="font-black text-[13px] uppercase tracking-[0.2em] mb-md border-b border-outline-variant pb-1">MANUAL TRIGGER / 手动执行</h3>
+          <button class="w-full bg-primary text-white py-3 font-black uppercase tracking-[0.2em] hover:bg-black transition-all" onclick="triggerPipeline()">立即启动推荐管线</button>
+</section>
+<section>
+<h3 class="font-black text-[13px] uppercase tracking-[0.2em] mb-md border-b border-outline-variant pb-1">LLM CONFIG / 大模型配置</h3>
+<div class="space-y-md">
+<div><label class="font-bold text-[13px] block mb-xs">API 地址</label><input id="llmBaseUrl" class="w-full p-lg border border-outline-variant bg-background font-bold text-[14px] focus:border-primary focus:outline-none" placeholder="http://localhost:11434/v1"/></div>
+<div><label class="font-bold text-[13px] block mb-xs">API 密钥</label><input id="llmApiKey" type="password" class="w-full p-lg border border-outline-variant bg-background font-bold text-[14px] focus:border-primary focus:outline-none" placeholder="sk-..."/></div>
+<div><label class="font-bold text-[13px] block mb-xs">模型名称</label><input id="llmModel" class="w-full p-lg border border-outline-variant bg-background font-bold text-[14px] focus:border-primary focus:outline-none" placeholder="gpt-4o-mini"/></div>
+</div>
+</section>
+</div>
+<div class="p-xl border-t-2 border-primary">
+<button class="w-full bg-primary text-white py-4 font-black uppercase tracking-[0.2em] hover:bg-black transition-all" id="saveSettingsBtn" onclick="saveSettings()">保存并更新配置</button>
+</div>
+</div>
+</div>
+
+<!-- Fund Detail Slide Panel -->
+<div class="fixed inset-0 bg-primary/80 backdrop-blur-sm z-[10000] hidden flex justify-end" id="fundDetailModal">
+<div class="bg-background w-full md:max-w-lg border-l-2 border-primary shadow-[-20px_0px_0px_rgba(0,0,0,0.2)] flex flex-col h-full overflow-y-auto transform translate-x-full transition-transform duration-300" id="fundDetailPanel">
+<div class="p-lg border-b-2 border-primary flex justify-between items-center sticky top-0 bg-background z-10">
+<h2 class="font-headline-lg text-[20px] font-black uppercase tracking-tight" id="fundDetailTitle">基金详情</h2>
+<button class="material-symbols-outlined w-10 h-10 flex items-center justify-center hover:bg-surface-container transition-colors" onclick="closeFundDetail()">close</button>
+</div>
+<div class="flex-1 p-lg space-y-lg" id="fundDetailContent">
+<div class="space-y-md">
+<div class="skel h-6 w-3/4"></div>
+<div class="skel h-4 w-1/2"></div>
+<div class="skel h-4 w-full"></div>
+<div class="skel h-4 w-5/6"></div>
+<div class="skel h-20 w-full"></div>
+<div class="skel h-40 w-full"></div>
+</div>
+</div>
+</div>
+</div>
+
+<script>
+function _esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+var logInterval = null;
+var FUND_SKEL = '<div class="space-y-md"><div class="skel h-6 w-3/4"></div><div class="skel h-4 w-1/2"></div><div class="skel h-4 w-full"></div><div class="skel h-4 w-5/6"></div><div class="skel h-20 w-full"></div><div class="skel h-40 w-full"></div></div>';
+function openModal(id) {
+    document.getElementById(id).classList.remove('hidden');
+    if (id === 'systemLogModal') {
+        fetchLogs();
+        logInterval = setInterval(fetchLogs, 5000);
+    }
+    if (id === 'settingsModal') {
+        loadSettings();
+    }
+}
+function closeModal(id) {
+    document.getElementById(id).classList.add('hidden');
+    if (id === 'systemLogModal' && logInterval) {
+        clearInterval(logInterval);
+        logInterval = null;
+    }
+}
+function openFundDetail(code) {
+    var modal = document.getElementById('fundDetailModal');
+    var panel = document.getElementById('fundDetailPanel');
+    modal.classList.remove('hidden');
+    setTimeout(function() { panel.classList.remove('translate-x-full'); }, 10);
+    document.getElementById('fundDetailTitle').textContent = code + ' 详情';
+    document.getElementById('fundDetailContent').innerHTML = FUND_SKEL;
+    fetchFundDetail(code);
+}
+function closeFundDetail() {
+    var panel = document.getElementById('fundDetailPanel');
+    panel.classList.add('translate-x-full');
+    setTimeout(function() { document.getElementById('fundDetailModal').classList.add('hidden'); }, 300);
+}
+async function fetchFundDetail(code) {
+    var container = document.getElementById('fundDetailContent');
+    try {
+        var r = await fetch('/api/fund-detail/' + encodeURIComponent(code));
+        var d = await r.json();
+        if (d.error) { container.innerHTML = '<p class="text-error font-black">' + _esc(d.error) + '</p>'; return; }
+        var f = d.fund;
+        var todayAnalysis = [];
+        if (f.regime) todayAnalysis.push('<span class="font-black">市场环境:</span> <span class="border border-primary px-2 py-0.5 text-[12px] font-black">' + _esc(f.regime) + '</span>');
+        if (f.display_score !== undefined) todayAnalysis.push('<span class="font-black">综合评分:</span> <span class="font-display-data">' + f.display_score + '</span>');
+        if (f.entry_nav !== null) todayAnalysis.push('<span class="font-black">推荐净值:</span> <span class="font-display-data">' + f.entry_nav.toFixed(4) + '</span>');
+        if (f.combo !== null) todayAnalysis.push('<span class="font-black">组合分数:</span> <span class="font-display-data">' + (f.combo).toFixed(4) + '</span>');
+
+        var holdingsHtml = '';
+        if (d.top_holdings && d.top_holdings.length) {
+            holdingsHtml = '<div class="space-y-2">';
+            for (var i = 0; i < d.top_holdings.length; i++) {
+                var h = d.top_holdings[i];
+                var pct = (h.weight || 0).toFixed(2);
+                holdingsHtml += '<div class="flex items-center gap-sm text-[13px] font-bold">' +
+                    '<span class="w-8 text-right font-display-data text-[12px] text-on-surface-variant">#' + (i+1) + '</span>' +
+                    '<span class="flex-1 truncate">' + _esc(h.stock_name) + '</span>' +
+                    '<span class="text-[11px] text-on-surface-variant bg-surface-container px-2 py-0.5">' + _esc(h.industry || '--') + '</span>' +
+                    '<span class="w-16 text-right font-display-data">' + pct + '%</span>' +
+                    '<div class="w-20 h-2 bg-surface-container">' +
+                    '<div class="h-full bg-primary" style="width:' + Math.min(pct * 3, 100) + '%"></div>' +
+                    '</div>' +
+                    '</div>';
+            }
+            holdingsHtml += '</div>';
+        } else {
+            holdingsHtml = '<p class="text-on-surface-variant text-[13px]">暂无持仓数据</p>';
+        }
+
+        var navChartHtml = '';
+        if (d.nav_data && d.nav_data.length >= 2) {
+            var navs = d.nav_data.map(function(x) { return x.nav; }).filter(function(v) { return v !== null; });
+            if (navs.length >= 2) {
+                var nMin = Math.min.apply(null, navs);
+                var nMax = Math.max.apply(null, navs);
+                var nRange = nMax - nMin || 1;
+                var pad = nRange * 0.05;
+                nMin -= pad;
+                nMax += pad;
+                nRange = nMax - nMin;
+                var pts = navs.map(function(v, i) {
+                    var x = (i / (navs.length - 1)) * 100;
+                    var y = 100 - ((v - nMin) / nRange) * 100;
+                    return x + ',' + y;
+                }).join(' ');
+                navChartHtml = '<div class="relative h-[200px] bg-surface-container-low border border-outline-variant p-2">' +
+                    '<svg class="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none">' +
+                    '<polyline points="' + pts + '" fill="none" stroke="#1A1A1A" stroke-width="0.5" vector-effect="non-scaling-stroke"/>' +
+                    '</svg>' +
+                    '<div class="flex justify-between text-[10px] font-bold text-on-surface-variant mt-1">' +
+                    '<span>' + _esc(d.nav_data[0].date) + '</span>' +
+                    '<span>' + _esc(d.nav_data[d.nav_data.length-1].date) + '</span>' +
+                    '</div>' +
+                    '</div>';
+            } else {
+                navChartHtml = '<p class="text-on-surface-variant text-[13px]">净值数据不足，无法绘制走势图</p>';
+            }
+        } else {
+            navChartHtml = '<p class="text-on-surface-variant text-[13px]">暂无净值走势数据</p>';
+        }
+
+        container.innerHTML =
+            '<div class="space-y-lg">' +
+            '<div class="border-b border-outline-variant pb-md">' +
+            '<h3 class="font-label-sm text-[14px] uppercase tracking-widest font-black mb-xs">' + _esc(f.name) + '</h3>' +
+            '<p class="text-[12px] text-on-surface-variant">' + _esc(f.type || '--') + ' | ' + _esc(f.first_date || '--') + ' | 状态: <span class="font-black">' + _esc(f.status) + '</span></p>' +
+            '</div>' +
+            '<div>' +
+            '<h4 class="font-label-sm text-[13px] uppercase tracking-widest font-black mb-sm border-b border-primary pb-1">今日分析</h4>' +
+            '<div class="flex flex-wrap gap-x-md gap-y-1 text-[13px]">' + todayAnalysis.join('') + '</div>' +
+            '</div>' +
+            '<div>' +
+            '<h4 class="font-label-sm text-[13px] uppercase tracking-widest font-black mb-sm border-b border-primary pb-1">推荐理由</h4>' +
+            '<p class="text-[13px] font-bold leading-relaxed whitespace-pre-wrap">' + _esc(f.buy_reason || '暂无推荐理由') + '</p>' +
+            '</div>' +
+            '<div>' +
+            '<h4 class="font-label-sm text-[13px] uppercase tracking-widest font-black mb-sm border-b border-primary pb-1">前十大重仓</h4>' +
+            holdingsHtml +
+            '</div>' +
+            '<div>' +
+            '<h4 class="font-label-sm text-[13px] uppercase tracking-widest font-black mb-sm border-b border-primary pb-1">净值走势（近90日）</h4>' +
+            navChartHtml +
+            '</div>' +
+            '</div>';
+    } catch(e) {
+        container.innerHTML = '<p class="text-error font-black">加载失败: ' + _esc(String(e.message || e)) + '</p>';
+    }
+}
+window.onclick = function(event) {
+    if (event.target.classList.contains('bg-primary/80')) {
+        if (event.target.id === 'fundDetailModal') {
+            closeFundDetail();
+        } else {
+            event.target.classList.add('hidden');
+            if (logInterval) { clearInterval(logInterval); logInterval = null; }
+        }
+    }
+}
+
+async function fetchLogs() {
+    var container = document.getElementById('logContainer');
+    if (!container) return;
+    try {
+        var r = await fetch('/api/logs?lines=100');
+        var data = await r.json();
+        if (!data.lines || !data.lines.length) {
+            container.innerHTML = '<p class="opacity-50">暂无日志</p>';
+            return;
+        }
+        container.innerHTML = data.lines.map(function(l) {
+            var c = '';
+            if (l.includes('[ERROR]')) c = 'text-error font-black';
+            else if (l.includes('[WARNING]')) c = 'text-tertiary font-bold';
+            else if (l.includes('[DEBUG]')) c = 'opacity-50';
+            return '<p class="' + c + ' break-all">' + _esc(l) + '</p>';
+        }).join('');
+        container.scrollTop = container.scrollHeight;
+    } catch(e) {
+        container.innerHTML = '<p class="text-error font-black">日志加载失败: ' + _esc(String(e.message || e)) + '</p>';
+    }
+}
+
+function val(id) { return document.getElementById(id).value; }
+
+function openPasswordPrompt() {
+    document.getElementById('passwordInput').value = '';
+    document.getElementById('passwordError').classList.add('hidden');
+    openModal('passwordModal');
+}
+
+async function submitPassword() {
+    var pwd = val('passwordInput');
+    if (!pwd) { document.getElementById('passwordError').classList.remove('hidden'); return; }
+    try {
+        var r = await fetch('/api/check-password', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({password:pwd}) });
+        var d = await r.json();
+        if (d.ok) { closeModal('passwordModal'); openModal('settingsModal'); }
+        else { document.getElementById('passwordError').classList.remove('hidden'); }
+    } catch(e) { document.getElementById('passwordError').classList.remove('hidden'); }
+}
+
+async function loadSettings() {
+    try {
+        var r = await fetch('/api/settings');
+        var s = await r.json();
+        var llm = s.llm || {};
+        document.getElementById('llmBaseUrl').value = llm.base_url || '';
+        document.getElementById('llmApiKey').value = llm.api_key || '';
+        document.getElementById('llmModel').value = llm.model || '';
+        var sched = s.scheduler || {};
+        var h = sched.hour != null ? ('0' + sched.hour).slice(-2) : '';
+        var m = sched.minute != null ? ('0' + sched.minute).slice(-2) : '00';
+        document.getElementById('schedHour').value = h;
+        document.getElementById('schedMinute').value = m;
+    } catch(e) { console.error('settings load failed', e); }
+}
+
+async function saveSettings() {
+    var btn = document.getElementById('saveSettingsBtn');
+    btn.textContent = '保存中...';
+    btn.disabled = true;
+    try {
+        var h = val('schedHour'), m = val('schedMinute');
+        var body = {
+            llm: {
+                base_url: val('llmBaseUrl'),
+                api_key: val('llmApiKey'),
+                model: val('llmModel'),
+            },
+            scheduler: {
+                hour: h !== '' ? parseInt(h) : '',
+                minute: h !== '' ? parseInt(m) : 0,
+            },
+        };
+        var r = await fetch('/api/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        var d = await r.json();
+        if (d.status === 'ok') { btn.textContent = '已保存 ✓'; setTimeout(function(){ btn.textContent = '保存并更新配置'; btn.disabled = false; }, 1500); }
+        else { btn.textContent = '保存失败'; btn.disabled = false; }
+    } catch(e) { btn.textContent = '保存失败'; btn.disabled = false; console.error(e); }
+}
+
+async function triggerPipeline() {
+    var statusEl = document.getElementById('pipelineStatus');
+    var logEl = document.getElementById('pipelineLog');
+    statusEl.className = 'text-[12px] font-bold text-on-surface-variant mt-2 px-md';
+    statusEl.textContent = '管线启动中...';
+    statusEl.classList.remove('hidden');
+    logEl.classList.add('hidden');
+    logEl.textContent = '';
+    openModal('systemLogModal');
+    try {
+        var r = await fetch('/api/run-pipeline', { method: 'POST' });
+        var d = await r.json();
+        if (d.status !== 'started') {
+            statusEl.textContent = '✘ 启动失败';
+            statusEl.className = 'text-[12px] font-bold text-down mt-2 px-md';
+            return;
+        }
+        statusEl.textContent = '管线运行中...';
+        var seen = 0;
+        logEl.classList.remove('hidden');
+        for (var i = 0; i < 60; i++) {
+            await new Promise(r => setTimeout(r, 2000));
+            var [sr, lr] = await Promise.all([
+                fetch('/api/pipeline-status'),
+                fetch('/api/pipeline-log?since=' + seen)
+            ]);
+            var sd = await sr.json();
+            var ld = await lr.json();
+            if (ld.lines && ld.lines.length > 0) {
+                for (var j = 0; j < ld.lines.length; j++) {
+                    logEl.textContent += ld.lines[j] + '\n';
+                }
+                logEl.scrollTop = logEl.scrollHeight;
+                seen += ld.lines.length;
+            }
+            if (sd.state === 'done') {
+                statusEl.textContent = '✔ 管线执行完成';
+                statusEl.className = 'text-[12px] font-bold text-up mt-2 px-md';
+                return;
+            } else if (sd.state === 'error') {
+                statusEl.textContent = '✘ ' + sd.message;
+                statusEl.className = 'text-[12px] font-bold text-down mt-2 px-md';
+                return;
+            }
+        }
+        statusEl.textContent = '⚠ 执行超时，请查看系统日志';
+        statusEl.className = 'text-[12px] font-bold text-on-surface-variant mt-2 px-md';
+    } catch(e) {
+        statusEl.textContent = '✘ 请求失败: ' + e.message;
+        statusEl.className = 'text-[12px] font-bold text-down mt-2 px-md';
+    }
+}
+</script>
+
+<script type="module">
+import { StockSDK } from 'https://esm.sh/stock-sdk@2.4.0';
+
+const _sdk = new StockSDK();
+
+function _upd(el, v) { if (el) el.textContent = v; }
+
+function _color(v, dir) {
+  if (dir === 'flat') return 'text-on-surface-variant';
+  return dir === 'up' ? 'text-up' : 'text-down';
+}
+
+async function _updateIndices() {
+  try {
+    const quotes = await _sdk.quotes.cnSimple(['sh000001', 'sh000300']);
+    for (const q of quotes) {
+      const isSSE = q.code === '000001' || q.code === 'sh000001';
+      const pfx = isSSE ? 'sse' : '300';
+      const pct = q.changePercent ?? 0;
+      const dir = pct > 0.01 ? 'up' : pct < -0.01 ? 'down' : 'flat';
+      const pctStr = (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
+      const valStr = q.price.toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+      const valEl = document.getElementById('idx-' + pfx + '-value');
+      if (valEl) {
+        valEl.textContent = valStr;
+        valEl.className = valEl.className.replace(/(text-up|text-down)/g, '') + ' ' + _color(pct, dir);
+      }
+
+      const chgEl = document.getElementById('idx-' + pfx + '-change');
+      if (chgEl) {
+        chgEl.className = chgEl.className.replace(/(text-up|text-down|text-on-surface-variant)/g, '') + ' ' + _color(pct, dir);
+      }
+
+      _upd(document.getElementById('idx-' + pfx + '-pct'), pctStr);
+      const iconEl = document.getElementById('idx-' + pfx + '-icon');
+      if (iconEl) {
+        iconEl.textContent = dir === 'up' ? 'north_east' : dir === 'down' ? 'south_east' : 'remove';
+      }
+    }
+  } catch (e) {
+    console.error('实时指数更新失败:', e);
+  }
+}
+
+_updateIndices();
+setInterval(_updateIndices, 15000);
+
+async function _updateNews() {
+  try {
+    const r = await fetch('/api/realtime-news');
+    const items = await r.json();
+    if (!items || !items.length) return;
+    const container = document.querySelector('.marquee-vertical-content');
+    if (!container) return;
+    const tmpl = items.map(i => '<div class="h-[28px] flex items-center text-primary font-bold text-[13px]"><span class="line-clamp-1">' + _esc(i.title || i.content || '') + '</span></div>').join('');
+    container.innerHTML = tmpl + tmpl;
+    container.style.animation = 'none';
+    container.offsetHeight;
+    container.style.animation = '';
+  } catch (e) {
+    console.error('实时快讯更新失败:', e);
+  }
+}
+
+_updateNews();
+setInterval(_updateNews, 60000);
+
+// ── 表格分页 ──
+(function() {
+  var PAGE_SIZE = 15;
+  var rows = document.querySelectorAll('#trackingBody tr[data-page]');
+  var totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  var currentPage = 1;
+
+  function renderPage(page) {
+    rows.forEach(function(r) {
+      var p = parseInt(r.getAttribute('data-page'));
+      r.style.display = (p === page) ? '' : 'none';
+    });
+    var btns = document.querySelectorAll('#paginationControls button');
+    btns.forEach(function(b) {
+      var p = parseInt(b.getAttribute('data-page'));
+      b.className = (p === page)
+        ? 'px-3 py-1 text-[12px] font-black bg-primary text-white border border-primary'
+        : 'px-3 py-1 text-[12px] font-black text-on-surface-variant border border-outline-variant hover:bg-surface-container transition-colors';
+    });
+  }
+
+  function buildControls() {
+    var container = document.getElementById('paginationControls');
+    if (!container) return;
+    if (totalPages <= 1) { container.innerHTML = ''; return; }
+    var html = '';
+    for (var i = 1; i <= totalPages; i++) {
+      html += '<button data-page="' + i + '" class="px-3 py-1 text-[12px] font-black border">' + i + '</button>';
+    }
+    container.innerHTML = html;
+    container.addEventListener('click', function(e) {
+      var btn = e.target.closest('button');
+      if (!btn) return;
+      var p = parseInt(btn.getAttribute('data-page'));
+      if (p === currentPage) return;
+      currentPage = p;
+      renderPage(p);
+    });
+  }
+
+  buildControls();
+  if (rows.length > 0) renderPage(1);
+})();
+</script>
+</body>
+</html>

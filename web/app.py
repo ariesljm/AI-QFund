@@ -1,0 +1,721 @@
+"""FastAPI：将 docs/stitch_daily_fund_alpha (1)/code.html 对接真实数据。"""
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import collections
+import logging
+import threading
+import time
+from datetime import datetime
+from contextlib import asynccontextmanager
+
+import tomllib
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+
+import json
+from urllib.request import urlopen
+
+from data_store import _get_db, SETTINGS_PATH, _save_settings, _load_settings
+from recommend import run_recommendation
+
+TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+_last_run_date: str | None = None
+_pipeline_status: dict = {"state": "idle", "message": ""}
+_pipeline_logs: collections.deque = collections.deque(maxlen=200)
+
+
+class _PipelineLogHandler(logging.Handler):
+    """将管线执行期间的日志捕获到内存缓冲区。"""
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            _pipeline_logs.append(self.format(record))
+        except Exception:
+            pass
+
+
+def _pipeline_log(msg: str) -> None:
+    """写入管线日志到内存缓冲区 + stderr。"""
+    import sys
+    now = datetime.now().strftime("%H:%M:%S")
+    line = f"{now} [pipeline] {msg}"
+    _pipeline_logs.append(line)
+    print(line, file=sys.stderr, flush=True)
+
+
+def _run_pipeline(force: bool = False):
+    global _pipeline_status
+    _pipeline_logs.clear()
+    _pipeline_status = {"state": "running", "message": "管线启动..."}
+    
+    handler = _PipelineLogHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)-7s] %(name)s: %(message)s", datefmt="%H:%M:%S"))
+    handler.setLevel(logging.INFO)
+    root = logging.getLogger()
+    root.addHandler(handler)
+    
+    _pipeline_log("[启动] 推荐管线开始执行")
+    try:
+        run_recommendation(force=force)
+        _pipeline_log("[完成] 推荐管线执行完毕")
+        _pipeline_status = {"state": "done", "message": "管线执行完成"}
+    except Exception as e:
+        _pipeline_log(f"[错误] 管线执行失败: {e}")
+        _pipeline_status = {"state": "error", "message": f"管线执行失败: {e}"}
+    finally:
+        root.removeHandler(handler)
+
+
+def _scheduler_loop():
+    global _last_run_date
+    _sched_logger = logging.getLogger("scheduler")
+    _sched_logger.info("调度器启动，模式: daemon线程")
+    while True:
+        try:
+            s = _load_settings()
+            sched = s.get("scheduler", {})
+            h = sched.get("hour", "")
+            m = sched.get("minute", "")
+            if h != "" and m != "":
+                today = datetime.now().strftime("%Y-%m-%d")
+                now = datetime.now()
+                if now.hour == int(h) and now.minute == int(m) and _last_run_date != today:
+                    _sched_logger.info("定时触发: %s %02d:%02d", today, int(h), int(m))
+                    _last_run_date = today
+                    _run_pipeline()
+            else:
+                _sched_logger.debug("调度器已禁用（hour 为空）")
+        except Exception as e:
+            _sched_logger.error("调度器异常: %s", e, exc_info=True)
+        time.sleep(60)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    conn = _get_db()
+    try:
+        conn.execute("ALTER TABLE recommend_log ADD COLUMN combo REAL")
+    except Exception:
+        pass
+    conn.close()
+    t = threading.Thread(target=_scheduler_loop, daemon=True)
+    t.start()
+    yield
+
+
+app = FastAPI(title="AI Quant Terminal", lifespan=lifespan)
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+
+def _q(sql: str, params: tuple = ()):
+    conn = _get_db()
+    r = conn.execute(sql, params).fetchall()
+    conn.close()
+    return r
+
+
+def _q1(sql: str, params: tuple = ()):
+    conn = _get_db()
+    r = conn.execute(sql, params).fetchone()
+    conn.close()
+    return r
+
+
+def _display_score(combo, raw_score):
+    if combo is not None:
+        return min(max(int(combo * 10 + 50), 0), 100)
+    return min(max(int((raw_score or 0) * 500 + 50), 0), 100) if raw_score else 0
+
+
+def _period_returns(code):
+    """计算基金多周期收益率及同期沪深300收益。"""
+    rows = _q(
+        "SELECT date, cum_nav FROM fund_nav WHERE code=? ORDER BY date DESC LIMIT 250",
+        (code,),
+    )
+    if not rows or not rows[0][1]:
+        return {}
+    rows.reverse()
+    dates = [r[0] for r in rows]
+    navs = [r[1] or 0 for r in rows]
+    latest_nav = navs[-1]
+    # 自然月 ≈ 22交易日，季≈66，半年≈126
+    periods = {"月": 22, "季": 66, "半年": 126}
+    hs_rows = _q(
+        "SELECT date, close FROM index_daily WHERE code='sh000300' "
+        "AND date >= ? ORDER BY date ASC",
+        (dates[0],),
+    )
+    hs_map = {r[0]: r[1] for r in hs_rows}
+    result = {}
+    for label, lookback in periods.items():
+        idx = max(0, len(navs) - 1 - lookback)
+        old_nav = navs[idx]
+        result[label] = round((latest_nav / old_nav - 1) * 100, 2) if old_nav else None
+        old_date = dates[idx]
+        old_hs = hs_map.get(old_date)
+        latest_hs = hs_map.get(dates[-1])
+        if old_hs and latest_hs:
+            result[label + "_hs"] = round((latest_hs / old_hs - 1) * 100, 2)
+        else:
+            result[label + "_hs"] = None
+    return result
+
+
+def _nav_chart(code):
+    """返回近3个月基金净值+沪深300数据，用于双线走势图。"""
+    rows = _q(
+        "SELECT date, cum_nav FROM fund_nav WHERE code=? ORDER BY date DESC LIMIT 65",
+        (code,),
+    )
+    rows = list(reversed(rows))
+    if not rows:
+        return [], [], [], []
+    # 基金净值归一化为收益率
+    base_nav = rows[0][1] or 1
+    nav_pcts = [round(((r[1] or 0) / base_nav - 1) * 100, 2) for r in rows]
+    dates = [r[0] for r in rows]
+    # 沪深300同日期
+    hs_rows = _q(
+        "SELECT date, close FROM index_daily WHERE code='sh000300' "
+        "AND date >= ? ORDER BY date ASC",
+        (dates[0],),
+    )
+    hs_map = {r[0]: r[1] for r in hs_rows}
+    hs_pcts = []
+    hs_dates = []
+    base_hs = None
+    for d in dates:
+        v = hs_map.get(d)
+        if v and base_hs is None:
+            base_hs = v
+        if v and base_hs:
+            hs_pcts.append(round(((v / base_hs) - 1) * 100, 2))
+            hs_dates.append(d)
+    return nav_pcts, dates, hs_pcts, hs_dates
+
+
+def _make_dual_svg(pcts, hs_pcts):
+    """生成两条平滑SVG路径：基金(主色)和沪深300(灰色)。
+    viewBox 200x100，根据数据范围自动缩放 Y 轴。
+    返回 (fund_svg, hs_svg, baseline_y) 其中 baseline_y 是 0% 线在 SVG 中的 y 坐标。"""
+    all_vals = [v for v in pcts if v is not None] + [v for v in hs_pcts if v is not None]
+    if not all_vals:
+        return "", "", 50
+    y_min, y_max = min(all_vals), max(all_vals)
+    y_range = y_max - y_min or 1
+    pad = y_range * 0.1
+    y_min -= pad
+    y_max += pad
+    y_range = y_max - y_min or 1
+
+    def _y(v):
+        return 90 - (v - y_min) / y_range * 80
+
+    baseline_y = _y(0)
+
+    def _smooth_path(data):
+        n = len(data)
+        if n < 2:
+            return ""
+        pts = [(i / (n - 1) * 200, _y(v)) for i, v in enumerate(data)]
+        d = f"M {pts[0][0]:.1f},{pts[0][1]:.1f}"
+        for i in range(n - 1):
+            x0, y0 = pts[i]
+            x1, y1 = pts[i + 1]
+            mx = (x0 + x1) / 2
+            d += f" C {mx:.1f},{y0:.1f} {mx:.1f},{y1:.1f} {x1:.1f},{y1:.1f}"
+        return d
+    return _smooth_path(pcts), _smooth_path(hs_pcts), baseline_y
+
+
+@app.get("/", response_class=HTMLResponse)
+async def index(request: Request):
+    today = datetime.now().strftime("%Y-%m-%d")
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    # 今日推荐（最新一条 recommend_log 且 status='HOLD' 或 'PASS'）
+    rec = _q1(
+        "SELECT r.code, fb.name, r.score, r.combo, r.regime, r.buy_reason, r.status, "
+        "r.recommend_date, r.return_rate, fb.type "
+        "FROM recommend_log r LEFT JOIN fund_basic fb ON fb.code = r.code "
+        "ORDER BY r.recommend_date DESC LIMIT 1"
+    )
+
+    latest = None
+    if rec:
+        raw_reason = (rec[5] or "").split(" | 否决记录:")[0].strip()
+        latest = {
+            "code": rec[0], "name": rec[1], "score": _display_score(rec[3], rec[2]),
+            "regime": rec[4] or "NEUTRAL", "reason": raw_reason,
+            "status": rec[6], "date": rec[7] or today, "return": rec[8],
+            "type": rec[9] or "",
+        }
+
+    # 宏观摘要（财联社实时快讯）
+    news_items = ["暂无快讯"]
+    try:
+        import time as _time, hashlib as _hashlib
+        _CLS = "https://www.cls.cn/v1/roll/get_roll_list"
+        def _sign(p):
+            s = "&".join(f"{k}={p[k]}" for k in sorted(p.keys()))
+            return _hashlib.md5(_hashlib.sha1(s.encode()).hexdigest().encode()).hexdigest()
+        ts = int(_time.time())
+        p = {"app":"CailianpressWeb","os":"web","sv":"8.4.6","refresh_type":"1","rn":"20","last_time":str(ts),"category":""}
+        p["sign"] = _sign(p)
+        with urlopen(f"{_CLS}?{'&'.join(f'{k}={p[k]}' for k in p)}", timeout=8) as r:
+            d = json.loads(r.read().decode("utf-8"))
+        items = d.get("data", {}).get("roll_data", [])
+        if items:
+            titles = [(i.get("title") or i.get("content") or "").strip() for i in items if i.get("title") or i.get("content")]
+            if titles:
+                news_items = titles
+    except Exception:
+        pass
+    macro_data = {
+        "news": "；".join(news_items),
+        "news_items": news_items,
+        "top_gainers": [],
+        "top_losers": [],
+        "etf_net_flow": "",
+    }
+
+    # 领涨/领跌行业（取最近有数据的日期，各取前3，带幅度强度）
+    sector_gainers = sector_losers = []
+    try:
+        import re as _re
+        row = _q1(
+            "SELECT top_gainers, top_losers FROM macro_news "
+            "WHERE top_gainers IS NOT NULL AND top_gainers != '' "
+            "ORDER BY date DESC LIMIT 1"
+        )
+        if row:
+            raw_g = _re.findall(r"([^(]+)\(([^)]+)\)", row[0])[:9]
+            raw_l = _re.findall(r"([^(]+)\(([^)]+)\)", row[1] or "")[:3]
+            if raw_g:
+                g = [(n.strip("、 "), float(p.replace("%", ""))) for n, p in raw_g]
+                m = len(g)
+                sector_gainers = [
+                    {"name": n, "pct": f"{v:+.2f}%", "s": 1 - i / (m - 1) if m > 1 else 0.5}
+                    for i, (n, v) in enumerate(g)
+                ]
+            if raw_l:
+                l = [(n.strip("、 "), float(p.replace("%", ""))) for n, p in raw_l]
+                l.sort(key=lambda x: x[1])
+                if l:
+                    m = len(l)
+                    sector_losers = [
+                        {"name": n, "pct": f"{v:+.2f}%", "s": 1 - i / (m - 1) if m > 1 else 0.5}
+                        for i, (n, v) in enumerate(l)
+                    ]
+                    sector_losers.reverse()  # 左浅右深：跌幅从小到大排列
+    except Exception:
+        pass
+
+    # 资金流向（优先从 flow_json 读取，独立于 LLM 管线）
+    flow_inflows = []
+    flow_outflows = []
+    try:
+        import json as _json
+        row = _q1(
+            "SELECT flow_json FROM macro_news "
+            "WHERE flow_json IS NOT NULL AND flow_json != '' "
+            "ORDER BY date DESC LIMIT 1"
+        )
+        if row:
+            f = _json.loads(row[0])
+            flow_inflows = f.get("top_flows", [])
+            flow_outflows = [
+                {**s, "abs": abs(s.get("flow", 0) or 0)}
+                for s in f.get("top_outflows", [])
+            ]
+    except Exception:
+        pass
+
+    # 赛道分析（从 context_json 解析，依赖 LLM 管线）
+    sector_reasoning = ""
+    try:
+        import json as _json
+        cj = _q1(
+            "SELECT context_json FROM macro_news "
+            "WHERE context_json IS NOT NULL AND context_json != '' "
+            "ORDER BY date DESC LIMIT 1"
+        )
+        if cj:
+            ctx = _json.loads(cj[0])
+            sector_reasoning = ctx.get("sector_reasoning", "")
+    except Exception:
+        pass
+
+    # 行业热力图
+    sectors = _q(
+        "SELECT rbsa_industry_1, AVG(rbsa_weight_1), AVG(momentum_20d) "
+        "FROM fund_features "
+        "WHERE rbsa_industry_1 IS NOT NULL AND rbsa_industry_1 != '' "
+        "GROUP BY rbsa_industry_1 ORDER BY AVG(rbsa_weight_1) DESC LIMIT 6"
+    )
+    sector_list = [
+        {"name": s[0], "weight": round(s[1] or 0, 1), "momentum": round(s[2] or 0, 1)}
+        for s in sectors
+    ]
+
+    # 基金池总数 + 按类型分组
+    pool = _q1("SELECT COUNT(*) FROM fund_basic WHERE is_buyable=1")
+    fund_pool = pool[0] if pool else 0
+    pool_by_type = _q(
+        "SELECT type, COUNT(*) FROM fund_basic WHERE is_buyable=1 GROUP BY type ORDER BY COUNT(*) DESC"
+    )
+    pool_types = [{"type": t[0] or "其他", "count": t[1]} for t in pool_by_type]
+
+    # 追踪监控列表
+    candidates = _q(
+        "SELECT r.code, fb.name, "
+        "MIN(r.recommend_date) AS first_date, "
+        "COUNT(*) AS rec_count, "
+        "MAX(r.status) AS status "
+        "FROM recommend_log r "
+        "LEFT JOIN fund_basic fb ON fb.code = r.code "
+        "GROUP BY r.code "
+        "ORDER BY MAX(r.recommend_date) DESC"
+    )
+    candidate_list = []
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    for c in candidates:
+        code, name, first_date, rec_count, status = c[0], c[1], c[2], c[3], c[4] or "HOLD"
+        # 首次推荐净值（优先读 recommend_log.entry_nav，缺失时查 fund_nav 当日净值，无则 --）
+        entry_nav = _q1(
+            "SELECT entry_nav FROM recommend_log WHERE code=? AND recommend_date=? ORDER BY id ASC LIMIT 1",
+            (code, first_date),
+        )
+        first_nav = entry_nav[0] if entry_nav else None
+        if first_nav is None:
+            fn = _q1(
+                "SELECT cum_nav FROM fund_nav WHERE code=? AND date=?",
+                (code, first_date),
+            )
+            first_nav = fn[0] if fn else None
+        # 当前净值（取最新盘后净值，今日无则自动回退到前一日）
+        cur_nav = None
+        if first_nav is not None:
+            cur_nav_row = _q1(
+                "SELECT cum_nav FROM fund_nav WHERE code=? ORDER BY date DESC LIMIT 1",
+                (code,),
+            )
+            cur_nav = cur_nav_row[0] if cur_nav_row else None
+        # 累计收益
+        ret = None
+        if first_nav and cur_nav and first_nav > 0:
+            ret = round((cur_nav / first_nav - 1) * 100, 2)
+        candidate_list.append({
+            "code": code, "name": name or "",
+            "first_date": first_date or "",
+            "first_nav": round(first_nav, 4) if first_nav else None,
+            "cur_nav": round(cur_nav, 4) if cur_nav else None,
+            "return": ret,
+            "rec_count": rec_count,
+            "status": status,
+            "type": c[0] if len(c) > 5 else "",
+        })
+    # 累计收益总和
+    total_return = round(sum(c["return"] for c in candidate_list if c["return"] is not None), 2) if candidate_list else None
+    rec_count = len(candidate_list)
+    hit_count = sum(1 for c in candidate_list if c["return"] is not None and c["return"] > 0)
+    hit_rate = round(hit_count / rec_count * 100, 1) if rec_count > 0 else 0
+
+    # 净值图表（近3个月双线走势）
+    nav_pcts, nav_dates, hs_pcts, hs_dates = _nav_chart(latest["code"]) if latest else ([], [], [], [])
+    fund_svg, hs_svg, baseline_y = _make_dual_svg(nav_pcts, hs_pcts)
+    period_ret = _period_returns(latest["code"]) if latest else {}
+
+    # 基金特征画像
+    fund_features = None
+    if latest:
+        feat = _q1(
+            "SELECT hurst_60d, momentum_20d, calmar, downside_vol, capture_up, capture_down, "
+            "bias_60d, rbsa_industry_1, rbsa_weight_1, etf_flow_slope_5d "
+            "FROM fund_features WHERE code=? ORDER BY date DESC LIMIT 1",
+            (latest["code"],),
+        )
+        if feat:
+            fund_features = {
+                "hurst": feat[0], "momentum": round(feat[1] or 0, 2) if feat[1] is not None else None,
+                "calmar": round(feat[2] or 0, 2) if feat[2] is not None else None,
+                "downside_vol": round(feat[3] or 0, 2) if feat[3] is not None else None,
+                "capture_up": round(feat[4] or 0, 1) if feat[4] is not None else None,
+                "capture_down": round(feat[5] or 0, 1) if feat[5] is not None else None,
+                "bias": round(feat[6] or 0, 2) if feat[6] is not None else None,
+                "top_industry": feat[7] or "",
+                "top_industry_weight": round(feat[8] or 0, 1),
+                "etf_flow_slope": round(feat[9] or 0, 4) if feat[9] is not None else None,
+            }
+
+    # 持仓透视
+    top_holdings = []
+    if latest:
+        holdings = _q(
+            "SELECT h.stock_code, h.stock_name, h.weight, i.industry_name "
+            "FROM fund_holdings h "
+            "LEFT JOIN stock_industry_map i ON h.stock_code = i.stock_code "
+            "WHERE h.code=? AND h.report_date = ("
+            "  SELECT MAX(report_date) FROM fund_holdings WHERE code=?) "
+            "ORDER BY h.weight DESC LIMIT 10",
+            (latest["code"], latest["code"]),
+        )
+        top_holdings = [
+            {"code": h[0], "name": h[1], "weight": h[2], "industry": h[3] or ""}
+            for h in holdings
+        ]
+
+    # 运行天数
+    uptime = _q1("SELECT value FROM meta WHERE key='uptime_start'")
+    if uptime:
+        start = datetime.strptime(uptime[0], "%Y-%m-%d")
+        uptime_days = (datetime.now() - start).days
+    else:
+        uptime_days = 365  # fallback
+
+    # 超额阿尔法（系统运行以来累计超额收益 = total_return - 同期沪深300涨幅）
+    alpha = None
+    alpha_pcts = []
+    start_date = _q1("SELECT MIN(recommend_date) FROM recommend_log")
+    if start_date and start_date[0] and total_return is not None:
+        hs300_start = _q1(
+            "SELECT close FROM index_daily WHERE code='sh000300' AND date<=? ORDER BY date DESC LIMIT 1",
+            (start_date[0],),
+        )
+        hs300_now = _q1(
+            "SELECT close FROM index_daily WHERE code='sh000300' ORDER BY date DESC LIMIT 1"
+        )
+        if hs300_start and hs300_start[0] and hs300_now and hs300_now[0]:
+            hs300_pct = round((hs300_now[0] / hs300_start[0] - 1) * 100, 2)
+            alpha = round(total_return - hs300_pct, 2)
+    # 逐基金alpha贡献（按推荐日期排序，用于alpha曲线）
+    sorted_candidates = sorted(candidate_list, key=lambda x: x["first_date"] or "")
+    cum_alpha = 0.0
+    for c in sorted_candidates:
+        if c["return"] is not None and c["first_date"]:
+            hs_row = _q1(
+                "SELECT close FROM index_daily WHERE code='sh000300' AND date<=? ORDER BY date DESC LIMIT 1",
+                (c["first_date"],),
+            )
+            hs_now = _q1("SELECT close FROM index_daily WHERE code='sh000300' ORDER BY date DESC LIMIT 1")
+            if hs_row and hs_row[0] and hs_now and hs_now[0]:
+                hs_ret = (hs_now[0] / hs_row[0] - 1) * 100
+                cum_alpha += c["return"] - hs_ret
+                alpha_pcts.append(round(cum_alpha, 2))
+    # alpha曲线SVG（自动缩放）
+    alpha_svg = ""
+    alpha_baseline_y = 50
+    if len(alpha_pcts) >= 1:
+        a_min, a_max = min(alpha_pcts), max(alpha_pcts)
+        a_range = a_max - a_min or 1
+        a_pad = a_range * 0.1
+        a_min -= a_pad
+        a_max += a_pad
+        a_range = a_max - a_min or 1
+        def _ay(v): return 90 - (v - a_min) / a_range * 80
+        alpha_baseline_y = _ay(0)
+        if len(alpha_pcts) == 1:
+            y = _ay(alpha_pcts[0])
+            alpha_svg = f"M 0,{y:.1f} L 200,{y:.1f}"
+        else:
+            n = len(alpha_pcts)
+            pts = [(i / (n - 1) * 200, _ay(v)) for i, v in enumerate(alpha_pcts)]
+            d = f"M {pts[0][0]:.1f},{pts[0][1]:.1f}"
+            for i in range(len(pts) - 1):
+                x0, y0 = pts[i]
+                x1, y1 = pts[i + 1]
+                mx = (x0 + x1) / 2
+                d += f" C {mx:.1f},{y0:.1f} {mx:.1f},{y1:.1f} {x1:.1f},{y1:.1f}"
+            alpha_svg = d
+
+    max_inflow = max((s.get("flow", 0) or 0 for s in flow_inflows), default=0)
+    max_outflow = max((abs(s.get("flow", 0) or 0) for s in flow_outflows), default=0)
+    return templates.TemplateResponse(request, "index.html", {
+        "latest": latest,
+        "macro": macro_data,
+        "candidates": candidate_list,
+        "fund_pool": fund_pool,
+        "pool_types": pool_types,
+        "now": now_str,
+        "today": today,
+        "sector_list": sector_list,
+        "sector_reasoning": sector_reasoning,
+        "nav_pcts": nav_pcts,
+        "nav_dates": nav_dates,
+        "hs_pcts": hs_pcts,
+        "fund_svg": fund_svg,
+        "hs_svg": hs_svg,
+        "baseline_y": baseline_y,
+        "period_ret": period_ret,
+        "fund_features": fund_features,
+        "top_holdings": top_holdings,
+        "sector_gainers": sector_gainers,
+        "sector_losers": sector_losers,
+        "uptime_days": uptime_days,
+        "alpha": alpha,
+        "alpha_svg": alpha_svg,
+        "alpha_baseline_y": alpha_baseline_y,
+        "total_return": total_return,
+        "rec_count": rec_count,
+        "hit_rate": hit_rate,
+        "flow_inflows": flow_inflows,
+        "flow_outflows": flow_outflows,
+        "max_inflow": max_inflow,
+        "max_outflow": max_outflow,
+    })
+
+
+@app.get("/api/realtime-news")
+async def realtime_news():
+    import time as _time, hashlib as _hashlib
+    _CLS_API = "https://www.cls.cn/v1/roll/get_roll_list"
+    def _sign(p):
+        s = "&".join(f"{k}={p[k]}" for k in sorted(p.keys()))
+        return _hashlib.md5(_hashlib.sha1(s.encode()).hexdigest().encode()).hexdigest()
+    try:
+        ts = int(_time.time())
+        params = {
+            "app": "CailianpressWeb", "os": "web", "sv": "8.4.6",
+            "refresh_type": "1", "rn": "20", "last_time": str(ts), "category": "",
+        }
+        params["sign"] = _sign(params)
+        url = f"{_CLS_API}?{'&'.join(f'{k}={params[k]}' for k in params)}"
+        with urlopen(url, timeout=8) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        items = data.get("data", {}).get("roll_data", [])
+        return items
+    except Exception:
+        return {"error": "fetch failed"}
+
+
+@app.get("/api/logs")
+async def get_logs(lines: int = 100):
+    from log_utils import LOG_FILE
+    if not LOG_FILE.exists():
+        return {"lines": [], "total": 0}
+    with open(str(LOG_FILE), "r", encoding="utf-8", errors="replace") as f:
+        all_lines = f.readlines()
+    tail = all_lines[-lines:] if len(all_lines) > lines else all_lines
+    return {"lines": tail, "total": len(all_lines)}
+
+
+@app.get("/api/settings")
+async def get_settings():
+    s = _load_settings()
+    s.get("web", {}).pop("settings_password", None)
+    return s
+
+
+@app.post("/api/settings")
+async def save_settings(body: dict):
+    _save_settings(body)
+    return {"status": "ok"}
+
+
+@app.post("/api/check-password")
+async def check_password(body: dict):
+    s = _load_settings()
+    pwd = (s.get("web", {}) or {}).get("settings_password", "") or ""
+    if not pwd:
+        return {"ok": True}
+    return {"ok": body.get("password", "") == pwd}
+
+
+@app.post("/api/run-pipeline")
+async def run_pipeline():
+    logger = logging.getLogger("web")
+    try:
+        t = threading.Thread(target=_run_pipeline, args=(True,), daemon=True)
+        t.start()
+        logger.info("管线手动触发成功")
+        return {"status": "started"}
+    except Exception as e:
+        logger.error("管线手动触发失败: %s", e)
+        return {"status": "error", "detail": str(e)}
+
+
+@app.get("/api/pipeline-status")
+async def get_pipeline_status():
+    return _pipeline_status
+
+
+@app.get("/api/pipeline-log")
+async def get_pipeline_log(since: int = 0):
+    """返回管线日志，since 为上次读取的行数。"""
+    items = list(_pipeline_logs)
+    return {"lines": items[since:], "total": len(items)}
+
+
+@app.get("/api/fund-detail/{code}")
+async def get_fund_detail(code: str):
+    """返回指定基金的首次推荐分析、理由、十大持仓、净值走势数据。"""
+    rec = _q1(
+        "SELECT r.recommend_date, r.buy_reason, r.score, r.combo, r.regime, "
+        "r.entry_nav, r.status, fb.name, fb.type, "
+        "(SELECT MIN(r2.recommend_date) FROM recommend_log r2 WHERE r2.code = r.code) AS first_date "
+        "FROM recommend_log r LEFT JOIN fund_basic fb ON fb.code = r.code "
+        "WHERE r.code=? ORDER BY r.recommend_date DESC LIMIT 1",
+        (code,),
+    )
+    if not rec:
+        return {"error": "未找到该基金的推荐记录"}
+
+    raw_reason = (rec[1] or "").split(" | 否决记录:")[0].strip()
+    fund_info = {
+        "code": code,
+        "name": rec[7] or code,
+        "type": rec[8] or "",
+        "first_date": rec[9] or rec[0] or "",
+        "entry_nav": round(rec[5], 4) if rec[5] else None,
+        "buy_reason": raw_reason,
+        "score": rec[2],
+        "combo": rec[3],
+        "regime": rec[4] or "NEUTRAL",
+        "status": rec[6] or "HOLD",
+        "display_score": _display_score(rec[3], rec[2]),
+    }
+
+    holdings = _q(
+        "SELECT h.stock_code, h.stock_name, h.weight, i.industry_name "
+        "FROM fund_holdings h "
+        "LEFT JOIN stock_industry_map i ON h.stock_code = i.stock_code "
+        "WHERE h.code=? AND h.report_date = ("
+        "  SELECT MAX(report_date) FROM fund_holdings WHERE code=?) "
+        "ORDER BY h.weight DESC LIMIT 10",
+        (code, code),
+    )
+    top_holdings = [
+        {"stock_code": h[0], "stock_name": h[1], "weight": h[2], "industry": h[3] or ""}
+        for h in holdings
+    ]
+
+    nav_rows = _q(
+        "SELECT date, cum_nav FROM fund_nav WHERE code=? ORDER BY date DESC LIMIT 90",
+        (code,),
+    )
+    nav_rows = list(reversed(nav_rows))
+    nav_data = [
+        {"date": r[0], "nav": round(r[1], 4) if r[1] else None} for r in nav_rows
+    ]
+
+    return {
+        "fund": fund_info,
+        "top_holdings": top_holdings,
+        "nav_data": nav_data,
+    }
+
+
+if __name__ == "__main__":
+    import uvicorn
+    try:
+        with open(SETTINGS_PATH, "rb") as f:
+            cfg = tomllib.load(f)
+        port = cfg.get("web", {}).get("port", 8000)
+    except Exception:
+        port = 8000
+    uvicorn.run("web.app:app", host="0.0.0.0", port=port, reload=True)

@@ -5,16 +5,17 @@
 
 import os
 import sqlite3
+from pathlib import Path
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "data", "qfund.db")
-SCHEMA_PATH = os.path.join(BASE_DIR, "data", "schema.sql")
+from data_foundation import DB_PATH
+
+SCHEMA_PATH = Path(__file__).parent / "data" / "schema.sql"
 
 
 def main():
-    if os.path.exists(DB_PATH):
-        os.remove(DB_PATH)
-    con = sqlite3.connect(DB_PATH)
+    if DB_PATH.exists():
+        DB_PATH.unlink()
+    con = sqlite3.connect(str(DB_PATH))
     con.execute("PRAGMA journal_mode=WAL;")
     with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
         con.executescript(f.read())

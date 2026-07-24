@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+
+<html class="light" lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>AlphaSignals | 专业金融智讯终端 (Editorial Professional)</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&amp;family=Inter:wght@400;500;600;700;900&amp;family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "surface-container": "#F4F1EA",
+                    "primary": "#1A1A1A",
+                    "surface-tint": "#1A1A1A",
+                    "on-tertiary": "#FFFFFF",
+                    "on-primary-container": "#4A4A4A",
+                    "background": "#FDFBF7",
+                    "surface-dim": "#EBE7DF",
+                    "on-secondary-fixed": "#2D2D2D",
+                    "outline": "#A09B8E",
+                    "tertiary-container": "#E8F5E9",
+                    "surface-container-lowest": "#FFFFFF",
+                    "surface-container-low": "#F9F7F2",
+                    "secondary": "#5C5C5C",
+                    "on-primary-fixed": "#000000",
+                    "secondary-container": "#E2E2E2",
+                    "tertiary-fixed-dim": "#D32F2F", // Red for growth
+                    "on-secondary-container": "#404040",
+                    "on-surface-variant": "#605E58",
+                    "inverse-primary": "#FFFFFF",
+                    "outline-variant": "#D6D1C4",
+                    "on-error-container": "#B71C1C",
+                    "on-error": "#FFFFFF",
+                    "on-secondary": "#FFFFFF",
+                    "on-surface": "#1A1A1A",
+                    "surface-container-highest": "#E6E2D3",
+                    "secondary-fixed-dim": "#4A4A4A",
+                    "on-tertiary-container": "#1B5E20",
+                    "on-background": "#1A1A1A",
+                    "error-container": "#FFEBEE",
+                    "inverse-on-surface": "#FDFBF7",
+                    "tertiary": "#D32F2F", // A-share Positive: Red
+                    "primary-container": "#EAEAEA",
+                    "on-primary": "#FFFFFF",
+                    "surface-bright": "#FFFFFF",
+                    "on-primary-fixed-variant": "#333333",
+                    "error": "#2E7D32", // A-share Negative: Green
+                    "on-tertiary-fixed": "#FFFFFF",
+                    "primary-fixed": "#1A1A1A",
+                    "surface": "#FDFBF7",
+                    "on-secondary-fixed-variant": "#4A4A4A",
+                    "tertiary-fixed": "#D32F2F",
+                    "inverse-surface": "#1A1A1A",
+                    "secondary-fixed": "#E0E0E0",
+                    "on-tertiary-fixed-variant": "#1B5E20",
+                    "surface-container-high": "#F0EDE4",
+                    "surface-variant": "#F2F0E9"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0px",
+                    "lg": "2px",
+                    "xl": "4px",
+                    "full": "9999px"
+            },
+            "spacing": {
+                    "lg": "24px",
+                    "md": "16px",
+                    "xl": "32px",
+                    "base": "4px",
+                    "xs": "8px",
+                    "gutter": "20px",
+                    "sm": "12px",
+                    "container-max": "1440px"
+            },
+            "fontFamily": {
+                    "sans": ['PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'SimHei', 'sans-serif'],
+                    "label-sm": ["PingFang SC", "sans-serif"],
+                    "headline-lg-mobile": ["Playfair Display", "serif"],
+                    "headline-xl": ["Playfair Display", "serif"],
+                    "body-md": ["PingFang SC", "sans-serif"],
+                    "headline-lg": ["Playfair Display", "serif"],
+                    "display-data": ["Geist", "Inter", "sans-serif"],
+                    "subcaption-en": ["Inter", "sans-serif"]
+            },
+            "fontSize": {
+                    "label-sm": ["13px", {"lineHeight": "18px", "letterSpacing": "0.02em", "fontWeight": "600"}],
+                    "headline-lg-mobile": ["28px", {"lineHeight": "34px", "fontWeight": "700"}],
+                    "headline-xl": ["48px", {"lineHeight": "52px", "letterSpacing": "-0.03em", "fontWeight": "900"}],
+                    "body-md": ["15px", {"lineHeight": "1.6", "fontWeight": "400"}],
+                    "headline-lg": ["32px", {"lineHeight": "40px", "letterSpacing": "-0.01em", "fontWeight": "800"}],
+                    "display-data": ["26px", {"lineHeight": "32px", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+                    "subcaption-en": ["11px", {"lineHeight": "14px", "letterSpacing": "0.08em", "fontWeight": "700"}]
+            }
+          }
+        }
+      }
+    </script>
+<style>
+        body {
+            background-color: #FDFBF7;
+            background-image: url("https://www.transparenttextures.com/patterns/felt.png");
+            -webkit-font-smoothing: antialiased;
+        }
+        .editorial-card {
+            background: white;
+            border: 1px solid #E6E2D3;
+            box-shadow: 2px 2px 0px rgba(0,0,0,0.05);
+            transition: all 0.2s ease;
+        }
+        .editorial-card:hover {
+            box-shadow: 4px 4px 0px rgba(0,0,0,0.08);
+        }
+        .marquee-vertical-container {
+            height: 48px;
+            overflow: hidden;
+            position: relative;
+        }
+        .marquee-vertical-content {
+            display: flex;
+            flex-direction: column;
+            animation: marquee-vertical-continuous 25s linear infinite;
+        }
+        @keyframes marquee-vertical-continuous { 
+            0% { transform: translateY(0); } 
+            100% { transform: translateY(-50%); } 
+        }
+        .pulse-dot {
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.2); }
+            100% { opacity: 1; transform: scale(1); }
+        }
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .news-ticker-border {
+            border-top: 2px solid #1A1A1A;
+            border-bottom: 1px solid #1A1A1A;
+        }
+        .sepia-chart {
+            filter: grayscale(100%) contrast(110%) brightness(95%);
+        }
+        /* Chinese Typography Optimization */
+        h1, h2, h3, h4, .font-headline-xl {
+            letter-spacing: -0.01em;
+        }
+    </style>
+</head>
+<body class="bg-background text-on-background font-body-md min-h-screen">
+<main class="min-h-screen flex flex-col">
+<!-- Top Bar -->
+<header class="fixed top-0 right-0 left-0 bg-background/95 backdrop-blur-md border-b-2 border-primary z-50 h-20 flex items-center px-lg justify-between">
+<div class="flex items-center gap-lg">
+<div class="flex flex-col">
+<h1 class="font-headline-xl text-[28px] md:text-[32px] text-primary font-black tracking-tighter leading-none">ALPHASIGNALS</h1>
+<span class="font-subcaption-en text-[10px] uppercase tracking-[0.3em] font-black text-on-surface-variant">专业金融智讯 · 数据终端</span>
+</div>
+</div>
+<div class="flex items-center gap-md">
+<div class="hidden md:flex items-center gap-sm px-md py-1 border-x border-outline-variant mr-md">
+<span class="w-2 h-2 bg-tertiary rounded-full pulse-dot"></span>
+<span class="text-[11px] font-black text-primary uppercase tracking-widest">实时数据流 / LIVE</span>
+</div>
+<button class="w-10 h-10 hover:bg-surface-container transition-colors flex items-center justify-center relative" onclick="openModal('systemLogModal')">
+<span class="material-symbols-outlined">notifications</span>
+<span class="absolute top-2 right-2 w-2 h-2 bg-tertiary"></span>
+</button>
+<button class="w-10 h-10 hover:bg-surface-container transition-colors flex items-center justify-center" onclick="openModal('settingsModal')">
+<span class="material-symbols-outlined">settings</span>
+</button>
+<div class="w-10 h-10 bg-surface-container-highest border border-primary ml-xs p-0.5">
+<img alt="分析师" class="w-full h-full object-cover grayscale" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDKSd4eKVKuugoqEnE76aMNHbG82wF_W8MWwmLjxTmWtY-gSvBDA2V20O5PtpyOpolEg2qKOKlAK3cYVfpNo6aDd-eLPVnxHUVLqAs9WXoO69U8a_iZJjrdwxFfuH1tQqXVEgZGKeBQwrQXVW_6PIo2E3WiFWn0vOSWrP-2XGb7CTvkPn8bAp-f-rQzDjK7EitISobnEN8nSsWaS0YLxFKgYaheSCL6ZrbKOums5ruyQ0rLSXZiDBAwhA"/>
+</div>
+</div>
+</header>
+<div class="mt-24 p-lg space-y-lg max-w-[1440px] mx-auto w-full">
+<!-- Market Insight Row -->
+<section class="grid grid-cols-1 lg:grid-cols-12 gap-gutter border-b-2 border-primary pb-lg">
+<!-- Market Indices -->
+<div class="lg:col-span-4 flex flex-col justify-center pr-lg lg:border-r border-outline-variant">
+<div class="flex items-center gap-xs mb-md">
+<span class="text-on-surface-variant font-label-sm text-[12px] uppercase tracking-[0.2em] font-black">MARKET OVERVIEW / 核心指数</span>
+</div>
+<div class="grid grid-cols-2 gap-xl">
+<div class="flex flex-col">
+<span class="font-label-sm text-[11px] text-on-surface-variant font-black uppercase mb-1">CSI 300 / 沪深 300</span>
+<span class="font-display-data text-[32px] text-tertiary leading-none tracking-tight">3,892.45</span>
+<span class="text-tertiary text-[13px] font-black mt-1">+1.24% <span class="material-symbols-outlined text-[14px] align-middle">north_east</span></span>
+</div>
+<div class="flex flex-col">
+<span class="font-label-sm text-[11px] text-on-surface-variant font-black uppercase mb-1">SSE / 上证指数</span>
+<span class="font-display-data text-[32px] text-error leading-none tracking-tight">3,021.12</span>
+<span class="text-error text-[13px] font-black mt-1">-0.45% <span class="material-symbols-outlined text-[14px] align-middle">south_east</span></span>
+</div>
+</div>
+</div>
+<!-- News Ticker -->
+<div class="lg:col-span-8 flex flex-col justify-center">
+<div class="news-ticker-border py-4 px-md relative overflow-hidden bg-white/50">
+<div class="flex items-center gap-md">
+<div class="flex-shrink-0 flex items-center gap-xs bg-primary text-white px-3 py-1 font-black text-[11px] uppercase tracking-tighter">
+                            FLASH / 实时快讯
+                        </div>
+<div class="flex-1 marquee-vertical-container">
+<div class="marquee-vertical-content">
+<div class="h-[48px] flex items-center text-primary font-bold text-[14px]">
+<span class="line-clamp-1">【研报更新】AlphaSignals AI 模型已更新 2024 年行业周期系数，多项指标显示复苏迹象。</span>
+</div>
+<div class="h-[48px] flex items-center text-primary font-bold text-[14px]">
+<span class="line-clamp-1">【大宗交易】蓝筹精选基金 (005827) 机构成交量显著增加，建议密切关注资金流向。</span>
+</div>
+<div class="h-[48px] flex items-center text-primary font-bold text-[14px]">
+<span class="line-clamp-1">【风险预警】市场波动预警：新能源板块预期波动加剧，受全球供应链不确定性影响。</span>
+</div>
+<div class="h-[48px] flex items-center text-primary font-bold text-[14px]">
+<span class="line-clamp-1">【宏观数据】3月制造业 PMI 指数超预期，市场情绪转向积极扩张区间。</span>
+</div>
+<div class="h-[48px] flex items-center text-primary font-bold text-[14px]">
+<span class="line-clamp-1">【研报更新】AlphaSignals AI 模型已更新 2024 年行业周期系数，多项指标显示复苏迹象。</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="mt-md flex justify-between items-center text-[11px] font-black text-on-surface-variant uppercase tracking-widest">
+<span>Alpha Intelligence v2.4 Editorial</span>
+<div class="flex gap-md">
+<button class="hover:text-primary">上一条</button>
+<span>/</span>
+<button class="hover:text-primary">下一条</button>
+</div>
+</div>
+</div>
+</section>
+<!-- Bento Stats Grid -->
+<section class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-gutter">
+<div class="editorial-card p-lg">
+<div class="flex justify-between items-start mb-lg">
+<span class="text-on-surface-variant font-label-sm text-[11px] uppercase font-black tracking-widest">运行时间 / UPTIME</span>
+<span class="material-symbols-outlined text-primary">schedule</span>
+</div>
+<h3 class="font-headline-lg text-[32px] font-black">245 <span class="text-[14px] font-bold text-on-surface-variant italic">天</span></h3>
+<div class="mt-xs pt-xs border-t border-outline-variant">
+<p class="text-tertiary text-[12px] font-black uppercase">99.98% 运行稳定性</p>
+</div>
+</div>
+<div class="editorial-card p-lg border-t-4 border-t-primary">
+<div class="flex justify-between items-start mb-lg">
+<span class="text-on-surface-variant font-label-sm text-[11px] uppercase font-black tracking-widest">池中组合 / FUND POOL</span>
+<span class="material-symbols-outlined text-primary">analytics</span>
+</div>
+<h3 class="font-headline-lg text-[32px] font-black">86 <span class="text-[14px] font-bold text-on-surface-variant italic">只</span></h3>
+<div class="mt-xs pt-xs border-t border-outline-variant">
+<p class="text-on-surface-variant text-[12px] font-black uppercase">核心监控资产</p>
+</div>
+</div>
+<div class="editorial-card p-lg bg-surface-container">
+<div class="flex justify-between items-start mb-lg">
+<span class="text-on-surface-variant font-label-sm text-[11px] uppercase font-black tracking-widest">累计收益 / TOTAL ROI</span>
+<span class="material-symbols-outlined text-tertiary">trending_up</span>
+</div>
+<h3 class="font-headline-lg text-[32px] font-black text-tertiary">+24.52%</h3>
+<div class="mt-xs pt-xs border-t border-outline-variant">
+<p class="text-on-surface-variant text-[12px] font-black uppercase">超额收益基准</p>
+</div>
+</div>
+<div class="editorial-card p-lg">
+<div class="flex justify-between items-start mb-lg">
+<span class="text-on-surface-variant font-label-sm text-[11px] uppercase font-black tracking-widest">阿尔法值 / EXCESS ALPHA</span>
+<span class="material-symbols-outlined text-primary">insights</span>
+</div>
+<h3 class="font-headline-lg text-[32px] font-black text-primary">+12.38%</h3>
+<div class="mt-xs pt-xs border-t border-outline-variant">
+<p class="text-tertiary text-[12px] font-black uppercase">战胜 92% 市场同类</p>
+</div>
+</div>
+</section>
+<!-- Main Recommendation Row -->
+<section class="editorial-card overflow-hidden">
+<div class="grid grid-cols-1 lg:grid-cols-12">
+<div class="lg:col-span-4 p-xl flex flex-col justify-between border-b lg:border-b-0 lg:border-r border-outline-variant">
+<div>
+<div class="mb-lg">
+<span class="bg-primary text-white px-3 py-1 font-black text-[11px] uppercase tracking-widest">本期主推 / EDITOR'S CHOICE</span>
+</div>
+<div class="mb-lg">
+<p class="font-display-data text-primary/60 text-[20px] mb-1 font-bold">005827</p>
+<h2 class="font-headline-xl text-primary font-black text-[36px] leading-tight">易方达蓝筹精选</h2>
+</div>
+<p class="text-on-surface text-body-md mb-xl">
+                            基于行业周期分析和稳定 Alpha 的高度确信。基金经理在市场剧烈波动中展现了卓越的抗压表现。通过量化筛选出的价值洼地，具备极高的中长期战略配置价值。
+                        </p>
+<div class="flex flex-wrap gap-md mb-xl">
+<span class="border border-primary px-3 py-1 text-[11px] font-black uppercase">股票型 / EQUITIES</span>
+<span class="border border-primary px-3 py-1 text-[11px] font-black uppercase">大盘蓝筹</span>
+<span class="border border-primary px-3 py-1 text-[11px] font-black uppercase">量化增强</span>
+</div>
+</div>
+<button class="w-full bg-primary text-white py-4 font-black uppercase tracking-widest hover:invert transition-all" onclick="openModal('fundDetailModal')">
+                        查看深度分析报告 / DETAIL
+                    </button>
+</div>
+<div class="lg:col-span-8 p-xl bg-surface-container-low">
+<div class="flex justify-between items-end mb-xl border-b border-primary pb-md">
+<div>
+<h4 class="font-headline-lg text-[20px] font-black uppercase tracking-tight">累计净值走势 / PERFORMANCE</h4>
+<span class="text-[11px] text-on-surface-variant font-bold">单位净值 VS 业绩比较基准 (近3月)</span>
+</div>
+<div class="flex gap-lg font-black text-[11px] uppercase">
+<div class="flex items-center gap-xs"><div class="w-3 h-3 bg-primary"></div><span>累计净值</span></div>
+<div class="flex items-center gap-xs"><div class="w-6 h-0.5 bg-outline"></div><span>沪深 300</span></div>
+</div>
+</div>
+<div class="h-[360px] relative mt-lg">
+<!-- Simplified Graphic Representation -->
+<div class="absolute inset-x-0 bottom-0 top-0 flex items-end gap-2 px-md">
+<div class="flex-1 h-[45%] bg-primary/10 border-t border-primary"></div>
+<div class="flex-1 h-[52%] bg-primary/20 border-t border-primary"></div>
+<div class="flex-1 h-[48%] bg-primary/30 border-t border-primary"></div>
+<div class="flex-1 h-[60%] bg-primary/40 border-t border-primary"></div>
+<div class="flex-1 h-[75%] bg-primary/60 border-t border-primary"></div>
+<div class="flex-1 h-[68%] bg-primary/80 border-t border-primary"></div>
+<div class="flex-1 h-[85%] bg-primary border-t border-primary"></div>
+<div class="flex-1 h-[80%] bg-primary border-t border-primary"></div>
+<div class="flex-1 h-[95%] bg-primary border-t border-primary"></div>
+</div>
+<svg class="absolute inset-0 w-full h-full" preserveaspectratio="none" viewbox="0 0 100 100">
+<path d="M 0 65 L 12.5 60 L 25 68 L 37.5 55 L 50 45 L 62.5 50 L 75 35 L 87.5 40 L 100 30" fill="none" stroke="#A09B8E" stroke-dasharray="4" stroke-width="1.5"></path>
+</svg>
+</div>
+<div class="mt-md flex justify-between text-[11px] font-black text-on-surface-variant/60 uppercase">
+<span>2024年1月</span>
+<span>2024年2月</span>
+<span>2024年3月</span>
+</div>
+</div>
+</div>
+</section>
+<!-- Tracking Table -->
+<section class="editorial-card">
+<div class="p-lg border-b border-primary flex flex-col md:flex-row justify-between items-center gap-md">
+<div class="flex items-baseline gap-md">
+<h2 class="font-headline-lg text-[24px] font-black uppercase tracking-tight">信号追踪 / SIGNAL HISTORY</h2>
+<span class="text-[11px] font-black text-on-surface-variant uppercase tracking-widest">实时 Alpha 监控系统</span>
+</div>
+<div class="flex gap-md w-full md:w-auto">
+<div class="relative flex-1">
+<input class="w-full bg-surface-container-low border border-outline-variant px-md py-2 text-[13px] font-bold focus:outline-none focus:border-primary placeholder:text-on-surface-variant/40" placeholder="搜索代码/简称..." type="text"/>
+</div>
+<button class="bg-primary text-white p-2 flex items-center justify-center">
+<span class="material-symbols-outlined">filter_list</span>
+</button>
+</div>
+</div>
+<div class="overflow-x-auto">
+<table class="w-full text-left border-collapse">
+<thead>
+<tr class="text-on-surface font-black text-[11px] uppercase tracking-wider bg-surface-container-high border-b border-primary">
+<th class="px-lg py-4">代码 / TICKER</th>
+<th class="px-lg py-4">产品名称</th>
+<th class="px-lg py-4">资产类型</th>
+<th class="px-lg py-4">信号频率</th>
+<th class="px-lg py-4">最后更新</th>
+<th class="px-lg py-4">涨跌幅 / ROI</th>
+<th class="px-lg py-4">信号评级</th>
+</tr>
+</thead>
+<tbody class="text-[13px] font-bold divide-y divide-outline-variant">
+<tr class="hover:bg-surface-container-low cursor-pointer transition-colors" onclick="openModal('fundDetailModal')">
+<td class="px-lg py-5 font-display-data">001508</td>
+<td class="px-lg py-5 text-primary">富国中证红利指数增强</td>
+<td class="px-lg py-5 text-on-surface-variant uppercase text-[11px]">指数增强型</td>
+<td class="px-lg py-5">12x</td>
+<td class="px-lg py-5 font-display-data">2023.11.20</td>
+<td class="px-lg py-5 text-tertiary">+17.39%</td>
+<td class="px-lg py-5">
+<span class="border-2 border-tertiary text-tertiary px-3 py-1 text-[10px] font-black uppercase">强烈买入</span>
+</td>
+</tr>
+<tr class="hover:bg-surface-container-low cursor-pointer transition-colors">
+<td class="px-lg py-5 font-display-data">110011</td>
+<td class="px-lg py-5 text-primary">易方达优质精选混合</td>
+<td class="px-lg py-5 text-on-surface-variant uppercase text-[11px]">灵活配置混合</td>
+<td class="px-lg py-5">8x</td>
+<td class="px-lg py-5 font-display-data">2023.12.05</td>
+<td class="px-lg py-5 text-on-surface-variant">+0.90%</td>
+<td class="px-lg py-5">
+<span class="border-2 border-outline text-on-surface-variant px-3 py-1 text-[10px] font-black uppercase">持有</span>
+</td>
+</tr>
+<tr class="hover:bg-surface-container-low cursor-pointer transition-colors">
+<td class="px-lg py-5 font-display-data">000001</td>
+<td class="px-lg py-5 text-primary">华夏成长混合</td>
+<td class="px-lg py-5 text-on-surface-variant uppercase text-[11px]">偏股混合型</td>
+<td class="px-lg py-5">4x</td>
+<td class="px-lg py-5 font-display-data">2024.01.12</td>
+<td class="px-lg py-5 text-error">-9.80%</td>
+<td class="px-lg py-5">
+<span class="border-2 border-error text-error px-3 py-1 text-[10px] font-black uppercase">卖出</span>
+</td>
+</tr>
+<tr class="hover:bg-surface-container-low cursor-pointer transition-colors" onclick="openModal('fundDetailModal')">
+<td class="px-lg py-5 font-display-data">005827</td>
+<td class="px-lg py-5 text-primary font-black underline underline-offset-4">易方达蓝筹精选</td>
+<td class="px-lg py-5 text-on-surface-variant uppercase text-[11px]">普通股票型</td>
+<td class="px-lg py-5">15x</td>
+<td class="px-lg py-5 font-display-data">2024.02.14</td>
+<td class="px-lg py-5 text-tertiary font-black">+8.65%</td>
+<td class="px-lg py-5">
+<span class="bg-tertiary text-white px-3 py-1 text-[10px] font-black uppercase">新预警</span>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+</div>
+<!-- Magazine Footer -->
+<footer class="mt-xl border-t-2 border-primary py-lg px-lg bg-surface-container-high text-center">
+<p class="font-subcaption-en text-[11px] uppercase tracking-[0.4em] font-black text-on-surface-variant">© 2024 ALPHASIGNALS INTELLIGENCE • BLOOMBERG TERMINAL V2.4 EDITORIAL EDITION</p>
+<p class="text-[10px] text-on-surface-variant mt-2 font-bold uppercase tracking-widest">风险提示：投资有风险，入市需谨慎。数据仅供参考，不作为决策依据。</p>
+</footer>
+</main>
+<!-- Overlays -->
+<!-- System Log Modal -->
+<div class="fixed inset-0 bg-primary/80 backdrop-blur-sm z-[100] hidden flex items-center justify-center p-md" id="systemLogModal">
+<div class="bg-background w-full max-w-2xl border-2 border-primary flex flex-col shadow-[12px_12px_0px_rgba(0,0,0,1)] overflow-hidden">
+<div class="p-md border-b border-primary flex justify-between items-center bg-primary text-white">
+<h3 class="font-label-sm text-[12px] uppercase font-black flex items-center gap-xs tracking-widest">
+<span class="material-symbols-outlined text-[18px]">terminal</span>
+                LIVE LOG STREAM / 系统实时日志
+            </h3>
+<button class="material-symbols-outlined hover:rotate-90 transition-transform" onclick="closeModal('systemLogModal')">close</button>
+</div>
+<div class="flex-1 p-md font-mono text-[12px] space-y-1 overflow-y-auto max-h-[400px] scrollbar-hide bg-surface-container-low text-primary">
+<p class="opacity-50">[14:22:01] 系统引导序列启动...</p>
+<p class="font-black">[14:22:05] 扫描中证 800 指数成份股...</p>
+<p class="opacity-50">[14:23:12] 流动性筛选：日均成交额 &gt; 5亿 人民币.</p>
+<p class="font-black text-tertiary">[14:23:45] 信号预警: [005827] 动量交叉检测触发.</p>
+<p class="opacity-50">[14:24:00] USD/CNY 相关性校验: 通行 (稳定).</p>
+<p class="font-black">[14:25:10] 执行 Alpha 超额收益重算...</p>
+<p class="font-black underline">[14:26:00] 今日 Alpha 建议已发布至终端.</p>
+<p class="opacity-30">[14:30:00] 链路存活... 14ms.</p>
+</div>
+</div>
+</div>
+<!-- Fund Detail Modal -->
+<div class="fixed inset-0 bg-primary/80 backdrop-blur-sm z-[100] hidden flex items-center justify-center p-md" id="fundDetailModal">
+<div class="bg-background w-full max-w-4xl border-2 border-primary overflow-hidden shadow-[20px_20px_0px_rgba(0,0,0,1)]">
+<div class="p-xl border-b border-primary flex justify-between items-start">
+<div class="flex gap-lg">
+<div class="w-16 h-16 bg-primary text-white flex items-center justify-center">
+<span class="material-symbols-outlined text-[32px]">menu_book</span>
+</div>
+<div>
+<h2 class="font-headline-xl text-[40px] font-black leading-none">005827</h2>
+<p class="text-primary font-headline-lg text-[20px] uppercase tracking-tight mt-1">易方达蓝筹精选 Alpha 深度研究报告</p>
+</div>
+</div>
+<button class="w-12 h-12 border border-primary hover:bg-primary hover:text-white flex items-center justify-center transition-all" onclick="closeModal('fundDetailModal')">
+<span class="material-symbols-outlined">close</span>
+</button>
+</div>
+<div class="p-xl grid grid-cols-1 md:grid-cols-2 gap-xl">
+<div class="space-y-lg">
+<h4 class="font-black text-primary uppercase text-[12px] border-b-2 border-primary pb-2 tracking-widest">业绩一致性矩阵 / CONSISTENCY</h4>
+<div class="h-56 bg-surface-container flex items-end justify-center gap-4 p-md sepia-chart">
+<div class="w-8 bg-primary h-[60%]"></div>
+<div class="w-8 bg-primary h-[80%]"></div>
+<div class="w-8 bg-primary/40 h-[70%]"></div>
+<div class="w-8 bg-primary h-[100%]"></div>
+<div class="w-8 bg-primary h-[90%]"></div>
+</div>
+<p class="text-on-surface-variant text-[13px] font-bold italic leading-relaxed">
+                    "业绩稳定性评分：<span class="text-primary not-italic font-black">94/100</span>。同类排名前 2%。增长动力主要源于高股息与科技板块的轮动配置策略。"
+                </p>
+</div>
+<div class="space-y-lg">
+<h4 class="font-black text-primary uppercase text-[12px] border-b-2 border-primary pb-2 tracking-widest">行业配置权重 / SECTOR ALLOCATION</h4>
+<div class="space-y-md">
+<div class="flex justify-between items-center group">
+<span class="text-[12px] font-black uppercase tracking-tighter">信息技术 / TECH</span>
+<div class="flex-1 mx-4 h-3 bg-surface-container relative">
+<div class="absolute inset-y-0 left-0 bg-primary w-[45%]"></div>
+</div>
+<span class="font-display-data text-[12px]">45%</span>
+</div>
+<div class="flex justify-between items-center">
+<span class="text-[12px] font-black uppercase tracking-tighter">金融地产 / FINANCE</span>
+<div class="flex-1 mx-4 h-3 bg-surface-container relative">
+<div class="absolute inset-y-0 left-0 bg-primary w-[20%]"></div>
+</div>
+<span class="font-display-data text-[12px]">20%</span>
+</div>
+<div class="flex justify-between items-center">
+<span class="text-[12px] font-black uppercase tracking-tighter">大消费 / CONSUMER</span>
+<div class="flex-1 mx-4 h-3 bg-surface-container relative">
+<div class="absolute inset-y-0 left-0 bg-primary w-[15%]"></div>
+</div>
+<span class="font-display-data text-[12px]">15%</span>
+</div>
+<div class="flex justify-between items-center">
+<span class="text-[12px] font-black uppercase tracking-tighter">现金及其他</span>
+<div class="flex-1 mx-4 h-3 bg-surface-container relative">
+<div class="absolute inset-y-0 left-0 bg-primary w-[20%]"></div>
+</div>
+<span class="font-display-data text-[12px]">20%</span>
+</div>
+</div>
+<div class="pt-lg flex gap-md">
+<button class="flex-1 border-2 border-primary py-3 font-black text-[12px] uppercase tracking-widest hover:bg-primary hover:text-white transition-all">下载 PDF 报告</button>
+<button class="flex-1 bg-primary text-white py-3 font-black text-[12px] uppercase tracking-widest hover:bg-black transition-all">加入自选组合</button>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Settings Modal -->
+<div class="fixed inset-0 bg-primary/80 backdrop-blur-sm z-[100] hidden flex items-center justify-end" id="settingsModal">
+<div class="bg-background w-full max-w-md h-full border-l-2 border-primary shadow-[-20px_0px_0px_rgba(0,0,0,0.2)] flex flex-col">
+<div class="p-xl border-b-2 border-primary flex justify-between items-center">
+<h2 class="font-headline-lg text-[24px] font-black uppercase">终端个性化设置</h2>
+<button class="material-symbols-outlined" onclick="closeModal('settingsModal')">close</button>
+</div>
+<div class="p-xl flex-1 overflow-y-auto space-y-xl">
+<section>
+<h3 class="font-black text-[11px] uppercase tracking-[0.2em] mb-md border-b border-outline-variant pb-1">RISK APPETITE / 投资风险偏好</h3>
+<div class="space-y-md">
+<label class="flex items-center justify-between p-lg border border-outline-variant hover:border-primary cursor-pointer group has-[:checked]:bg-primary has-[:checked]:text-white">
+<div>
+<p class="font-black uppercase text-[14px]">保守型 (CONSERVATIVE)</p>
+<p class="text-[11px] font-bold opacity-60">首要目标：资产本金安全</p>
+</div>
+<input class="w-5 h-5 accent-primary" name="risk" type="radio"/>
+</label>
+<label class="flex items-center justify-between p-lg border border-primary bg-primary text-white cursor-pointer">
+<div>
+<p class="font-black uppercase text-[14px]">成长型 (GROWTH ORIENTED)</p>
+<p class="text-[11px] font-bold opacity-60">适度风险，追求稳定超额收益</p>
+</div>
+<input checked="" class="w-5 h-5 accent-white" name="risk" type="radio"/>
+</label>
+</div>
+</section>
+<section>
+<h3 class="font-black text-[11px] uppercase tracking-[0.2em] mb-md border-b border-outline-variant pb-1">NOTIFICATION / 实时提醒渠道</h3>
+<div class="space-y-sm">
+<label class="flex items-center gap-lg cursor-pointer group font-bold text-[13px]">
+<input checked="" class="w-5 h-5 accent-primary" type="checkbox"/>
+<span>每日 ALPHA 研报推送</span>
+</label>
+<label class="flex items-center gap-lg cursor-pointer group font-bold text-[13px]">
+<input class="w-5 h-5 accent-primary" type="checkbox"/>
+<span>行业异动波幅实时预警</span>
+</label>
+</div>
+</section>
+</div>
+<div class="p-xl border-t-2 border-primary">
+<button class="w-full bg-primary text-white py-4 font-black uppercase tracking-[0.2em] hover:bg-black transition-all">保存并更新配置</button>
+</div>
+</div>
+</div>
+<script>
+    function openModal(id) {
+        document.getElementById(id).classList.remove('hidden');
+    }
+    function closeModal(id) {
+        document.getElementById(id).classList.add('hidden');
+    }
+
+    // Close modal when clicking outside
+    window.onclick = function(event) {
+        if (event.target.classList.contains('bg-primary/80')) {
+            event.target.classList.add('hidden');
+        }
+    }
+</script>
+</body></html>

@@ -10,6 +10,13 @@ data/*.db
 data/*.db-wal
 data/*.db-shm
 
+# runtime 产物
+data/last_*.txt
+
+# 生成文档
+docs/*.html
+docs/*.png
+
 # 环境与密钥
 .env
 *.local

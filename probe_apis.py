@@ -12,16 +12,15 @@
 import json
 import re
 import sys
-import tomllib
 
 import requests
 
-SETTINGS_PATH = "config/settings.toml"
-
-
-def load_settings():
-    with open(SETTINGS_PATH, "rb") as f:
-        return tomllib.load(f)
+from data_foundation import (
+    _API_FUND_LIST_URL,
+    _API_PINGZHONGDATA_URL,
+    _API_INDEX_URL,
+    _API_HS300_SYMBOL,
+)
 
 
 def fetch(url, params=None, timeout=15):
@@ -34,12 +33,11 @@ def fetch(url, params=None, timeout=15):
     return resp
 
 
-def probe_fund_list(settings):
+def probe_fund_list():
     """验证基金全量列表接口（天天基金 fundtradenew.aspx）。"""
     from ast import literal_eval
 
-    api = settings["api"]
-    url = api["fund_list_url"]
+    url = _API_FUND_LIST_URL
     params = {
         "ft": "gp",  # 股票型
         "pi": 1,
@@ -63,10 +61,9 @@ def probe_fund_list(settings):
     return n
 
 
-def probe_history_nav(settings, code="000001"):
+def probe_history_nav(code="000001"):
     """验证单基历史净值接口（pingzhongdata/{code}.js）。"""
-    api = settings["api"]
-    url = api["pingzhongdata_url"].format(code=code)
+    url = _API_PINGZHONGDATA_URL.format(code=code)
     resp = fetch(url)
     text = resp.text
     # 累计净值序列存放于 ACWorthTrend 变量，格式 [[时间戳, 累计净值], ...]
@@ -82,12 +79,11 @@ def probe_history_nav(settings, code="000001"):
     return days
 
 
-def probe_hs300(settings):
+def probe_hs300():
     """验证沪深300日线接口（新浪财经 K 线）。"""
-    api = settings["api"]
-    url = api["index_url"]
+    url = _API_INDEX_URL
     params = {
-        "symbol": api["hs300_symbol"],
+        "symbol": _API_HS300_SYMBOL,
         "scale": 240,  # 日线
         "ma": 60,
         "datalen": 5,
@@ -102,7 +98,6 @@ def probe_hs300(settings):
 
 
 def main():
-    settings = load_settings()
     results = {}
     for name, fn in [
         ("fund_list", probe_fund_list),
@@ -110,7 +105,7 @@ def main():
         ("hs300", probe_hs300),
     ]:
         try:
-            results[name] = fn(settings)
+            results[name] = fn()
             print(f"  [PASS] {name}")
         except Exception as e:  # noqa: BLE001
             print(f"  [FAIL] {name}: {e}")

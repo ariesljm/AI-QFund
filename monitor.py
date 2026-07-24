@@ -1,36 +1,34 @@
-"""虚拟池监控引擎：三道防线扫描 HOLD 基金，触发 EXIT 平仓（Phase 3）。
+"""虚拟机监控引擎：三道防线 → 四类信号（Phase 3 重构）。
 
-防线1 追踪止损：highest_nav - current_nav > 2 × ATR(14)
-防线2 风格漂移：买入时RBSA第一大行业权重 - 当前 > 15%
-防线3 LLM逻辑证伪：买入逻辑链被当日新闻证伪
+防线1    追踪止损：highest_nav - current_nav > 2 × ATR(14)
+防线2a   风格漂移：买入时RBSA第一行业权重 - 当前 > 15%
+防线2b   赛道优势：基金动量落后赛道中位数 → WARNING
+防线3    逻辑证伪：LLM 综合判断赛道方向+持仓匹配是否破裂
+
+信号: EXIT(离场) > WARNING(警惕) > HOLD(持有) > BUY_MORE(加仓)
 
 运行：uv run python monitor.py
 """
 
 import json
 import logging
-import sqlite3
 import time
 from datetime import datetime
 
 import numpy as np
 
-from data_foundation import _get_db, _load_settings
-from recommend import get_macro_summary
+from data_foundation import _get_db
+from macro_agent import build_macro_context
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
 logger = logging.getLogger("monitor")
 
 _DRIFT_THRESHOLD = 0.15
 _ATR_MULTIPLE = 2.0
+# 持有中的状态值
+_HOLD_STATES = ("HOLD", "BUY_MORE", "WARNING")
 
 
 def _nav_since(code: str, since_date: str) -> list[float]:
-    """返回该基金自推荐日（含）起的累计净值序列（升序）。"""
     conn = _get_db()
     rows = conn.execute(
         "SELECT cum_nav FROM fund_nav WHERE code = ? AND date >= ? ORDER BY date ASC",
@@ -40,18 +38,12 @@ def _nav_since(code: str, since_date: str) -> list[float]:
     return [r[0] for r in rows]
 
 
-def update_highest_nav(code: str, since_date: str) -> float:
-    """返回买入（推荐）后至今的最高累计净值。"""
+def update_highest_nav(code: str, since_date: str) -> float | None:
     navs = _nav_since(code, since_date)
-    return float(max(navs)) if navs else 0.0
+    return float(max(navs)) if navs else None
 
 
 def calc_atr(navs: list[float], period: int = 14) -> float:
-    """计算 ATR(14)，以累计净值序列近似（无高低价，用相邻波动代理 TR）。
-
-    ponytail: 真实 ATR 需每日高低收，这里只有累计净值，用 |nav_t - nav_{t-1}|
-    作为单日波幅近似真实波幅，取最近 period 日均值。
-    """
     if len(navs) < 2:
         return 0.0
     tr = [abs(navs[i] - navs[i - 1]) for i in range(1, len(navs))]
@@ -60,17 +52,18 @@ def calc_atr(navs: list[float], period: int = 14) -> float:
     return float(np.mean(tr[-period:]))
 
 
-def check_trailing_stop(code: str, highest_nav: float, atr: float) -> tuple[bool, str]:
-    """第一防线：追踪止损。返回 (是否触发, 说明)。"""
-    navs = _nav_since(code, _reco_date_of(code))
+def check_trailing_stop(code: str, highest_nav: float, atr: float,
+                        navs: list[float] | None = None) -> tuple[bool, str]:
+    if navs is None:
+        navs = _nav_since(code, _reco_date_of(code))
     if not navs:
         return False, ""
     current = navs[-1]
-    if highest_nav <= 0 or atr <= 0:
+    if highest_nav is None or highest_nav <= 0 or atr <= 0:
         return False, ""
     if highest_nav - current > _ATR_MULTIPLE * atr:
         return True, (
-            f"追踪止损触发: 最高{highest_nav:.4f} - 当前{current:.4f}"
+            f"追踪止损: 最高{highest_nav:.4f} - 当前{current:.4f}"
             f"={highest_nav - current:.4f} > 2×ATR({atr:.4f})"
         )
     return False, ""
@@ -79,23 +72,22 @@ def check_trailing_stop(code: str, highest_nav: float, atr: float) -> tuple[bool
 def _reco_date_of(code: str) -> str:
     conn = _get_db()
     row = conn.execute(
-        "SELECT recommend_date FROM recommend_log WHERE code = ? AND status = 'HOLD' "
-        "ORDER BY id DESC LIMIT 1", (code,)
+        f"SELECT recommend_date FROM recommend_log "
+        f"WHERE code = ? AND status IN ({','.join('?' * len(_HOLD_STATES))}) "
+        "ORDER BY id DESC LIMIT 1",
+        (code, *_HOLD_STATES),
     ).fetchone()
     conn.close()
     return row[0] if row else ""
 
 
 def check_style_drift(code: str) -> tuple[bool, str]:
-    """第二防线：RBSA 风格漂移。买入时第一大行业权重 - 当前 > 15% 触发。"""
     conn = _get_db()
     reco_date = _reco_date_of(code)
-    # 买入时权重：推荐日那一行 fund_features 的 rbsa_weight_1
     init_row = conn.execute(
         "SELECT rbsa_weight_1 FROM fund_features WHERE code = ? AND date = ?",
         (code, reco_date),
     ).fetchone()
-    # 当前权重：最新一行
     cur_row = conn.execute(
         "SELECT rbsa_weight_1 FROM fund_features WHERE code = ? "
         "ORDER BY date DESC LIMIT 1", (code,)
@@ -107,106 +99,287 @@ def check_style_drift(code: str) -> tuple[bool, str]:
     drop = init_w - cur_w
     if drop > _DRIFT_THRESHOLD:
         return True, (
-            f"风格漂移触发: 买入权重{init_w:.2f} - 当前{cur_w:.2f}"
+            f"风格漂移: 买入权重{init_w:.2f} - 当前{cur_w:.2f}"
             f"={drop:.2f} > 阈值{_DRIFT_THRESHOLD}"
         )
     return False, ""
 
 
-def check_logic_falsification(code: str, buy_reason: str, news: str) -> tuple[bool, str]:
-    """第三防线：LLM 逻辑证伪。返回 (是否触发(逻辑断裂), 说明)。
+def check_sector_advantage(code: str, sector: str) -> tuple[bool, str]:
+    """检查基金是否落后于赛道中位数 → 赛道优势丧失预警。"""
+    conn = _get_db()
+    row = conn.execute(
+        "SELECT momentum_20d FROM fund_features WHERE code=? ORDER BY date DESC LIMIT 1",
+        (code,),
+    ).fetchone()
+    if not row:
+        conn.close()
+        return False, ""
+    fund_mom = row[0]
 
-    LLM 不可用时（限流/未配置）保守返回不触发，避免误平。
-    """
-    settings = _load_settings()
-    llm_cfg = settings.get("llm", {})
-    api_key = llm_cfg.get("api_key", "")
-    if not api_key:
-        return False, "LLM 未配置，跳过逻辑证伪"
-    try:
-        from openai import OpenAI
-        client = OpenAI(base_url=llm_cfg.get("base_url"), api_key=api_key)
-        prompt = (
-            "你是一位严格的基金投研审核员。下面是一条基金买入逻辑，"
-            "以及今日财经新闻摘要。请判断该买入逻辑链是否被新闻证伪。\n\n"
-            f"买入逻辑: {buy_reason}\n\n"
-            f"今日新闻摘要: {news}\n\n"
-            "只输出JSON：{\"verdict\": \"维持\" 或 \"断裂\", \"reason\": \"简要说明\"}"
+    latest_date = conn.execute(
+        "SELECT date FROM fund_features WHERE code=? ORDER BY date DESC LIMIT 1",
+        (code,),
+    ).fetchone()
+    if not latest_date:
+        conn.close()
+        return False, ""
+
+    rows = conn.execute(
+        "SELECT momentum_20d FROM fund_features "
+        "WHERE rbsa_industry_1 = ? AND date = ? AND momentum_20d IS NOT NULL",
+        (sector, latest_date[0]),
+    ).fetchall()
+    conn.close()
+
+    if len(rows) < 3:
+        logger.info("赛道 %s 基金不足 3 只，跳过赛道优势检测", sector or "未知")
+        return False, ""
+
+    values = sorted(r[0] for r in rows)
+    n = len(values)
+    median = values[n // 2] if n % 2 else (values[n // 2 - 1] + values[n // 2]) / 2
+
+    if fund_mom < median:
+        return True, (
+            f"赛道优势丧失: 动量{fund_mom:.1f}% < 赛道中位数{median:.1f}%"
         )
-        for attempt in range(3):
-            try:
-                resp = client.chat.completions.create(
-                    model=llm_cfg.get("model", "gpt-4o-mini"),
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.1,
-                    max_tokens=512,
-                    response_format={"type": "json_object"},
+    return False, ""
+
+
+def _check_logic_enhanced(code: str, buy_reason: str, sector: str,
+                          ctx, conn) -> dict:
+    """增强版 LLM 逻辑证伪（赛道方向+持仓匹配合并为一次调用）。
+
+    返回: {logic_verdict, signal_hint, sector_risk, holding_risk, reason}
+    """
+    from data_foundation import _call_llm
+
+    # 基金当前重仓股
+    hold_rows = conn.execute(
+        "SELECT h.stock_name, h.weight, COALESCE(s.industry_name, '其他') "
+        "FROM fund_holdings h "
+        "LEFT JOIN stock_industry_map s ON h.stock_code = s.stock_code "
+        "WHERE h.code = ? "
+        "AND h.report_date = (SELECT MAX(report_date) FROM fund_holdings WHERE code = ?) "
+        "ORDER BY h.weight DESC LIMIT 5",
+        (code, code),
+    ).fetchall()
+    holdings_text = "；".join(
+        f"{r[0]}({r[2]},{r[1]:.1f}%)" for r in hold_rows
+    ) if hold_rows else "无持仓数据"
+
+    # CLS 新闻匹配：该基金持仓股中有哪些在今日新闻中被提及
+    matched_lines = []
+    for r in hold_rows:
+        stock_name = r[0]
+        for s in ctx.cls_stock_mentions:
+            if s["name"] == stock_name:
+                matched_lines.append(
+                    f"  {stock_name}: 等级={s['level']} \"{s['title'][:60]}\""
                 )
-                content = resp.choices[0].message.content
-                result = json.loads(content)
-                verdict = str(result.get("verdict", "")).strip()
-                if "断裂" in verdict:
-                    return True, f"LLM逻辑证伪: {result.get('reason', '')}"
-                return False, f"LLM逻辑维持: {result.get('reason', '')}"
-            except Exception as e:
-                if "429" in str(e) or "RateLimit" in type(e).__name__:
-                    time.sleep(2 ** attempt * 2)
-                    continue
-                return False, f"LLM证伪调用失败({e})，保守跳过"
-        return False, "LLM证伪限流重试耗尽，保守跳过"
+                break
+    matched_text = "\n".join(matched_lines) if matched_lines else "无匹配"
+
+    prompt = (
+        "你是基金投研审核员。根据买入逻辑、该基金的赛道归属和今日宏观数据，"
+        "判定买入逻辑是否维持，并给出信号建议。\n\n"
+        f"买入逻辑: {buy_reason}\n"
+        f"该基金所属赛道: {sector}\n\n"
+        "【今日宏观判定】\n"
+        f"推荐赛道: {', '.join(ctx.recommended_sectors) or '无'}\n"
+        f"回避赛道: {', '.join(ctx.risk_sectors) or '无'}\n"
+        f"大盘判定: {ctx.regime_label}\n"
+        f"赛道推论: {ctx.sector_reasoning or '无'}\n\n"
+        f"【该基金当前重仓股】\n{holdings_text}\n\n"
+        f"【该基金持仓股在今日新闻中的提及】\n{matched_text}\n\n"
+        "【今日财经新闻全文】\n"
+        f"{ctx.news_summary}\n\n"
+        "输出纯 JSON：\n"
+        "{\n"
+        '  "logic_verdict": "维持/断裂",\n'
+        '  "signal_hint": "HOLD/BUY_MORE/WARNING",\n'
+        '  "sector_risk": true/false,\n'
+        '  "holding_risk": true/false,\n'
+        '  "reason": "说明"\n'
+        "}\n\n"
+        "判定规则：\n"
+        "- 若该基金所属赛道出现在回避赛道中，或新闻对该赛道有明确利空 → 赛道风险\n"
+        "- 若持仓股在今日新闻中有明确利空 → 持仓风险\n"
+        "- 任一风险推断买入逻辑断裂 → 断裂\n"
+        "- 若该基金赛道仍在推荐赛道中、持仓股有正面新闻 → BUY_MORE\n"
+        "- 赛道方向中性但持仓无异常 → HOLD"
+    )
+
+    content = _call_llm(prompt, temperature=0.1, max_tokens=512)
+    if content is None:
+        return {
+            "logic_verdict": "维持", "signal_hint": "HOLD",
+            "sector_risk": False, "holding_risk": False,
+            "reason": "LLM 未配置或调用失败，保守维持",
+        }
+    try:
+        result = json.loads(content)
+        return {
+            "logic_verdict": result.get("logic_verdict", "维持"),
+            "signal_hint": result.get("signal_hint", "HOLD"),
+            "sector_risk": bool(result.get("sector_risk", False)),
+            "holding_risk": bool(result.get("holding_risk", False)),
+            "reason": result.get("reason", ""),
+        }
     except Exception as e:
-        return False, f"LLM证伪异常({e})，保守跳过"
+        return {
+            "logic_verdict": "维持", "signal_hint": "HOLD",
+            "sector_risk": False, "holding_risk": False,
+            "reason": f"LLM 解析失败({e})，保守维持",
+        }
+
+
+def _log_monitor_event(code: str, signal: str, logic: dict,
+                       trailing: bool, drift: bool, sector_adv: bool,
+                       detail: str) -> None:
+    conn = _get_db()
+    log_id = conn.execute(
+        f"SELECT id FROM recommend_log WHERE code = ? AND status IN "
+        f"({','.join('?'*len(_HOLD_STATES))}) ORDER BY id DESC LIMIT 1",
+        (code, *_HOLD_STATES),
+    ).fetchone()
+    conn.execute(
+        "INSERT INTO monitor_events "
+        "(code, date, signal, trigger_trailing, trigger_drift, trigger_sector_adv, "
+        "logic_verdict, sector_risk, holding_risk, detail, recommend_log_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (code, datetime.now().strftime("%Y-%m-%d"), signal,
+         trailing, drift, sector_adv,
+         logic.get("logic_verdict", ""), logic.get("sector_risk", False),
+         logic.get("holding_risk", False), detail,
+         log_id[0] if log_id else None),
+    )
+    conn.commit()
+    conn.close()
 
 
 def _exit_position(code: str, sell_reason: str) -> None:
     conn = _get_db()
     today = datetime.now().strftime("%Y-%m-%d")
+    reco = conn.execute(
+        f"SELECT recommend_date FROM recommend_log "
+        f"WHERE code=? AND status IN ({','.join('?'*len(_HOLD_STATES))}) "
+        "ORDER BY id DESC LIMIT 1",
+        (code, *_HOLD_STATES),
+    ).fetchone()
+    return_rate = None
+    if reco:
+        nav_r = conn.execute(
+            "SELECT cum_nav FROM fund_nav WHERE code=? AND date=?", (code, reco[0])
+        ).fetchone()
+        nav_e = conn.execute(
+            "SELECT cum_nav FROM fund_nav WHERE code=? AND date=?", (code, today)
+        ).fetchone()
+        if nav_r and nav_e and nav_r[0] and nav_e[0]:
+            return_rate = nav_e[0] / nav_r[0] - 1.0
     conn.execute(
-        "UPDATE recommend_log SET status = 'EXIT', sell_reason = ?, exit_date = ? "
-        "WHERE code = ? AND status = 'HOLD'",
-        (sell_reason, today, code),
+        "UPDATE recommend_log SET status='EXIT', sell_reason=?, exit_date=?, return_rate=? "
+        f"WHERE code=? AND status IN ({','.join('?'*len(_HOLD_STATES))})",
+        (sell_reason, today, return_rate, code, *_HOLD_STATES),
     )
     conn.commit()
     conn.close()
-    logger.info("平仓 EXIT: %s | %s", code, sell_reason)
+    logger.info("平仓 EXIT: %s | %s | 收益: %s", code, sell_reason,
+                f"{return_rate*100:+.2f}%" if return_rate is not None else "未知")
+
+
+def _update_signal(code: str, signal: str) -> None:
+    """更新非 EXIT 状态信号（HOLD/BUY_MORE/WARNING）。"""
+    conn = _get_db()
+    conn.execute(
+        f"UPDATE recommend_log SET status = ? "
+        f"WHERE code = ? AND status IN ({','.join('?'*len(_HOLD_STATES))})",
+        (signal, code, *_HOLD_STATES),
+    )
+    conn.commit()
+    conn.close()
 
 
 def run_monitor() -> None:
-    """遍历所有 HOLD 基金，执行三道防线，触发则平仓入库。"""
+    """遍历所有 HOLD 基金，执行三道防线，输出四类信号。"""
     conn = _get_db()
     rows = conn.execute(
-        "SELECT code, name, recommend_date, buy_reason FROM recommend_log "
-        "WHERE status = 'HOLD'"
+        f"SELECT code, name, recommend_date, buy_reason, "
+        "(SELECT rbsa_industry_1 FROM fund_features ff "
+        " WHERE ff.code = r.code ORDER BY ff.date DESC LIMIT 1) as sector "
+        "FROM recommend_log r "
+        f"WHERE r.status IN ({','.join('?'*len(_HOLD_STATES))})",
+        _HOLD_STATES,
     ).fetchall()
-    conn.close()
     if not rows:
-        logger.info("无 HOLD 持仓，监控结束")
+        logger.info("无持仓，监控结束")
+        conn.close()
         return
 
     date_str = datetime.now().strftime("%Y-%m-%d")
-    news = get_macro_summary(date_str)
+    ctx = build_macro_context(date_str)
 
-    exited = 0
-    for code, name, reco_date, buy_reason in rows:
-        logger.info("=== 监控 %s %s ===", code, name)
+    for code, name, reco_date, buy_reason, sector in rows:
+        logger.info("=== 监控 %s %s [赛道:%s] ===", code, name, sector or "未知")
+
         # 防线1：追踪止损
         highest = update_highest_nav(code, reco_date)
+        if highest is not None:
+            conn.execute(
+                f"UPDATE recommend_log SET highest_nav = ? "
+                f"WHERE code = ? AND status IN ({','.join('?'*len(_HOLD_STATES))})",
+                (highest, code, *_HOLD_STATES),
+            )
+            conn.commit()
         navs = _nav_since(code, reco_date)
         atr = calc_atr(navs)
-        triggered, reason = check_trailing_stop(code, highest, atr)
-        if not triggered:
-            # 防线2：风格漂移
-            triggered, reason = check_style_drift(code)
-        if not triggered:
-            # 防线3：LLM 逻辑证伪
-            triggered, reason = check_logic_falsification(code, buy_reason or "", news.get("news", ""))
-        if triggered:
-            _exit_position(code, reason)
-            exited += 1
-        else:
-            logger.info("  %s 三道防线均未触发，继续持有", code)
 
-    logger.info("监控完成: 扫描 %d 只, 平仓 %d 只", len(rows), exited)
+        exit_triggered, exit_reason = check_trailing_stop(code, highest, atr, navs)
+        trail_hit = exit_triggered
+        drift_hit = False
+        if not exit_triggered:
+            exit_triggered, exit_reason = check_style_drift(code)
+            drift_hit = exit_triggered
+
+        # 防线2b：赛道优势检测（无论是否已触发EXIT，都记录完整信息供进化分析）
+        advantage_lost, advantage_reason = check_sector_advantage(code, sector)
+
+        if exit_triggered:
+            _log_monitor_event(code, "EXIT",
+                {"logic_verdict": "", "sector_risk": False, "holding_risk": False, "reason": ""},
+                trail_hit, drift_hit, advantage_lost, exit_reason)
+            _exit_position(code, exit_reason)
+            logger.info("  EXIT: %s", exit_reason)
+            continue
+
+        # 防线3：增强版 LLM 逻辑证伪
+        logic = _check_logic_enhanced(code, buy_reason or "", sector or "", ctx, conn)
+
+        if logic["logic_verdict"] == "断裂":
+            _log_monitor_event(code, "EXIT", logic, trail_hit, drift_hit,
+                               advantage_lost, f"LLM逻辑证伪: {logic['reason']}")
+            _exit_position(code, f"LLM逻辑证伪: {logic['reason']}")
+            logger.info("  EXIT: %s", logic['reason'])
+            continue
+
+        # 信号判定
+        if logic["signal_hint"] == "BUY_MORE" and not advantage_lost:
+            signal = "BUY_MORE"
+        elif advantage_lost or logic["signal_hint"] == "WARNING":
+            signal = "WARNING"
+        else:
+            signal = "HOLD"
+
+        _update_signal(code, signal)
+        detail = "; ".join(filter(None, [advantage_reason, logic["reason"]]))
+        _log_monitor_event(code, signal, logic, trail_hit, drift_hit,
+                           advantage_lost, detail)
+        logger.info("  %s | 赛道风险=%s 持仓风险=%s | %s",
+                    signal, logic["sector_risk"], logic["holding_risk"], detail)
+
+    conn.close()
+    logger.info("监控完成: 扫描 %d 只", len(rows))
 
 
 if __name__ == "__main__":
