@@ -19,7 +19,7 @@ import pandas as pd
 
 from features import calc_hurst
 from macro_agent import build_macro_context, MacroContext
-from data_store import _get_db
+from data_store import _db_conn, _get_db
 from data_foundation import fetch_fund_nav_incremental
 
 logger = logging.getLogger("recommend")
@@ -100,33 +100,32 @@ def _features_from_window(navs: np.ndarray, idx_closes: np.ndarray,
 
 
 def prepare_lgb_training_data() -> tuple[pd.DataFrame, pd.Series]:
-    conn = _get_db()
-    idx_rows = conn.execute(
-        "SELECT date, close, volume FROM index_daily WHERE code = 'sh000300' ORDER BY date ASC"
-    ).fetchall()
-    if not idx_rows:
-        raise RuntimeError("沪深300指数数据缺失，无法准备训练数据")
-    idx_df = pd.DataFrame(idx_rows, columns=["date", "close", "volume"])
-    idx_df["date"] = pd.to_datetime(idx_df["date"])
-    idx_df = idx_df.set_index("date").sort_index()
-    idx_close = idx_df["close"]
-    idx_vol = idx_df["volume"]
-    idx_ret_fwd = idx_close.shift(-_FORWARD_WINDOW) / idx_close - 1.0
+    with _db_conn() as conn:
+        idx_rows = conn.execute(
+            "SELECT date, close, volume FROM index_daily WHERE code = 'sh000300' ORDER BY date ASC"
+        ).fetchall()
+        if not idx_rows:
+            raise RuntimeError("沪深300指数数据缺失，无法准备训练数据")
+        idx_df = pd.DataFrame(idx_rows, columns=["date", "close", "volume"])
+        idx_df["date"] = pd.to_datetime(idx_df["date"])
+        idx_df = idx_df.set_index("date").sort_index()
+        idx_close = idx_df["close"]
+        idx_vol = idx_df["volume"]
+        idx_ret_fwd = idx_close.shift(-_FORWARD_WINDOW) / idx_close - 1.0
 
-    etf_rows = conn.execute(
-        "SELECT date, volume FROM index_daily WHERE code = 'sh510300' ORDER BY date ASC"
-    ).fetchall()
-    etf_df = pd.DataFrame(etf_rows, columns=["date", "volume"]) if etf_rows else pd.DataFrame(columns=["date", "volume"])
-    etf_df["date"] = pd.to_datetime(etf_df["date"])
-    etf_df = etf_df.set_index("date").sort_index()
-    etf_vol = etf_df["volume"]
+        etf_rows = conn.execute(
+            "SELECT date, volume FROM index_daily WHERE code = 'sh510300' ORDER BY date ASC"
+        ).fetchall()
+        etf_df = pd.DataFrame(etf_rows, columns=["date", "volume"]) if etf_rows else pd.DataFrame(columns=["date", "volume"])
+        etf_df["date"] = pd.to_datetime(etf_df["date"])
+        etf_df = etf_df.set_index("date").sort_index()
+        etf_vol = etf_df["volume"]
 
-    nav_rows = conn.execute(
-        "SELECT code, date, cum_nav FROM fund_nav ORDER BY code, date ASC"
-    ).fetchall()
+        nav_rows = conn.execute(
+            "SELECT code, date, cum_nav FROM fund_nav ORDER BY code, date ASC"
+        ).fetchall()
     nav_df = pd.DataFrame(nav_rows, columns=["code", "date", "cum_nav"])
     nav_df["date"] = pd.to_datetime(nav_df["date"])
-    conn.close()
 
     X_list, y_list = [], []
     for code, g in nav_df.groupby("code"):
@@ -269,12 +268,11 @@ def _match_one_sector(ideal: str, candidates: list[str]) -> str | None:
 
 def _resolve_sectors(sectors: list[str]) -> list[str]:
     """把 LLM 选的行业名匹配到 RBSA 表中存在的行业名。"""
-    conn = _get_db()
-    rows = conn.execute(
-        "SELECT DISTINCT rbsa_industry_1 FROM fund_features "
-        "WHERE rbsa_industry_1 IS NOT NULL AND rbsa_industry_1 != ''"
-    ).fetchall()
-    conn.close()
+    with _db_conn() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT rbsa_industry_1 FROM fund_features "
+            "WHERE rbsa_industry_1 IS NOT NULL AND rbsa_industry_1 != ''"
+        ).fetchall()
     candidates = [r[0] for r in rows]
     resolved = []
     for s in sectors:
@@ -286,11 +284,10 @@ def _resolve_sectors(sectors: list[str]) -> list[str]:
     return list(dict.fromkeys(resolved))  # 去重保留顺序
 
 def _index_momentum() -> float:
-    conn = _get_db()
-    idx = conn.execute(
-        "SELECT close FROM index_daily WHERE code='sh000300' ORDER BY date DESC LIMIT 21"
-    ).fetchall()
-    conn.close()
+    with _db_conn() as conn:
+        idx = conn.execute(
+            "SELECT close FROM index_daily WHERE code='sh000300' ORDER BY date DESC LIMIT 21"
+        ).fetchall()
     return (idx[0][0] / idx[-1][0] - 1) * 100 if len(idx) >= 21 else 0.0
 
 
@@ -321,29 +318,27 @@ def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> list[dict]:
     logger.info("LLM赛道 %s → 匹配到 %s", raw_sectors, sectors)
     risk_sectors = _resolve_sectors(ctx.risk_sectors)
 
-    conn = _get_db()
-    placeholders = ",".join("?" * len(sectors))
-    rows = conn.execute(
-        f"SELECT ff.code, fb.name, ff.rbsa_industry_1, "
-        f"{', '.join('ff.' + c for c in FEATURE_COLS)} "
-        f"FROM fund_features ff "
-        f"JOIN fund_basic fb ON fb.code = ff.code "
-        f"WHERE fb.is_buyable = 1 "
-        f"AND ff.rbsa_industry_1 IN ({placeholders})",
-        sectors,
-    ).fetchall()
+    with _db_conn() as conn:
+        placeholders = ",".join("?" * len(sectors))
+        rows = conn.execute(
+            f"SELECT ff.code, fb.name, ff.rbsa_industry_1, "
+            f"{', '.join('ff.' + c for c in FEATURE_COLS)} "
+            f"FROM fund_features ff "
+            f"JOIN fund_basic fb ON fb.code = ff.code "
+            f"WHERE fb.is_buyable = 1 "
+            f"AND ff.rbsa_industry_1 IN ({placeholders})",
+            sectors,
+        ).fetchall()
 
-    if not rows:
-        logger.info("赛道内无匹配基金，降级为全市场 Top 10")
-        conn.close()
-        return rank_funds(model)
+        if not rows:
+            logger.info("赛道内无匹配基金，降级为全市场 Top 10")
+            return rank_funds(model)
 
-    cols = ["code", "name", "sector"] + FEATURE_COLS
-    df = pd.DataFrame(rows, columns=cols)
-    df = df.dropna(subset=FEATURE_COLS)
-    if df.empty:
-        conn.close()
-        return rank_funds(model)
+        cols = ["code", "name", "sector"] + FEATURE_COLS
+        df = pd.DataFrame(rows, columns=cols)
+        df = df.dropna(subset=FEATURE_COLS)
+        if df.empty:
+            return rank_funds(model)
 
     df = df[~df["sector"].isin(risk_sectors)]
     df = _add_sector_relatives(df)
@@ -372,7 +367,6 @@ def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> list[dict]:
     for sector in sectors:
         sdf = df[df["sector"] == sector].sort_values("combo", ascending=False)
         top_per_sector.extend(sdf.head(2).to_dict("records"))
-    conn.close()
 
     top_per_sector = sorted(top_per_sector, key=lambda x: x["combo"], reverse=True)[:5]
     if not top_per_sector:
@@ -396,15 +390,15 @@ def rank_funds(model: lgb.Booster) -> list[dict]:
     """全市场排名（降级备选），返回 Top 10。"""
     cfg = _load_ranking_cfg()
     guard = cfg["momentum_guard_pct"]
-    conn = _get_db()
-    rows = conn.execute(
-        "SELECT ff.code, fb.name, ff.regime, "
-        f"{', '.join('ff.' + c for c in FEATURE_COLS)} "
-        "FROM fund_features ff "
-        "JOIN fund_basic fb ON fb.code = ff.code "
-        "WHERE fb.is_buyable = 1 "
-        "AND ff.rbsa_industry_1 IS NOT NULL AND ff.rbsa_industry_1 != ''"
-    ).fetchall()
+    with _db_conn() as conn:
+        rows = conn.execute(
+            "SELECT ff.code, fb.name, ff.regime, "
+            f"{', '.join('ff.' + c for c in FEATURE_COLS)} "
+            "FROM fund_features ff "
+            "JOIN fund_basic fb ON fb.code = ff.code "
+            "WHERE fb.is_buyable = 1 "
+            "AND ff.rbsa_industry_1 IS NOT NULL AND ff.rbsa_industry_1 != ''"
+        ).fetchall()
 
     cols = ["code", "name", "regime"] + FEATURE_COLS
     df = pd.DataFrame(rows, columns=cols)
@@ -418,7 +412,6 @@ def rank_funds(model: lgb.Booster) -> list[dict]:
     df = df[np.isfinite(df["score"])]
 
     idx_mom = _index_momentum()
-    conn.close()
     df["rel_strength"] = df["momentum_20d"] - idx_mom
     df = df[df["momentum_20d"] >= guard]
     calmar_clipped = df["calmar"].clip(-5, 5)
@@ -530,30 +523,29 @@ def _llm_final_pick(candidates: list[dict], ctx: MacroContext, insights: list) -
     """LLM 基于重仓股+CLS新闻匹配做最终选择，返回选定基金和否决记录。"""
     from data_foundation import _call_llm
 
-    conn = _get_db()
-    for c in candidates:
-        hold_rows = conn.execute(
-            "SELECT h.stock_code, h.stock_name, h.weight, "
-            "COALESCE(s.industry_name, '其他') "
-            "FROM fund_holdings h "
-            "LEFT JOIN stock_industry_map s ON h.stock_code = s.stock_code "
-            "WHERE h.code = ? "
-            "AND h.report_date = (SELECT MAX(report_date) FROM fund_holdings WHERE code = ?) "
-            "ORDER BY h.weight DESC LIMIT 5",
-            (c["code"], c["code"]),
-        ).fetchall()
-        c["holdings"] = [
-            {"stock_code": r[0], "stock_name": r[1], "weight": r[2], "industry": r[3]}
-            for r in hold_rows
-        ]
-        matched = []
-        for h in c["holdings"]:
-            for s in ctx.cls_stock_mentions:
-                if s["code"] == h["stock_code"] or s["name"] == h["stock_name"]:
-                    matched.append({"stock_name": h["stock_name"], "stock_code": h["stock_code"], **s})
-                    break
-        c["matched_news"] = matched
-    conn.close()
+    with _db_conn() as conn:
+        for c in candidates:
+            hold_rows = conn.execute(
+                "SELECT h.stock_code, h.stock_name, h.weight, "
+                "COALESCE(s.industry_name, '其他') "
+                "FROM fund_holdings h "
+                "LEFT JOIN stock_industry_map s ON h.stock_code = s.stock_code "
+                "WHERE h.code = ? "
+                "AND h.report_date = (SELECT MAX(report_date) FROM fund_holdings WHERE code = ?) "
+                "ORDER BY h.weight DESC LIMIT 5",
+                (c["code"], c["code"]),
+            ).fetchall()
+            c["holdings"] = [
+                {"stock_code": r[0], "stock_name": r[1], "weight": r[2], "industry": r[3]}
+                for r in hold_rows
+            ]
+            matched = []
+            for h in c["holdings"]:
+                for s in ctx.cls_stock_mentions:
+                    if s["code"] == h["stock_code"] or s["name"] == h["stock_name"]:
+                        matched.append({"stock_name": h["stock_name"], "stock_code": h["stock_code"], **s})
+                        break
+            c["matched_news"] = matched
 
     prompt = _build_final_prompt(candidates, ctx, insights)
     system_prompt = "你是量化基金推荐决策助手。必须只输出一个纯JSON对象，禁止使用markdown代码块，禁止任何前后说明文字。"
@@ -630,52 +622,47 @@ def _dump_recommendation(date_str, code, name, rank, score, regime, candidates, 
 
 def _save_recommendation(date_str: str, selected: dict, candidates: list[dict],
                           vetoed: list, regime: str, feature_snapshot: str = "") -> None:
-    conn = _get_db()
-    exists = conn.execute(
-        "SELECT id, entry_nav FROM recommend_log WHERE recommend_date = ? LIMIT 1", (date_str,)
-    ).fetchone()
-    if exists and exists[1] is not None:
-        logger.info("当日 %s 已存在推荐记录且 entry_nav 不为空，跳过", date_str)
-        conn.close()
-        return
-    # 补 entry_nav（首次插入或补充已有记录）
-    entry_nav_row = conn.execute(
-        "SELECT cum_nav FROM fund_nav WHERE code=? AND date=? LIMIT 1",
-        (selected["selected_code"], date_str),
-    ).fetchone()
-    entry_nav = entry_nav_row[0] if entry_nav_row else None
-    if exists:
+    with _db_conn() as conn:
+        exists = conn.execute(
+            "SELECT id, entry_nav FROM recommend_log WHERE recommend_date = ? LIMIT 1", (date_str,)
+        ).fetchone()
+        if exists and exists[1] is not None:
+            logger.info("当日 %s 已存在推荐记录且 entry_nav 不为空，跳过", date_str)
+            return
+        # 补 entry_nav（首次插入或补充已有记录）
+        entry_nav_row = conn.execute(
+            "SELECT cum_nav FROM fund_nav WHERE code=? AND date=? LIMIT 1",
+            (selected["selected_code"], date_str),
+        ).fetchone()
+        entry_nav = entry_nav_row[0] if entry_nav_row else None
+        if exists:
+            conn.execute(
+                "UPDATE recommend_log SET entry_nav = ? WHERE id = ?",
+                (entry_nav, exists[0]),
+            )
+            logger.info("补写 entry_nav=%s 到 id=%s", entry_nav, exists[0])
+            return
+        rank = next(
+            (i + 1 for i, c in enumerate(candidates) if c["code"] == selected["selected_code"]), 1)
+        score = next(
+            (c["score"] for c in candidates if c["code"] == selected["selected_code"]), None)
+        combo = next(
+            (c["combo"] for c in candidates if c["code"] == selected["selected_code"]), None)
+        veto_json = json.dumps(vetoed, ensure_ascii=False)
+        reason = selected.get("reason", "")
+        if vetoed:
+            reason = reason + " | 否决记录: " + veto_json
+        real_name = conn.execute(
+            "SELECT name FROM fund_basic WHERE code = ?", (selected["selected_code"],)
+        ).fetchone()
+        real_name = real_name[0] if real_name else selected["selected_name"]
         conn.execute(
-            "UPDATE recommend_log SET entry_nav = ? WHERE id = ?",
-            (entry_nav, exists[0]),
+            "INSERT INTO recommend_log "
+            "(recommend_date, code, name, rank, score, combo, regime, buy_reason, status, feature_snapshot, entry_nav) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'HOLD', ?, ?)",
+            (date_str, selected["selected_code"], real_name,
+             rank, score, combo, regime, reason, feature_snapshot, entry_nav),
         )
-        conn.commit()
-        conn.close()
-        logger.info("补写 entry_nav=%s 到 id=%s", entry_nav, exists[0])
-        return
-    rank = next(
-        (i + 1 for i, c in enumerate(candidates) if c["code"] == selected["selected_code"]), 1)
-    score = next(
-        (c["score"] for c in candidates if c["code"] == selected["selected_code"]), None)
-    combo = next(
-        (c["combo"] for c in candidates if c["code"] == selected["selected_code"]), None)
-    veto_json = json.dumps(vetoed, ensure_ascii=False)
-    reason = selected.get("reason", "")
-    if vetoed:
-        reason = reason + " | 否决记录: " + veto_json
-    real_name = conn.execute(
-        "SELECT name FROM fund_basic WHERE code = ?", (selected["selected_code"],)
-    ).fetchone()
-    real_name = real_name[0] if real_name else selected["selected_name"]
-    conn.execute(
-        "INSERT INTO recommend_log "
-        "(recommend_date, code, name, rank, score, combo, regime, buy_reason, status, feature_snapshot, entry_nav) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'HOLD', ?, ?)",
-        (date_str, selected["selected_code"], real_name,
-         rank, score, combo, regime, reason, feature_snapshot, entry_nav),
-    )
-    conn.commit()
-    conn.close()
     logger.info("推荐入库: %s %s (排名%d, 分数%.4f)",
                 selected["selected_code"], real_name, rank, score or 0.0)
     _dump_recommendation(date_str, selected["selected_code"], real_name, rank, score,
@@ -688,9 +675,8 @@ def run_recommendation(retrain: bool = False, force: bool = False) -> None:
     force=True 时跳过宏观缓存，强制实时抓取新闻+LLM 重新选赛道。
     """
     date_str = datetime.now().strftime("%Y-%m-%d")
-    conn = _get_db()
-    insights = _load_insights(conn)
-    conn.close()
+    with _db_conn() as conn:
+        insights = _load_insights(conn)
 
     if retrain or not MODEL_PATH.exists():
         logger.info("=== 准备训练数据并训练 LightGBM ===")
@@ -739,17 +725,15 @@ def run_recommendation(retrain: bool = False, force: bool = False) -> None:
     if sel_momentum is not None and sel_momentum < guard:
         logger.warning("风控拦截: %s 近20日动量 %.1f%% 低于阈值 %.0f%%",
                        selected["selected_code"], sel_momentum, guard)
-        conn = _get_db()
-        conn.execute(
-            "INSERT INTO recommend_log "
-            "(recommend_date, code, name, rank, score, combo, regime, buy_reason, status) "
-             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'REJECT')",
-             (date_str, selected["selected_code"], selected["selected_name"],
-              0, 0.0, 0.0, llm_regime,
-             f"风控拦截: 20日动量{sel_momentum:.1f}% 低于阈值{guard:.0f}%"),
-        )
-        conn.commit()
-        conn.close()
+        with _db_conn() as conn:
+            conn.execute(
+                "INSERT INTO recommend_log "
+                "(recommend_date, code, name, rank, score, combo, regime, buy_reason, status) "
+                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'REJECT')",
+                 (date_str, selected["selected_code"], selected["selected_name"],
+                  0, 0.0, 0.0, llm_regime,
+                 f"风控拦截: 20日动量{sel_momentum:.1f}% 低于阈值{guard:.0f}%"),
+            )
         logger.info("风控拦截已入库: %s", selected["selected_code"])
         return
 
@@ -766,12 +750,11 @@ def run_recommendation(retrain: bool = False, force: bool = False) -> None:
     }, ensure_ascii=False)
 
     # 同步选中基金的净值（确保 entry_nav 能取到当日盘后数据）
-    conn = _get_db()
-    new_rows = fetch_fund_nav_incremental(selected["selected_code"], conn)
-    if new_rows:
-        conn.commit()
-        logger.info("净值同步: %s 新增 %d 条", selected["selected_code"], new_rows)
-    conn.close()
+    with _db_conn() as conn:
+        new_rows = fetch_fund_nav_incremental(selected["selected_code"], conn)
+        if new_rows:
+            conn.commit()
+            logger.info("净值同步: %s 新增 %d 条", selected["selected_code"], new_rows)
 
     _save_recommendation(date_str, selected, finalists, vetoed, llm_regime, feature_snapshot)
 
@@ -783,23 +766,21 @@ def run_recommendation(retrain: bool = False, force: bool = False) -> None:
 
 def _write_sector_selection(date_str: str, ctx: MacroContext,
                             sel_features: dict) -> None:
-    conn = _get_db()
-    log_id = conn.execute(
-        "SELECT id FROM recommend_log ORDER BY recommend_date DESC LIMIT 1"
-    ).fetchone()
-    log_id = log_id[0] if log_id else None
-    # ponytail: 每天只保留一条赛道选择，先清旧再写入避免重复累积
-    conn.execute("DELETE FROM sector_selections WHERE date = ?", (date_str,))
-    conn.execute(
-        "INSERT INTO sector_selections (date, recommend_log_id, recommended_sectors, "
-        "risk_sectors, sector_reasoning, regime_label) VALUES (?, ?, ?, ?, ?, ?)",
-        (date_str, log_id,
-         json.dumps(ctx.recommended_sectors, ensure_ascii=False),
-         json.dumps(ctx.risk_sectors, ensure_ascii=False),
-         ctx.sector_reasoning, ctx.regime_label),
-    )
-    conn.commit()
-    conn.close()
+    with _db_conn() as conn:
+        log_id = conn.execute(
+            "SELECT id FROM recommend_log ORDER BY recommend_date DESC LIMIT 1"
+        ).fetchone()
+        log_id = log_id[0] if log_id else None
+        # ponytail: 每天只保留一条赛道选择，先清旧再写入避免重复累积
+        conn.execute("DELETE FROM sector_selections WHERE date = ?", (date_str,))
+        conn.execute(
+            "INSERT INTO sector_selections (date, recommend_log_id, recommended_sectors, "
+            "risk_sectors, sector_reasoning, regime_label) VALUES (?, ?, ?, ?, ?, ?)",
+            (date_str, log_id,
+             json.dumps(ctx.recommended_sectors, ensure_ascii=False),
+             json.dumps(ctx.risk_sectors, ensure_ascii=False),
+             ctx.sector_reasoning, ctx.regime_label),
+        )
 
 
 if __name__ == "__main__":

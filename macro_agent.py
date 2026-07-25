@@ -11,7 +11,8 @@ import time as _time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 
-from data_foundation import _get_db, _call_llm
+from data_foundation import _call_llm
+from data_store import _db_conn
 from fetch import fetch as _fetch
 from sector_api import is_industry_code, is_industry_name
 
@@ -68,21 +69,19 @@ def build_macro_context(date_str: str | None = None, force: bool = False) -> Mac
 # ── DB 缓存 ──
 
 def _ensure_column():
-    conn = _get_db()
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(macro_news)").fetchall()}
-    if "context_json" not in cols:
-        conn.execute("ALTER TABLE macro_news ADD COLUMN context_json TEXT")
-        conn.commit()
-    conn.close()
+    with _db_conn() as conn:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(macro_news)").fetchall()}
+        if "context_json" not in cols:
+            conn.execute("ALTER TABLE macro_news ADD COLUMN context_json TEXT")
+            conn.commit()
 
 
 def _load_cache(date_str: str) -> MacroContext | None:
-    conn = _get_db()
-    row = conn.execute(
-        "SELECT context_json FROM macro_news WHERE date = ? AND context_json IS NOT NULL",
-        (date_str,),
-    ).fetchone()
-    conn.close()
+    with _db_conn() as conn:
+        row = conn.execute(
+            "SELECT context_json FROM macro_news WHERE date = ? AND context_json IS NOT NULL",
+            (date_str,),
+        ).fetchone()
     if row:
         try:
             d = json.loads(row[0])
@@ -93,14 +92,12 @@ def _load_cache(date_str: str) -> MacroContext | None:
 
 
 def _save_cache(ctx: MacroContext) -> None:
-    conn = _get_db()
-    conn.execute(
-        "INSERT INTO macro_news (date, context_json) VALUES (?, ?) "
-        "ON CONFLICT(date) DO UPDATE SET context_json = excluded.context_json",
-        (ctx.date, json.dumps(asdict(ctx), ensure_ascii=False)),
-    )
-    conn.commit()
-    conn.close()
+    with _db_conn() as conn:
+        conn.execute(
+            "INSERT INTO macro_news (date, context_json) VALUES (?, ?) "
+            "ON CONFLICT(date) DO UPDATE SET context_json = excluded.context_json",
+            (ctx.date, json.dumps(asdict(ctx), ensure_ascii=False)),
+        )
 
 
 # ── 数据源 ──
@@ -233,16 +230,14 @@ def _fetch_news(date_str: str) -> dict:
         summary_parts.append(f"【财联社电报】\n{cls_text}")
     news = "\n\n".join(summary_parts)
 
-    conn = _get_db()
-    if top_gainers or top_losers:
-        conn.execute(
-            "INSERT OR REPLACE INTO macro_news "
-            "(date, news_summary, top_gainers, top_losers, etf_net_flow) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (date_str, news, top_gainers, top_losers, etf_net_flow),
-        )
-        conn.commit()
-    conn.close()
+    with _db_conn() as conn:
+        if top_gainers or top_losers:
+            conn.execute(
+                "INSERT OR REPLACE INTO macro_news "
+                "(date, news_summary, top_gainers, top_losers, etf_net_flow) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (date_str, news, top_gainers, top_losers, etf_net_flow),
+            )
     logger.info("快讯入库: 领涨[%s] 领跌[%s] 新闻%d字 cls=%d条",
                 top_gainers[:40], top_losers[:40], len(news), len(cls_stocks))
     return {
@@ -281,14 +276,12 @@ def _fetch_flow(date_str: str) -> dict:
             {"name": d.get("n", ""), "flow": float(d.get("zjl", 0) or 0), "pct": d.get("u", "")}
             for d in reversed(sorted_by_flow[-5:])
         ]
-        conn = _get_db()
-        conn.execute(
-            "UPDATE macro_news SET flow_json = ? WHERE date = ?",
-            (json.dumps(result, ensure_ascii=False), date_str),
-        )
-        conn.commit()
-        conn.close()
-        logger.info("资金流已获取: %d 个板块", len(allbk))
+        with _db_conn() as conn:
+            conn.execute(
+                "UPDATE macro_news SET flow_json = ? WHERE date = ?",
+                (json.dumps(result, ensure_ascii=False), date_str),
+            )
+        logger.info("资金流已获取: API返回%d条, 筛选后申万行业%d个", len(allbk), len(sectors))
     except Exception as e:
         logger.warning("资金流抓取失败: %s", e)
     return result
@@ -297,25 +290,23 @@ def _fetch_flow(date_str: str) -> dict:
 # ── LLM 选赛道 ──
 
 def _load_sector_insights() -> str:
-    conn = _get_db()
-    rows = conn.execute(
-        "SELECT insight FROM evolution_insights "
-        "WHERE insight_type = 'sector' AND active = 1 AND confidence > 0.3 "
-        "ORDER BY created_date DESC LIMIT 5"
-    ).fetchall()
-    conn.close()
+    with _db_conn() as conn:
+        rows = conn.execute(
+            "SELECT insight FROM evolution_insights "
+            "WHERE insight_type = 'sector' AND active = 1 AND confidence > 0.3 "
+            "ORDER BY created_date DESC LIMIT 5"
+        ).fetchall()
     if not rows:
         return ""
     return "\n".join(f"  - {r[0]}" for r in rows)
 
 
 def _load_available_sectors() -> list[str]:
-    conn = _get_db()
-    rows = conn.execute(
-        "SELECT DISTINCT rbsa_industry_1 FROM fund_features "
-        "WHERE rbsa_industry_1 IS NOT NULL AND rbsa_industry_1 != ''"
-    ).fetchall()
-    conn.close()
+    with _db_conn() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT rbsa_industry_1 FROM fund_features "
+            "WHERE rbsa_industry_1 IS NOT NULL AND rbsa_industry_1 != ''"
+        ).fetchall()
     return [r[0] for r in rows]
 
 

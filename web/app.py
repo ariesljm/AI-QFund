@@ -19,8 +19,10 @@ from fastapi.templating import Jinja2Templates
 import json
 from urllib.request import urlopen
 
-from data_store import _get_db, SETTINGS_PATH, _save_settings, _load_settings
+from data_store import _db_conn, SETTINGS_PATH, _save_settings, _load_settings
 from recommend import run_recommendation
+
+logger = logging.getLogger("web")
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
@@ -47,7 +49,9 @@ def _pipeline_log(msg: str) -> None:
     print(line, file=sys.stderr, flush=True)
 
 
-def _run_pipeline(force: bool = False):
+from pipeline import run as run_pipeline
+
+def _run_pipeline_wrapper(force: bool = False):
     global _pipeline_status
     _pipeline_logs.clear()
     _pipeline_status = {"state": "running", "message": "管线启动..."}
@@ -58,10 +62,8 @@ def _run_pipeline(force: bool = False):
     root = logging.getLogger()
     root.addHandler(handler)
     
-    _pipeline_log("[启动] 推荐管线开始执行")
     try:
-        run_recommendation(force=force)
-        _pipeline_log("[完成] 推荐管线执行完毕")
+        run_pipeline(force=force)
         _pipeline_status = {"state": "done", "message": "管线执行完成"}
     except Exception as e:
         _pipeline_log(f"[错误] 管线执行失败: {e}")
@@ -93,7 +95,7 @@ def _scheduler_loop():
                 if now.hour == int(h) and now.minute == int(m) and _last_run_date != today:
                     _sched_logger.info("定时触发: %s %02d:%02d", today, int(h), int(m))
                     _last_run_date = today
-                    _run_pipeline()
+                    _run_pipeline_wrapper()
             else:
                 _sched_logger.debug("调度器已禁用（hour 为空）")
         except Exception as e:
@@ -103,12 +105,11 @@ def _scheduler_loop():
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    conn = _get_db()
-    try:
-        conn.execute("ALTER TABLE recommend_log ADD COLUMN combo REAL")
-    except Exception:
-        pass
-    conn.close()
+    with _db_conn() as conn:
+        try:
+            conn.execute("ALTER TABLE recommend_log ADD COLUMN combo REAL")
+        except Exception:
+            pass
     t = threading.Thread(target=_scheduler_loop, daemon=True)
     t.start()
     yield
@@ -119,16 +120,14 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
 def _q(sql: str, params: tuple = ()):
-    conn = _get_db()
-    r = conn.execute(sql, params).fetchall()
-    conn.close()
+    with _db_conn() as conn:
+        r = conn.execute(sql, params).fetchall()
     return r
 
 
 def _q1(sql: str, params: tuple = ()):
-    conn = _get_db()
-    r = conn.execute(sql, params).fetchone()
-    conn.close()
+    with _db_conn() as conn:
+        r = conn.execute(sql, params).fetchone()
     return r
 
 
@@ -281,8 +280,8 @@ async def index(request: Request):
             titles = [(i.get("title") or i.get("content") or "").strip() for i in items if i.get("title") or i.get("content")]
             if titles:
                 news_items = titles
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("财联社快讯抓取失败: %s", e)
     macro_data = {
         "news": "；".join(news_items),
         "news_items": news_items,
@@ -320,8 +319,8 @@ async def index(request: Request):
                         for i, (n, v) in enumerate(l)
                     ]
                     sector_losers.reverse()  # 左浅右深：跌幅从小到大排列
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("板块排行解析失败: %s", e)
 
     # 资金流向（优先从 flow_json 读取，独立于 LLM 管线）
     flow_inflows = []
@@ -340,8 +339,8 @@ async def index(request: Request):
                 {**s, "abs": abs(s.get("flow", 0) or 0)}
                 for s in f.get("top_outflows", [])
             ]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("资金流向数据解析失败: %s", e)
 
     # 赛道分析（从 context_json 解析，依赖 LLM 管线）
     sector_reasoning = ""
@@ -358,8 +357,8 @@ async def index(request: Request):
             sector_reasoning = ctx.get("sector_reasoning", "")
             raw_regime = (ctx.get("regime_label") or "neutral").upper()
             regime_label = raw_regime if raw_regime in ("BULL", "BEAR") else "NEUTRAL"
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("宏观上下文解析失败: %s", e)
 
     # 行业热力图
     sectors = _q(
@@ -600,7 +599,8 @@ async def realtime_news():
             data = json.loads(r.read().decode("utf-8"))
         items = data.get("data", {}).get("roll_data", [])
         return items
-    except Exception:
+    except Exception as e:
+        logger.warning("实时快讯接口拉取失败: %s", e)
         return {"error": "fetch failed"}
 
 
@@ -641,7 +641,7 @@ async def check_password(body: dict):
 async def run_pipeline():
     logger = logging.getLogger("web")
     try:
-        t = threading.Thread(target=_run_pipeline, args=(True,), daemon=True)
+        t = threading.Thread(target=_run_pipeline_wrapper, args=(True,), daemon=True)
         t.start()
         logger.info("管线手动触发成功")
         return {"status": "started"}
@@ -727,7 +727,8 @@ if __name__ == "__main__":
     try:
         settings = _load_settings()
         port = int(settings.get("web", {}).get("port", 9123))
-    except Exception:
+    except Exception as e:
+        logger.warning("设置文件加载失败(使用默认端口): %s", e)
         port = 9123
     reload = _os.environ.get("UVICORN_RELOAD", "").lower() in ("1", "true", "yes")
     uvicorn.run("web.app:app", host="0.0.0.0", port=port, reload=reload)

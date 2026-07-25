@@ -16,6 +16,13 @@ model = "alpha-radar"
 hour = 8
 minute = 0
 
+# ============ 日志 ============
+[logging]
+# 文件日志级别: DEBUG / INFO / WARNING / ERROR
+file_level = "INFO"
+# 控制台日志级别: DEBUG / INFO / WARNING / ERROR
+console_level = "INFO"
+
 # ============ Web 服务 ============
 [web]
 port = 9123

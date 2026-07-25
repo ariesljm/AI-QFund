@@ -7,7 +7,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-from data_foundation import DB_PATH
+from data_store import DB_PATH
 
 SCHEMA_PATH = Path(__file__).parent / "data" / "schema.sql"
 

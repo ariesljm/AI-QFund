@@ -16,7 +16,8 @@ from pathlib import Path
 
 import numpy as np
 
-from data_foundation import _get_db, _load_settings
+from data_store import _get_db, _load_settings
+from data_store import _db_conn
 
 logger = logging.getLogger("evolve")
 
@@ -29,7 +30,8 @@ _OUTCOME_DAYS_THRESHOLD = 20
 def _apply_ranking_weights(weights: dict) -> bool:
     try:
         text = _RANKING_CFG_PATH.read_text(encoding="utf-8")
-    except Exception:
+    except Exception as e:
+        logger.warning("读取排位配置文件失败: %s", e)
         return False
     lines = text.splitlines()
     keys = ("rel_strength_weight", "calmar_weight", "hurst_weight", "momentum_guard_pct")
@@ -60,13 +62,12 @@ def _apply_ranking_weights(weights: dict) -> bool:
 
 
 def _review_ranking_all() -> list[str]:
-    conn = _get_db()
-    rows = conn.execute(
-        "SELECT ff.code, ff.momentum_20d, ff.hurst_60d, ff.calmar "
-        "FROM fund_features ff JOIN fund_basic fb ON fb.code=ff.code "
-        "WHERE fb.is_buyable=1"
-    ).fetchall()
-    conn.close()
+    with _db_conn() as conn:
+        rows = conn.execute(
+            "SELECT ff.code, ff.momentum_20d, ff.hurst_60d, ff.calmar "
+            "FROM fund_features ff JOIN fund_basic fb ON fb.code=ff.code "
+            "WHERE fb.is_buyable=1"
+        ).fetchall()
     if len(rows) < 200:
         return []
 
@@ -83,11 +84,10 @@ def _review_ranking_all() -> list[str]:
     if corr_cm < 0:
         fixes.append(f"calmar与动量负相关({corr_cm:+.3f})，回撤质量信号失效")
 
-    idx = _get_db()
-    idx_rows = idx.execute(
-        "SELECT close FROM index_daily WHERE code='sh000300' ORDER BY date DESC LIMIT 21"
-    ).fetchall()
-    idx.close()
+    with _db_conn() as idx:
+        idx_rows = idx.execute(
+            "SELECT close FROM index_daily WHERE code='sh000300' ORDER BY date DESC LIMIT 21"
+        ).fetchall()
     if len(idx_rows) >= 21:
         idx_mom = (idx_rows[0][0] / idx_rows[-1][0] - 1) * 100
         rel = mom - idx_mom
@@ -111,56 +111,54 @@ def _review_ranking_all() -> list[str]:
 
 def _settle_outcomes(month: str) -> int:
     """更新 sector_selections 的 outcome 字段。"""
-    conn = _get_db()
-    rows = conn.execute(
-        "SELECT id, recommend_log_id FROM sector_selections "
-        "WHERE date LIKE ? AND (outcome = '待定' OR outcome IS NULL)",
-        (f"{month}%",),
-    ).fetchall()
-    settled = 0
-    today = datetime.now().strftime("%Y-%m-%d")
+    with _db_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, recommend_log_id FROM sector_selections "
+            "WHERE date LIKE ? AND (outcome = '待定' OR outcome IS NULL)",
+            (f"{month}%",),
+        ).fetchall()
+        settled = 0
+        today = datetime.now().strftime("%Y-%m-%d")
 
-    for ss_id, log_id in rows:
-        if not log_id:
-            continue
-        log = conn.execute(
-            "SELECT status, return_rate, recommend_date FROM recommend_log WHERE id = ?",
-            (log_id,),
-        ).fetchone()
-        if not log:
-            continue
-        status, ret, reco_date = log
-
-        if status in ("EXIT", "HOLD", "BUY_MORE", "WARNING"):
-            reco_dt = datetime.strptime(reco_date, "%Y-%m-%d")
-            days = (datetime.now() - reco_dt).days
-            if days < _OUTCOME_DAYS_THRESHOLD and status != "EXIT":
+        for ss_id, log_id in rows:
+            if not log_id:
                 continue
+            log = conn.execute(
+                "SELECT status, return_rate, recommend_date FROM recommend_log WHERE id = ?",
+                (log_id,),
+            ).fetchone()
+            if not log:
+                continue
+            status, ret, reco_date = log
 
-        outcome, note = "平", ""
-        if status == "EXIT":
-            if ret is not None:
-                if ret > 0.02:
-                    outcome, note = "胜", f"退出时收益 {ret*100:+.2f}%"
-                elif ret < -0.05:
-                    outcome, note = "负", f"退出时亏损 {ret*100:.2f}%"
-                else:
-                    outcome, note = "平", f"退出时收益 {ret*100:+.2f}%"
-        else:
-            if ret is not None:
-                if ret > 0.02:
-                    outcome, note = "胜", f"运行{days}日收益 {ret*100:+.2f}%"
-                elif ret < -0.05:
-                    outcome, note = "负", f"运行{days}日亏损 {ret*100:.2f}%"
+            if status in ("EXIT", "HOLD", "BUY_MORE", "WARNING"):
+                reco_dt = datetime.strptime(reco_date, "%Y-%m-%d")
+                days = (datetime.now() - reco_dt).days
+                if days < _OUTCOME_DAYS_THRESHOLD and status != "EXIT":
+                    continue
 
-        conn.execute(
-            "UPDATE sector_selections SET outcome=?, outcome_date=?, outcome_note=? WHERE id=?",
-            (outcome, today, note, ss_id),
-        )
-        settled += 1
+            outcome, note = "平", ""
+            if status == "EXIT":
+                if ret is not None:
+                    if ret > 0.02:
+                        outcome, note = "胜", f"退出时收益 {ret*100:+.2f}%"
+                    elif ret < -0.05:
+                        outcome, note = "负", f"退出时亏损 {ret*100:.2f}%"
+                    else:
+                        outcome, note = "平", f"退出时收益 {ret*100:+.2f}%"
+            else:
+                if ret is not None:
+                    if ret > 0.02:
+                        outcome, note = "胜", f"运行{days}日收益 {ret*100:+.2f}%"
+                    elif ret < -0.05:
+                        outcome, note = "负", f"运行{days}日亏损 {ret*100:.2f}%"
 
-    conn.commit()
-    conn.close()
+            conn.execute(
+                "UPDATE sector_selections SET outcome=?, outcome_date=?, outcome_note=? WHERE id=?",
+                (outcome, today, note, ss_id),
+            )
+            settled += 1
+
     logger.info("月度结算: %d 条 sector_selections 已更新 outcome", settled)
     return settled
 
@@ -169,20 +167,19 @@ def _settle_outcomes(month: str) -> int:
 
 def _collect_cases(month: str) -> tuple[list[dict], list[dict], list[dict]]:
     """收集当月推荐案例（含回填 outcome 后的结果 + 监控信号链）。"""
-    conn = _get_db()
-    rows = conn.execute(
-        "SELECT ss.id, ss.recommend_log_id, ss.recommended_sectors, ss.sector_reasoning, "
-        "ss.regime_label, ss.outcome, ss.outcome_note, rl.buy_reason, rl.code, rl.name, "
-        "me.signal, me.trigger_trailing, me.trigger_drift, me.trigger_sector_adv, "
-        "me.logic_verdict, me.sector_risk, me.holding_risk, me.detail "
-        "FROM sector_selections ss "
-        "LEFT JOIN recommend_log rl ON rl.id = ss.recommend_log_id "
-        "LEFT JOIN monitor_events me ON me.recommend_log_id = rl.id "
-        "WHERE ss.date LIKE ? AND ss.outcome != '待定' "
-        "ORDER BY ss.date DESC LIMIT 20",
-        (f"{month}%",),
-    ).fetchall()
-    conn.close()
+    with _db_conn() as conn:
+        rows = conn.execute(
+            "SELECT ss.id, ss.recommend_log_id, ss.recommended_sectors, ss.sector_reasoning, "
+            "ss.regime_label, ss.outcome, ss.outcome_note, rl.buy_reason, rl.code, rl.name, "
+            "me.signal, me.trigger_trailing, me.trigger_drift, me.trigger_sector_adv, "
+            "me.logic_verdict, me.sector_risk, me.holding_risk, me.detail "
+            "FROM sector_selections ss "
+            "LEFT JOIN recommend_log rl ON rl.id = ss.recommend_log_id "
+            "LEFT JOIN monitor_events me ON me.recommend_log_id = rl.id "
+            "WHERE ss.date LIKE ? AND ss.outcome != '待定' "
+            "ORDER BY ss.date DESC LIMIT 20",
+            (f"{month}%",),
+        ).fetchall()
 
     successes, failures, neutrals = [], [], []
     for r in rows:
@@ -266,20 +263,19 @@ def _batch_llm_analyze(successes: list, failures: list, neutrals: list | None = 
             return result
         if isinstance(result, dict) and "insight" in result:
             return [result]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("LLM 结果解析失败: %s", e)
     return []
 
 
 def _calc_loss(code: str, reco_date: str, exit_date: str) -> float | None:
-    conn = _get_db()
-    nav_reco = conn.execute(
-        "SELECT cum_nav FROM fund_nav WHERE code = ? AND date = ?", (code, reco_date)
-    ).fetchone()
-    nav_exit = conn.execute(
-        "SELECT cum_nav FROM fund_nav WHERE code = ? AND date = ?", (code, exit_date)
-    ).fetchone()
-    conn.close()
+    with _db_conn() as conn:
+        nav_reco = conn.execute(
+            "SELECT cum_nav FROM fund_nav WHERE code = ? AND date = ?", (code, reco_date)
+        ).fetchone()
+        nav_exit = conn.execute(
+            "SELECT cum_nav FROM fund_nav WHERE code = ? AND date = ?", (code, exit_date)
+        ).fetchone()
     if not nav_reco or not nav_exit or not nav_reco[0] or not nav_exit[0]:
         return None
     return nav_exit[0] / nav_reco[0] - 1.0
@@ -351,21 +347,18 @@ def _insight_conflicts(new_insight: str, existing: list) -> bool:
 
 
 def _save_insight(insight: dict) -> bool:
-    conn = _get_db()
-    existing = [r[0] for r in conn.execute(
-        "SELECT insight FROM evolution_insights WHERE active = 1"
-    ).fetchall()]
-    if _insight_conflicts(insight["insight"], existing):
-        conn.close()
-        return False
-    conn.execute(
-        "INSERT INTO evolution_insights (insight, insight_type, created_date) "
-        "VALUES (?, ?, ?)",
-        (insight["insight"], insight.get("type", "sector"),
-         datetime.now().strftime("%Y-%m-%d")),
-    )
-    conn.commit()
-    conn.close()
+    with _db_conn() as conn:
+        existing = [r[0] for r in conn.execute(
+            "SELECT insight FROM evolution_insights WHERE active = 1"
+        ).fetchall()]
+        if _insight_conflicts(insight["insight"], existing):
+            return False
+        conn.execute(
+            "INSERT INTO evolution_insights (insight, insight_type, created_date) "
+            "VALUES (?, ?, ?)",
+            (insight["insight"], insight.get("type", "sector"),
+             datetime.now().strftime("%Y-%m-%d")),
+        )
     logger.info("新洞察入库: [%s] %s", insight.get("type", "?"), insight["insight"][:60])
     return True
 
@@ -374,21 +367,19 @@ def _save_insight(insight: dict) -> bool:
 
 def _decay_insights() -> int:
     """降低旧洞察置信度，长期无用则标记非活跃。"""
-    conn = _get_db()
-    rows = conn.execute(
-        "SELECT id, confidence, apply_count FROM evolution_insights WHERE active = 1"
-    ).fetchall()
-    decayed = 0
-    for rid, conf, cnt in rows:
-        new_conf = float(conf) * 0.95
-        active = 1 if new_conf > 0.2 else 0
-        conn.execute(
-            "UPDATE evolution_insights SET confidence = ?, active = ? WHERE id = ?",
-            (new_conf, active, rid),
-        )
-        decayed += 1
-    conn.commit()
-    conn.close()
+    with _db_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, confidence, apply_count FROM evolution_insights WHERE active = 1"
+        ).fetchall()
+        decayed = 0
+        for rid, conf, cnt in rows:
+            new_conf = float(conf) * 0.95
+            active = 1 if new_conf > 0.2 else 0
+            conn.execute(
+                "UPDATE evolution_insights SET confidence = ?, active = ? WHERE id = ?",
+                (new_conf, active, rid),
+            )
+            decayed += 1
     logger.info("置信度衰减: %d 条洞察已更新", decayed)
     return decayed
 
@@ -396,14 +387,12 @@ def _decay_insights() -> int:
 # ── 主入口 ─────────────────────────────────────────────────
 
 def _save_self_fix(fix: str) -> None:
-    conn = _get_db()
-    conn.execute(
-        "INSERT INTO evolution_insights (insight, insight_type, created_date) "
-        "VALUES (?, 'ranking', ?)",
-        (fix, datetime.now().strftime("%Y-%m-%d")),
-    )
-    conn.commit()
-    conn.close()
+    with _db_conn() as conn:
+        conn.execute(
+            "INSERT INTO evolution_insights (insight, insight_type, created_date) "
+            "VALUES (?, 'ranking', ?)",
+            (fix, datetime.now().strftime("%Y-%m-%d")),
+        )
     logger.info("排分自纠偏: %s", fix[:60])
 
 

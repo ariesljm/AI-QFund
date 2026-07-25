@@ -161,100 +161,98 @@ def calc_features(code: str, conn: sqlite3.Connection,
 
 
 def calc_all_features(batch_commit: int = 500) -> int:
-    from data_store import _get_db
+    from data_store import _db_conn
 
-    conn = _get_db()
-    all_codes = [
-        r[0] for r in conn.execute(
-            "SELECT code FROM fund_basic WHERE is_buyable = 1"
-        ).fetchall()
-    ]
-    total = len(all_codes)
-    rbsa_data: dict[str, tuple[str, float]] = {}
-    cur_r = conn.execute(
-        "SELECT code, stock_code, stock_name, weight FROM fund_holdings "
-        "WHERE report_date IN "
-        "(SELECT MAX(report_date) FROM fund_holdings GROUP BY code)"
-    )
-    _rbsa_buf: dict[str, list[dict]] = {}
-    for code, sc, sn, w in cur_r.fetchall():
-        _rbsa_buf.setdefault(code, []).append({"stock_code": sc, "stock_name": sn, "weight": w})
-    for code, holdings in _rbsa_buf.items():
-        top = calc_rbsa(holdings, conn)[:1]
-        if top:
-            rbsa_data[code] = (top[0]["industry"], top[0]["weight"])
-    logger.info("RBSA 预加载完成: %d 只基金有行业暴露", len(rbsa_data))
-    market_etf_flow_slope = 0.0
-    cur_etf = conn.execute(
-        "SELECT volume FROM index_daily WHERE code = 'sh510300' ORDER BY date ASC"
-    )
-    etf_vols = np.array([r[0] for r in cur_etf.fetchall()], dtype=float)
-    if len(etf_vols) >= 5:
-        vw = etf_vols[-5:]
-        vw = vw[vw > 0]
-        if len(vw) >= 2:
-            x = np.arange(len(vw), dtype=float)
-            y = np.log(vw)
-            market_etf_flow_slope = float(np.polyfit(x, y, 1)[0])
-    logger.info("市场级 ETF 资金流斜率: %.6f", market_etf_flow_slope)
-    local_feat = dict(
-        conn.execute("SELECT code, date FROM fund_features").fetchall()
-    )
-    nav_latest = dict(
-        conn.execute("SELECT code, MAX(date) FROM fund_nav GROUP BY code").fetchall()
-    )
-    holdings_need_rbsa = set()
-    cur_e = conn.execute(
-        "SELECT code FROM fund_features "
-        "WHERE (rbsa_industry_1 IS NULL OR rbsa_industry_1 = '' OR rbsa_industry_1 = '其他')"
-    )
-    for (c,) in cur_e.fetchall():
-        if c in rbsa_data:
-            holdings_need_rbsa.add(c)
-    skip_codes = {
-        c for c in all_codes
-        if c in local_feat and c in nav_latest and local_feat[c] >= nav_latest[c]
-        and c not in holdings_need_rbsa
-    }
-    logger.info(
-        "待计算特征基金: %d 只, 跳过已最新 %d 只, 强制重算RBSA %d 只",
-        total - len(skip_codes), len(skip_codes), len(holdings_need_rbsa),
-    )
-    done = 0
-    saved = 0
-    start_time = time.monotonic()
-    for code in all_codes:
-        if code in skip_codes:
+    with _db_conn() as conn:
+        all_codes = [
+            r[0] for r in conn.execute(
+                "SELECT code FROM fund_basic WHERE is_buyable = 1"
+            ).fetchall()
+        ]
+        total = len(all_codes)
+        rbsa_data: dict[str, tuple[str, float]] = {}
+        cur_r = conn.execute(
+            "SELECT code, stock_code, stock_name, weight FROM fund_holdings "
+            "WHERE report_date IN "
+            "(SELECT MAX(report_date) FROM fund_holdings GROUP BY code)"
+        )
+        _rbsa_buf: dict[str, list[dict]] = {}
+        for code, sc, sn, w in cur_r.fetchall():
+            _rbsa_buf.setdefault(code, []).append({"stock_code": sc, "stock_name": sn, "weight": w})
+        for code, holdings in _rbsa_buf.items():
+            top = calc_rbsa(holdings, conn)[:1]
+            if top:
+                rbsa_data[code] = (top[0]["industry"], top[0]["weight"])
+        logger.info("RBSA 预加载完成: %d 只基金有行业暴露", len(rbsa_data))
+        market_etf_flow_slope = 0.0
+        cur_etf = conn.execute(
+            "SELECT volume FROM index_daily WHERE code = 'sh510300' ORDER BY date ASC"
+        )
+        etf_vols = np.array([r[0] for r in cur_etf.fetchall()], dtype=float)
+        if len(etf_vols) >= 5:
+            vw = etf_vols[-5:]
+            vw = vw[vw > 0]
+            if len(vw) >= 2:
+                x = np.arange(len(vw), dtype=float)
+                y = np.log(vw)
+                market_etf_flow_slope = float(np.polyfit(x, y, 1)[0])
+        logger.info("市场级 ETF 资金流斜率: %.6f", market_etf_flow_slope)
+        local_feat = dict(
+            conn.execute("SELECT code, date FROM fund_features").fetchall()
+        )
+        nav_latest = dict(
+            conn.execute("SELECT code, MAX(date) FROM fund_nav GROUP BY code").fetchall()
+        )
+        holdings_need_rbsa = set()
+        cur_e = conn.execute(
+            "SELECT code FROM fund_features "
+            "WHERE (rbsa_industry_1 IS NULL OR rbsa_industry_1 = '' OR rbsa_industry_1 = '其他')"
+        )
+        for (c,) in cur_e.fetchall():
+            if c in rbsa_data:
+                holdings_need_rbsa.add(c)
+        skip_codes = {
+            c for c in all_codes
+            if c in local_feat and c in nav_latest and local_feat[c] >= nav_latest[c]
+            and c not in holdings_need_rbsa
+        }
+        logger.info(
+            "待计算特征基金: %d 只, 跳过已最新 %d 只, 强制重算RBSA %d 只",
+            total - len(skip_codes), len(skip_codes), len(holdings_need_rbsa),
+        )
+        done = 0
+        saved = 0
+        start_time = time.monotonic()
+        for code in all_codes:
+            if code in skip_codes:
+                done += 1
+                continue
+            features = calc_features(code, conn, market_etf_flow_slope=market_etf_flow_slope)
             done += 1
-            continue
-        features = calc_features(code, conn, market_etf_flow_slope=market_etf_flow_slope)
-        done += 1
-        if features:
-            rbsa_industry_1, rbsa_weight_1 = rbsa_data.get(code, ("", 0.0))
-            conn.execute(
-                "INSERT OR REPLACE INTO fund_features "
-                "(code, date, hurst_60d, momentum_20d, calmar, downside_vol, "
-                "capture_up, capture_down, bias_60d, rbsa_industry_1, rbsa_weight_1, "
-                "etf_flow_slope_5d) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    features["code"], features["date"],
-                    features.get("hurst_60d"), features.get("momentum_20d"),
-                    features.get("calmar"), features.get("downside_vol"),
-                    features.get("capture_up"), features.get("capture_down"),
-                    features.get("bias_60d"),
-                    rbsa_industry_1, rbsa_weight_1,
-                    features.get("etf_flow_slope_5d"),
-                ),
-            )
-            saved += 1
-        if saved % batch_commit == 0:
-            conn.commit()
-            elapsed = time.monotonic() - start_time
-            speed = done / elapsed if elapsed > 0 else 0
-            logger.info("特征计算进度: %d/%d, speed=%.1f/s", done, total, speed)
-    conn.commit()
-    conn.close()
+            if features:
+                rbsa_industry_1, rbsa_weight_1 = rbsa_data.get(code, ("", 0.0))
+                conn.execute(
+                    "INSERT OR REPLACE INTO fund_features "
+                    "(code, date, hurst_60d, momentum_20d, calmar, downside_vol, "
+                    "capture_up, capture_down, bias_60d, rbsa_industry_1, rbsa_weight_1, "
+                    "etf_flow_slope_5d) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        features["code"], features["date"],
+                        features.get("hurst_60d"), features.get("momentum_20d"),
+                        features.get("calmar"), features.get("downside_vol"),
+                        features.get("capture_up"), features.get("capture_down"),
+                        features.get("bias_60d"),
+                        rbsa_industry_1, rbsa_weight_1,
+                        features.get("etf_flow_slope_5d"),
+                    ),
+                )
+                saved += 1
+            if saved % batch_commit == 0:
+                conn.commit()
+                elapsed = time.monotonic() - start_time
+                speed = done / elapsed if elapsed > 0 else 0
+                logger.info("特征计算进度: %d/%d, speed=%.1f/s", done, total, speed)
     elapsed = time.monotonic() - start_time
     logger.info("特征计算完成: %d/%d 只基金入库, 耗时 %.1f 秒", saved, total, elapsed)
     return saved

@@ -26,14 +26,22 @@ _ENV_OVERRIDE_MAP = {
 }
 
 
+import tomllib as _tomllib
+
+_SETTINGS_CACHE: dict | None = None
+
+
 def _load_settings():
-    import tomllib
+    global _SETTINGS_CACHE
+    if _SETTINGS_CACHE is not None:
+        return _SETTINGS_CACHE
     with open(SETTINGS_PATH, "rb") as f:
-        settings = tomllib.load(f)
+        settings = _tomllib.load(f)
     for env_key, (section, key) in _ENV_OVERRIDE_MAP.items():
         val = _os.environ.get(env_key)
         if val:
             settings.setdefault(section, {})[key] = val
+    _SETTINGS_CACHE = settings
     return settings
 
 
@@ -165,6 +173,8 @@ def _save_settings(settings: dict) -> bool:
                 flags=re.MULTILINE,
             )
     SETTINGS_PATH.write_text(text, encoding="utf-8")
+    global _SETTINGS_CACHE
+    _SETTINGS_CACHE = None
     logger.info("配置已保存: %s", {k: list(v.keys()) for k, v in settings.items()})
     return True
 

@@ -720,83 +720,81 @@ async def async_download_all_holdings(
 
     holdings_url = _API_HOLDINGS_URL
 
-    conn = _get_db()
-    all_codes = [
-        r[0] for r in conn.execute(
-            "SELECT code FROM fund_basic WHERE is_buyable = 1"
-        ).fetchall()
-    ]
+    with _db_conn() as conn:
+        all_codes = [
+            r[0] for r in conn.execute(
+                "SELECT code FROM fund_basic WHERE is_buyable = 1"
+            ).fetchall()
+        ]
 
-    # 推算最新季报截止日
-    today = datetime.now()
-    m = today.month
-    if m <= 3:
-        latest_quarter = f"{today.year - 1}-12-31"
-    elif m <= 6:
-        latest_quarter = f"{today.year}-03-31"
-    elif m <= 9:
-        latest_quarter = f"{today.year}-06-30"
-    else:
-        latest_quarter = f"{today.year}-09-30"
+        # 推算最新季报截止日
+        today = datetime.now()
+        m = today.month
+        if m <= 3:
+            latest_quarter = f"{today.year - 1}-12-31"
+        elif m <= 6:
+            latest_quarter = f"{today.year}-03-31"
+        elif m <= 9:
+            latest_quarter = f"{today.year}-06-30"
+        else:
+            latest_quarter = f"{today.year}-09-30"
 
-    # 本地各基金最新 report_date
-    local_latest = dict(
-        conn.execute(
-            "SELECT code, MAX(report_date) FROM fund_holdings GROUP BY code"
-        ).fetchall()
-    )
-    # 只拉取本地没有持仓、或持仓期早于最新季报截止日的基金
-    all_codes = [
-        c for c in all_codes
-        if local_latest.get(c) is None or local_latest[c] < latest_quarter
-    ]
-    logger.info(
-        "持仓增量模式：最新季报 %s, 已是最新 %d 只跳过, 待下载 %d 只",
-        latest_quarter, len(local_latest) - len(all_codes), len(all_codes),
-    )
+        # 本地各基金最新 report_date
+        local_latest = dict(
+            conn.execute(
+                "SELECT code, MAX(report_date) FROM fund_holdings GROUP BY code"
+            ).fetchall()
+        )
+        # 只拉取本地没有持仓、或持仓期早于最新季报截止日的基金
+        all_codes = [
+            c for c in all_codes
+            if local_latest.get(c) is None or local_latest[c] < latest_quarter
+        ]
+        logger.info(
+            "持仓增量模式：最新季报 %s, 已是最新 %d 只跳过, 待下载 %d 只",
+            latest_quarter, len(local_latest) - len(all_codes), len(all_codes),
+        )
 
-    semaphore = asyncio.Semaphore(concurrency)
-    connector = aiohttp.TCPConnector(limit=concurrency, ttl_dns_cache=300, enable_cleanup_closed=True)
-    total_rows = 0
-    total_done = 0
-    funds_with_holdings = 0
-    start_time = time.monotonic()
+        semaphore = asyncio.Semaphore(concurrency)
+        connector = aiohttp.TCPConnector(limit=concurrency, ttl_dns_cache=300, enable_cleanup_closed=True)
+        total_rows = 0
+        total_done = 0
+        funds_with_holdings = 0
+        start_time = time.monotonic()
 
-    async with aiohttp.ClientSession(headers=_HOLDINGS_HEADERS, connector=connector, trust_env=False) as session:
-        for i in range(0, len(all_codes), batch_size):
-            batch = all_codes[i : i + batch_size]
-            coros = [
-                _async_fetch_holdings_one(session, c, holdings_url, semaphore)
-                for c in batch
-            ]
-            results = await asyncio.gather(*coros)
+        async with aiohttp.ClientSession(headers=_HOLDINGS_HEADERS, connector=connector, trust_env=False) as session:
+            for i in range(0, len(all_codes), batch_size):
+                batch = all_codes[i : i + batch_size]
+                coros = [
+                    _async_fetch_holdings_one(session, c, holdings_url, semaphore)
+                    for c in batch
+                ]
+                results = await asyncio.gather(*coros)
 
-            batch_rows = 0
-            for code, report_date, holdings in results:
-                if holdings and report_date and report_date != local_latest.get(code):
-                    conn.executemany(
-                        "INSERT OR REPLACE INTO fund_holdings "
-                        "(code, report_date, stock_code, stock_name, weight) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        [(code, report_date, h["stock_code"], h["stock_name"], h["weight"])
-                         for h in holdings],
-                    )
-                    batch_rows += len(holdings)
-                    funds_with_holdings += 1
-                    local_latest[code] = report_date
-                total_done += 1
-            conn.commit()
-            total_rows += batch_rows
+                batch_rows = 0
+                for code, report_date, holdings in results:
+                    if holdings and report_date and report_date != local_latest.get(code):
+                        conn.executemany(
+                            "INSERT OR REPLACE INTO fund_holdings "
+                            "(code, report_date, stock_code, stock_name, weight) "
+                            "VALUES (?, ?, ?, ?, ?)",
+                            [(code, report_date, h["stock_code"], h["stock_name"], h["weight"])
+                             for h in holdings],
+                        )
+                        batch_rows += len(holdings)
+                        funds_with_holdings += 1
+                        local_latest[code] = report_date
+                    total_done += 1
+                conn.commit()
+                total_rows += batch_rows
 
-            elapsed = time.monotonic() - start_time
-            speed = total_done / elapsed if elapsed > 0 else 0
-            eta = (len(all_codes) - total_done) / speed if speed > 0 else 0
-            logger.info(
-                "进度 %d/%d (+%d 条), 速度 %.1f/s, ETA %.0fs",
-                total_done, len(all_codes), batch_rows, speed, eta,
-            )
-
-    conn.close()
+                elapsed = time.monotonic() - start_time
+                speed = total_done / elapsed if elapsed > 0 else 0
+                eta = (len(all_codes) - total_done) / speed if speed > 0 else 0
+                logger.info(
+                    "进度 %d/%d (+%d 条), 速度 %.1f/s, ETA %.0fs",
+                    total_done, len(all_codes), batch_rows, speed, eta,
+                )
     elapsed = time.monotonic() - start_time
     logger.info(
         "持仓下载完成: %d 只有持仓, 共 %d 条, 耗时 %.1f 秒",
@@ -813,42 +811,37 @@ def update_industry_map(force: bool = False) -> int:
     申万二级行业不常变动，默认 90 天内不重复拉取（force=True 强制刷新）。
     Returns: 写入的记录数
     """
-    conn = _get_db()
-    # 检查是否需要更新
-    if not force:
-        row = conn.execute("SELECT value FROM meta WHERE key = 'industry_map_updated'").fetchone()
-        if row:
-            last_update = datetime.strptime(row[0], "%Y-%m-%d")
-            if datetime.now() - last_update < timedelta(days=90):
-                logger.info("行业映射距上次更新不足 90 天，跳过")
-                conn.close()
-                return 0
+    with _db_conn() as conn:
+        # 检查是否需要更新
+        if not force:
+            row = conn.execute("SELECT value FROM meta WHERE key = 'industry_map_updated'").fetchone()
+            if row:
+                last_update = datetime.strptime(row[0], "%Y-%m-%d")
+                if datetime.now() - last_update < timedelta(days=90):
+                    logger.info("行业映射距上次更新不足 90 天，跳过")
+                    return 0
 
-    logger.info("正在拉取申万二级行业映射...")
-    try:
-        records = _fetch_industry_map()
-    except Exception as e:
-        logger.error("拉取行业映射失败: %s", e)
-        conn.close()
-        return 0
+        logger.info("正在拉取申万二级行业映射...")
+        try:
+            records = _fetch_industry_map()
+        except Exception as e:
+            logger.error("拉取行业映射失败: %s", e)
+            return 0
 
-    if not records:
-        logger.warning("行业映射为空")
-        conn.close()
-        return 0
+        if not records:
+            logger.warning("行业映射为空")
+            return 0
 
-    today = datetime.now().strftime("%Y-%m-%d")
-    conn.executemany(
-        "INSERT OR REPLACE INTO stock_industry_map (stock_code, industry_code, industry_name, update_date) "
-        "VALUES (?, ?, ?, ?)",
-        [(sc, ic, in_, today) for sc, ic, in_ in records],
-    )
-    conn.execute(
-        "INSERT OR REPLACE INTO meta (key, value) VALUES ('industry_map_updated', ?)",
-        (today,),
-    )
-    conn.commit()
-    conn.close()
+        today = datetime.now().strftime("%Y-%m-%d")
+        conn.executemany(
+            "INSERT OR REPLACE INTO stock_industry_map (stock_code, industry_code, industry_name, update_date) "
+            "VALUES (?, ?, ?, ?)",
+            [(sc, ic, in_, today) for sc, ic, in_ in records],
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('industry_map_updated', ?)",
+            (today,),
+        )
     logger.info("行业映射更新完成: %d 条记录", len(records))
     return len(records)
 
@@ -885,13 +878,12 @@ def _fetch_industry_map() -> list[tuple[str, str, str]]:
     返回 [(stock_code, industry_code, industry_name), ...]
     使用 asyncio 并发拉取，约 3-5 分钟完成全量。
     """
-    conn = _get_db()
-    all_stocks = [
-        r[0] for r in conn.execute(
-            "SELECT DISTINCT stock_code FROM fund_holdings"
-        ).fetchall()
-    ]
-    conn.close()
+    with _db_conn() as conn:
+        all_stocks = [
+            r[0] for r in conn.execute(
+                "SELECT DISTINCT stock_code FROM fund_holdings"
+            ).fetchall()
+        ]
 
     if not all_stocks:
         return []
@@ -924,8 +916,8 @@ def _fetch_industry_map() -> list[tuple[str, str, str]]:
                                     results[stock_code] = (em2016, industry)
                                     success += 1
                                     return
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning("股票 %s 行业映射查询失败: %s", stock_code, e)
             fail += 1
 
     async def _run():
@@ -953,83 +945,82 @@ def run_pipeline(steps: list[int] | None = None):
     all_steps = {1, 2, 3, 4, 5, 6, 7, 8}
     steps = steps or all_steps
 
-    conn = _get_db()
+    with _db_conn() as conn:
 
-    # Step 1: 基金列表（每周更新，不足 7 天自动跳过）
-    if 1 in steps:
-        logger.info("=== Step 1: 基金列表获取与过滤 ===")
-        update_fund_list_weekly()
+        # Step 1: 基金列表（每周更新，不足 7 天自动跳过）
+        if 1 in steps:
+            logger.info("=== Step 1: 基金列表获取与过滤 ===")
+            update_fund_list_weekly()
 
-    # Step 2: 净值更新
-    #   首次（本地无净值数据）→ async_download_all_nav：pingzhongdata 单请求/基金，高并发全量
-    #   日常（已有数据）→ async_update_nav_incremental：lsjz 按日期真·增量，仅补缺失
-    if 2 in steps:
-        has_nav = conn.execute("SELECT 1 FROM fund_nav LIMIT 1").fetchone()
-        if has_nav:
-            logger.info("=== Step 2: 净值增量更新（并发增量）===")
-            total_new = asyncio.run(async_update_nav_incremental(concurrency=20))
-        else:
-            logger.info("=== Step 2: 净值首次全量下载（pingzhongdata 高并发）===")
-            total_new = asyncio.run(async_download_all_nav(concurrency=50))
-        logger.info("净值更新完成，共新增 %d 条", total_new)
+        # Step 2: 净值更新
+        #   首次（本地无净值数据）→ async_download_all_nav：pingzhongdata 单请求/基金，高并发全量
+        #   日常（已有数据）→ async_update_nav_incremental：lsjz 按日期真·增量，仅补缺失
+        if 2 in steps:
+            has_nav = conn.execute("SELECT 1 FROM fund_nav LIMIT 1").fetchone()
+            if has_nav:
+                logger.info("=== Step 2: 净值增量更新（并发增量）===")
+                total_new = asyncio.run(async_update_nav_incremental(concurrency=20))
+            else:
+                logger.info("=== Step 2: 净值首次全量下载（pingzhongdata 高并发）===")
+                total_new = asyncio.run(async_download_all_nav(concurrency=50))
+            logger.info("净值更新完成，共新增 %d 条", total_new)
 
-    # Step 3: 宏观指数（EMA60 增量）
-    if 3 in steps:
-        logger.info("=== Step 3: 宏观指数获取 ===")
-        # 本地有数据则只拉最近少量做增量续算；无数据则冷启动拉 250 条
-        has_index = conn.execute(
-            "SELECT 1 FROM index_daily WHERE code = 'sh000300' LIMIT 1"
-        ).fetchone()
-        datalen = 10 if has_index else 250
-        index_data = fetch_index_daily(datalen=datalen)
-        n = save_index_daily("sh000300", index_data)
-        logger.info("沪深300日线新增 %d 条", n)
-        # 同步拉取沪深300ETF（510300）日线，用于资金流斜率
-        has_etf = conn.execute(
-            "SELECT 1 FROM index_daily WHERE code = 'sh510300' LIMIT 1"
-        ).fetchone()
-        etf_datalen = 10 if has_etf else 250
-        etf_data = fetch_etf_daily(datalen=etf_datalen)
-        n_etf = save_index_daily("sh510300", etf_data)
-        logger.info("沪深300ETF(510300)日线新增 %d 条", n_etf)
+        # Step 3: 宏观指数（EMA60 增量）
+        if 3 in steps:
+            logger.info("=== Step 3: 宏观指数获取 ===")
+            # 本地有数据则只拉最近少量做增量续算；无数据则冷启动拉 250 条
+            has_index = conn.execute(
+                "SELECT 1 FROM index_daily WHERE code = 'sh000300' LIMIT 1"
+            ).fetchone()
+            datalen = 10 if has_index else 250
+            index_data = fetch_index_daily(datalen=datalen)
+            n = save_index_daily("sh000300", index_data)
+            logger.info("沪深300日线新增 %d 条", n)
+            # 同步拉取沪深300ETF（510300）日线，用于资金流斜率
+            has_etf = conn.execute(
+                "SELECT 1 FROM index_daily WHERE code = 'sh510300' LIMIT 1"
+            ).fetchone()
+            etf_datalen = 10 if has_etf else 250
+            etf_data = fetch_etf_daily(datalen=etf_datalen)
+            n_etf = save_index_daily("sh510300", etf_data)
+            logger.info("沪深300ETF(510300)日线新增 %d 条", n_etf)
 
-    # Step 4: 重仓股（全量并发下载）
-    if 4 in steps:
-        logger.info("=== Step 4: 重仓股数据获取 ===")
-        asyncio.run(async_download_all_holdings())
-        # 持仓入库后立即更新行业映射，确保 Step 6 特征计算中 RBSA 可用
-        logger.info("更新申万行业映射（持仓→行业）...")
-        total_mapped = update_industry_map(force=True)
-        logger.info("行业映射完成: %d 条", total_mapped)
+        # Step 4: 重仓股（全量并发下载）
+        if 4 in steps:
+            logger.info("=== Step 4: 重仓股数据获取 ===")
+            asyncio.run(async_download_all_holdings())
+            # 持仓入库后立即更新行业映射，确保 Step 6 特征计算中 RBSA 可用
+            logger.info("更新申万行业映射（持仓→行业）...")
+            total_mapped = update_industry_map(force=True)
+            logger.info("行业映射完成: %d 条", total_mapped)
 
-    # Step 6: RBSA 行业暴露（行业映射已在 Step 5 完成，此处仅日志确认）
-    if 6 in steps:
-        logger.info("=== Step 6: RBSA 行业暴露 ===")
-        mapped = conn.execute(
-            "SELECT COUNT(*) FROM stock_industry_map"
-        ).fetchone()[0]
-        holdings_funds = conn.execute(
-            "SELECT COUNT(DISTINCT code) FROM fund_holdings"
-        ).fetchone()[0]
-        logger.info("stock_industry_map: %d 条, fund_holdings 覆盖: %d 只基金", mapped, holdings_funds)
+        # Step 6: RBSA 行业暴露（行业映射已在 Step 5 完成，此处仅日志确认）
+        if 6 in steps:
+            logger.info("=== Step 6: RBSA 行业暴露 ===")
+            mapped = conn.execute(
+                "SELECT COUNT(*) FROM stock_industry_map"
+            ).fetchone()[0]
+            holdings_funds = conn.execute(
+                "SELECT COUNT(DISTINCT code) FROM fund_holdings"
+            ).fetchone()[0]
+            logger.info("stock_industry_map: %d 条, fund_holdings 覆盖: %d 只基金", mapped, holdings_funds)
 
-    # Step 7: 特征计算（全量本地计算入库）
-    if 7 in steps:
-        logger.info("=== Step 7: 特征计算 ===")
-        _features.calc_all_features()
+        # Step 7: 特征计算（全量本地计算入库）
+        if 7 in steps:
+            logger.info("=== Step 7: 特征计算 ===")
+            _features.calc_all_features()
 
-    # Step 8: 推荐引擎（需模型就绪）
-    if 8 in steps:
-        logger.info("=== Step 8: 推荐引擎 ===")
-        # 检查模型是否存在，不存在则训练
-        from pathlib import Path as _Path
-        model_path = _Path("models/lgb_model.txt")
-        if not model_path.exists():
-            logger.info("模型不存在，跳过推荐（需手动运行 python recommend.py --retrain）")
-        else:
-            logger.info("模型已就绪，可运行推荐管线")
+        # Step 8: 推荐引擎（需模型就绪）
+        if 8 in steps:
+            logger.info("=== Step 8: 推荐引擎 ===")
+            # 检查模型是否存在，不存在则训练
+            from pathlib import Path as _Path
+            model_path = _Path("models/lgb_model.txt")
+            if not model_path.exists():
+                logger.info("模型不存在，跳过推荐（需手动运行 python recommend.py --retrain）")
+            else:
+                logger.info("模型已就绪，可运行推荐管线")
 
-    conn.close()
     logger.info("数据基座流程完成")
 
 
@@ -1067,6 +1058,8 @@ def _call_llm(
         logger.warning("LLM 未配置")
         return None
     
+    t0 = time.time()
+    attempt = 0
     try:
         from openai import OpenAI
         client = OpenAI(base_url=llm_cfg.get("base_url"), api_key=api_key)
@@ -1077,6 +1070,7 @@ def _call_llm(
         messages.append({"role": "user", "content": prompt})
         
         for attempt in range(3):
+            t_call = time.time()
             try:
                 resp = client.chat.completions.create(
                     model=llm_cfg.get("model", "gpt-4o-mini"),
@@ -1085,15 +1079,24 @@ def _call_llm(
                     max_tokens=max_tokens,
                     response_format={"type": "json_object"},
                 )
+                elapsed = (time.time() - t0) * 1000
+                logger.info("LLM 调用成功: model=%s attempt=%d/%d duration=%dms tokens=%d",
+                            llm_cfg.get("model"), attempt + 1, 3, int(elapsed),
+                            resp.usage.total_tokens if resp.usage else 0)
                 return resp.choices[0].message.content
             except Exception as e:
                 if "429" in str(e) or "RateLimit" in type(e).__name__:
+                    logger.warning("LLM 限流 (attempt %d/3): %s", attempt + 1, e)
                     time.sleep(2 ** attempt * 2)
                     continue
-                logger.error("LLM 调用失败: %s", e)
+                elapsed = (time.time() - t0) * 1000
+                logger.error("LLM 调用失败: attempt=%d/%d duration=%dms error=%s",
+                             attempt + 1, 3, int(elapsed), e)
                 return None
-        logger.error("LLM 限流重试耗尽")
+        elapsed = (time.time() - t0) * 1000
+        logger.error("LLM 限流重试耗尽: attempts=%d duration=%dms", attempt + 1, int(elapsed))
         return None
     except Exception as e:
-        logger.error("LLM 异常: %s", e)
+        elapsed = (time.time() - t0) * 1000
+        logger.error("LLM 异常: duration=%dms error=%s", int(elapsed), e)
         return None

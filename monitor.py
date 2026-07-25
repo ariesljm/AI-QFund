@@ -17,7 +17,8 @@ from datetime import datetime
 
 import numpy as np
 
-from data_foundation import _get_db
+from data_store import _get_db
+from data_store import _db_conn
 from macro_agent import build_macro_context
 
 logger = logging.getLogger("monitor")
@@ -29,12 +30,11 @@ _HOLD_STATES = ("HOLD", "BUY_MORE", "WARNING")
 
 
 def _nav_since(code: str, since_date: str) -> list[float]:
-    conn = _get_db()
-    rows = conn.execute(
-        "SELECT cum_nav FROM fund_nav WHERE code = ? AND date >= ? ORDER BY date ASC",
-        (code, since_date),
-    ).fetchall()
-    conn.close()
+    with _db_conn() as conn:
+        rows = conn.execute(
+            "SELECT cum_nav FROM fund_nav WHERE code = ? AND date >= ? ORDER BY date ASC",
+            (code, since_date),
+        ).fetchall()
     return [r[0] for r in rows]
 
 
@@ -70,29 +70,27 @@ def check_trailing_stop(code: str, highest_nav: float, atr: float,
 
 
 def _reco_date_of(code: str) -> str:
-    conn = _get_db()
-    row = conn.execute(
-        f"SELECT recommend_date FROM recommend_log "
-        f"WHERE code = ? AND status IN ({','.join('?' * len(_HOLD_STATES))}) "
-        "ORDER BY id DESC LIMIT 1",
-        (code, *_HOLD_STATES),
-    ).fetchone()
-    conn.close()
+    with _db_conn() as conn:
+        row = conn.execute(
+            f"SELECT recommend_date FROM recommend_log "
+            f"WHERE code = ? AND status IN ({','.join('?' * len(_HOLD_STATES))}) "
+            "ORDER BY id DESC LIMIT 1",
+            (code, *_HOLD_STATES),
+        ).fetchone()
     return row[0] if row else ""
 
 
 def check_style_drift(code: str) -> tuple[bool, str]:
-    conn = _get_db()
-    reco_date = _reco_date_of(code)
-    init_row = conn.execute(
-        "SELECT rbsa_weight_1 FROM fund_features WHERE code = ? AND date = ?",
-        (code, reco_date),
-    ).fetchone()
-    cur_row = conn.execute(
-        "SELECT rbsa_weight_1 FROM fund_features WHERE code = ? "
-        "ORDER BY date DESC LIMIT 1", (code,)
-    ).fetchone()
-    conn.close()
+    with _db_conn() as conn:
+        reco_date = _reco_date_of(code)
+        init_row = conn.execute(
+            "SELECT rbsa_weight_1 FROM fund_features WHERE code = ? AND date = ?",
+            (code, reco_date),
+        ).fetchone()
+        cur_row = conn.execute(
+            "SELECT rbsa_weight_1 FROM fund_features WHERE code = ? "
+            "ORDER BY date DESC LIMIT 1", (code,)
+        ).fetchone()
     if not init_row or not cur_row or init_row[0] is None or cur_row[0] is None:
         return False, ""
     init_w, cur_w = float(init_row[0]), float(cur_row[0])
@@ -107,30 +105,27 @@ def check_style_drift(code: str) -> tuple[bool, str]:
 
 def check_sector_advantage(code: str, sector: str) -> tuple[bool, str]:
     """检查基金是否落后于赛道中位数 → 赛道优势丧失预警。"""
-    conn = _get_db()
-    row = conn.execute(
-        "SELECT momentum_20d FROM fund_features WHERE code=? ORDER BY date DESC LIMIT 1",
-        (code,),
-    ).fetchone()
-    if not row:
-        conn.close()
-        return False, ""
-    fund_mom = row[0]
+    with _db_conn() as conn:
+        row = conn.execute(
+            "SELECT momentum_20d FROM fund_features WHERE code=? ORDER BY date DESC LIMIT 1",
+            (code,),
+        ).fetchone()
+        if not row:
+            return False, ""
+        fund_mom = row[0]
 
-    latest_date = conn.execute(
-        "SELECT date FROM fund_features WHERE code=? ORDER BY date DESC LIMIT 1",
-        (code,),
-    ).fetchone()
-    if not latest_date:
-        conn.close()
-        return False, ""
+        latest_date = conn.execute(
+            "SELECT date FROM fund_features WHERE code=? ORDER BY date DESC LIMIT 1",
+            (code,),
+        ).fetchone()
+        if not latest_date:
+            return False, ""
 
-    rows = conn.execute(
-        "SELECT momentum_20d FROM fund_features "
-        "WHERE rbsa_industry_1 = ? AND date = ? AND momentum_20d IS NOT NULL",
-        (sector, latest_date[0]),
-    ).fetchall()
-    conn.close()
+        rows = conn.execute(
+            "SELECT momentum_20d FROM fund_features "
+            "WHERE rbsa_industry_1 = ? AND date = ? AND momentum_20d IS NOT NULL",
+            (sector, latest_date[0]),
+        ).fetchall()
 
     if len(rows) < 3:
         logger.info("赛道 %s 基金不足 3 只，跳过赛道优势检测", sector or "未知")
@@ -238,147 +233,139 @@ def _check_logic_enhanced(code: str, buy_reason: str, sector: str,
 def _log_monitor_event(code: str, signal: str, logic: dict,
                        trailing: bool, drift: bool, sector_adv: bool,
                        detail: str) -> None:
-    conn = _get_db()
-    log_id = conn.execute(
-        f"SELECT id FROM recommend_log WHERE code = ? AND status IN "
-        f"({','.join('?'*len(_HOLD_STATES))}) ORDER BY id DESC LIMIT 1",
-        (code, *_HOLD_STATES),
-    ).fetchone()
-    conn.execute(
-        "INSERT INTO monitor_events "
-        "(code, date, signal, trigger_trailing, trigger_drift, trigger_sector_adv, "
-        "logic_verdict, sector_risk, holding_risk, detail, recommend_log_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (code, datetime.now().strftime("%Y-%m-%d"), signal,
-         trailing, drift, sector_adv,
-         logic.get("logic_verdict", ""), logic.get("sector_risk", False),
-         logic.get("holding_risk", False), detail,
-         log_id[0] if log_id else None),
-    )
-    conn.commit()
-    conn.close()
+    with _db_conn() as conn:
+        log_id = conn.execute(
+            f"SELECT id FROM recommend_log WHERE code = ? AND status IN "
+            f"({','.join('?'*len(_HOLD_STATES))}) ORDER BY id DESC LIMIT 1",
+            (code, *_HOLD_STATES),
+        ).fetchone()
+        conn.execute(
+            "INSERT INTO monitor_events "
+            "(code, date, signal, trigger_trailing, trigger_drift, trigger_sector_adv, "
+            "logic_verdict, sector_risk, holding_risk, detail, recommend_log_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (code, datetime.now().strftime("%Y-%m-%d"), signal,
+             trailing, drift, sector_adv,
+             logic.get("logic_verdict", ""), logic.get("sector_risk", False),
+             logic.get("holding_risk", False), detail,
+             log_id[0] if log_id else None),
+        )
 
 
 def _exit_position(code: str, sell_reason: str) -> None:
-    conn = _get_db()
-    today = datetime.now().strftime("%Y-%m-%d")
-    reco = conn.execute(
-        f"SELECT recommend_date FROM recommend_log "
-        f"WHERE code=? AND status IN ({','.join('?'*len(_HOLD_STATES))}) "
-        "ORDER BY id DESC LIMIT 1",
-        (code, *_HOLD_STATES),
-    ).fetchone()
-    return_rate = None
-    if reco:
-        nav_r = conn.execute(
-            "SELECT cum_nav FROM fund_nav WHERE code=? AND date=?", (code, reco[0])
+    with _db_conn() as conn:
+        today = datetime.now().strftime("%Y-%m-%d")
+        reco = conn.execute(
+            f"SELECT recommend_date FROM recommend_log "
+            f"WHERE code=? AND status IN ({','.join('?'*len(_HOLD_STATES))}) "
+            "ORDER BY id DESC LIMIT 1",
+            (code, *_HOLD_STATES),
         ).fetchone()
-        nav_e = conn.execute(
-            "SELECT cum_nav FROM fund_nav WHERE code=? AND date=?", (code, today)
-        ).fetchone()
-        if nav_r and nav_e and nav_r[0] and nav_e[0]:
-            return_rate = nav_e[0] / nav_r[0] - 1.0
-    conn.execute(
-        "UPDATE recommend_log SET status='EXIT', sell_reason=?, exit_date=?, return_rate=? "
-        f"WHERE code=? AND status IN ({','.join('?'*len(_HOLD_STATES))})",
-        (sell_reason, today, return_rate, code, *_HOLD_STATES),
-    )
-    conn.commit()
-    conn.close()
+        return_rate = None
+        if reco:
+            nav_r = conn.execute(
+                "SELECT cum_nav FROM fund_nav WHERE code=? AND date=?", (code, reco[0])
+            ).fetchone()
+            nav_e = conn.execute(
+                "SELECT cum_nav FROM fund_nav WHERE code=? AND date=?", (code, today)
+            ).fetchone()
+            if nav_r and nav_e and nav_r[0] and nav_e[0]:
+                return_rate = nav_e[0] / nav_r[0] - 1.0
+        conn.execute(
+            "UPDATE recommend_log SET status='EXIT', sell_reason=?, exit_date=?, return_rate=? "
+            f"WHERE code=? AND status IN ({','.join('?'*len(_HOLD_STATES))})",
+            (sell_reason, today, return_rate, code, *_HOLD_STATES),
+        )
     logger.info("平仓 EXIT: %s | %s | 收益: %s", code, sell_reason,
                 f"{return_rate*100:+.2f}%" if return_rate is not None else "未知")
 
 
 def _update_signal(code: str, signal: str) -> None:
     """更新非 EXIT 状态信号（HOLD/BUY_MORE/WARNING）。"""
-    conn = _get_db()
-    conn.execute(
-        f"UPDATE recommend_log SET status = ? "
-        f"WHERE code = ? AND status IN ({','.join('?'*len(_HOLD_STATES))})",
-        (signal, code, *_HOLD_STATES),
-    )
-    conn.commit()
-    conn.close()
+    with _db_conn() as conn:
+        conn.execute(
+            f"UPDATE recommend_log SET status = ? "
+            f"WHERE code = ? AND status IN ({','.join('?'*len(_HOLD_STATES))})",
+            (signal, code, *_HOLD_STATES),
+        )
 
 
 def run_monitor() -> None:
     """遍历所有 HOLD 基金，执行三道防线，输出四类信号。"""
-    conn = _get_db()
-    rows = conn.execute(
-        f"SELECT code, name, recommend_date, buy_reason, "
-        "(SELECT rbsa_industry_1 FROM fund_features ff "
-        " WHERE ff.code = r.code ORDER BY ff.date DESC LIMIT 1) as sector "
-        "FROM recommend_log r "
-        f"WHERE r.status IN ({','.join('?'*len(_HOLD_STATES))})",
-        _HOLD_STATES,
-    ).fetchall()
-    if not rows:
-        logger.info("无持仓，监控结束")
-        conn.close()
-        return
+    with _db_conn() as conn:
+        rows = conn.execute(
+            f"SELECT code, name, recommend_date, buy_reason, "
+            "(SELECT rbsa_industry_1 FROM fund_features ff "
+            " WHERE ff.code = r.code ORDER BY ff.date DESC LIMIT 1) as sector "
+            "FROM recommend_log r "
+            f"WHERE r.status IN ({','.join('?'*len(_HOLD_STATES))})",
+            _HOLD_STATES,
+        ).fetchall()
+        if not rows:
+            logger.info("无持仓，监控结束")
+            return
 
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    ctx = build_macro_context(date_str)
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        ctx = build_macro_context(date_str)
 
-    for code, name, reco_date, buy_reason, sector in rows:
-        logger.info("=== 监控 %s %s [赛道:%s] ===", code, name, sector or "未知")
+        for code, name, reco_date, buy_reason, sector in rows:
+            logger.info("=== 监控 %s %s [赛道:%s] ===", code, name, sector or "未知")
 
-        # 防线1：追踪止损
-        highest = update_highest_nav(code, reco_date)
-        if highest is not None:
-            conn.execute(
-                f"UPDATE recommend_log SET highest_nav = ? "
-                f"WHERE code = ? AND status IN ({','.join('?'*len(_HOLD_STATES))})",
-                (highest, code, *_HOLD_STATES),
-            )
-            conn.commit()
-        navs = _nav_since(code, reco_date)
-        atr = calc_atr(navs)
+            # 防线1：追踪止损
+            highest = update_highest_nav(code, reco_date)
+            if highest is not None:
+                conn.execute(
+                    f"UPDATE recommend_log SET highest_nav = ? "
+                    f"WHERE code = ? AND status IN ({','.join('?'*len(_HOLD_STATES))})",
+                    (highest, code, *_HOLD_STATES),
+                )
+                conn.commit()
+            navs = _nav_since(code, reco_date)
+            atr = calc_atr(navs)
 
-        exit_triggered, exit_reason = check_trailing_stop(code, highest, atr, navs)
-        trail_hit = exit_triggered
-        drift_hit = False
-        if not exit_triggered:
-            exit_triggered, exit_reason = check_style_drift(code)
-            drift_hit = exit_triggered
+            exit_triggered, exit_reason = check_trailing_stop(code, highest, atr, navs)
+            trail_hit = exit_triggered
+            drift_hit = False
+            if not exit_triggered:
+                exit_triggered, exit_reason = check_style_drift(code)
+                drift_hit = exit_triggered
 
-        # 防线2b：赛道优势检测（无论是否已触发EXIT，都记录完整信息供进化分析）
-        advantage_lost, advantage_reason = check_sector_advantage(code, sector)
+            # 防线2b：赛道优势检测（无论是否已触发EXIT，都记录完整信息供进化分析）
+            advantage_lost, advantage_reason = check_sector_advantage(code, sector)
 
-        if exit_triggered:
-            _log_monitor_event(code, "EXIT",
-                {"logic_verdict": "", "sector_risk": False, "holding_risk": False, "reason": ""},
-                trail_hit, drift_hit, advantage_lost, exit_reason)
-            _exit_position(code, exit_reason)
-            logger.info("  EXIT: %s", exit_reason)
-            continue
+            if exit_triggered:
+                _log_monitor_event(code, "EXIT",
+                    {"logic_verdict": "", "sector_risk": False, "holding_risk": False, "reason": ""},
+                    trail_hit, drift_hit, advantage_lost, exit_reason)
+                _exit_position(code, exit_reason)
+                logger.info("  EXIT: %s", exit_reason)
+                continue
 
-        # 防线3：增强版 LLM 逻辑证伪
-        logic = _check_logic_enhanced(code, buy_reason or "", sector or "", ctx, conn)
+            # 防线3：增强版 LLM 逻辑证伪
+            logic = _check_logic_enhanced(code, buy_reason or "", sector or "", ctx, conn)
 
-        if logic["logic_verdict"] == "断裂":
-            _log_monitor_event(code, "EXIT", logic, trail_hit, drift_hit,
-                               advantage_lost, f"LLM逻辑证伪: {logic['reason']}")
-            _exit_position(code, f"LLM逻辑证伪: {logic['reason']}")
-            logger.info("  EXIT: %s", logic['reason'])
-            continue
+            if logic["logic_verdict"] == "断裂":
+                _log_monitor_event(code, "EXIT", logic, trail_hit, drift_hit,
+                                   advantage_lost, f"LLM逻辑证伪: {logic['reason']}")
+                _exit_position(code, f"LLM逻辑证伪: {logic['reason']}")
+                logger.info("  EXIT: %s", logic['reason'])
+                continue
 
-        # 信号判定
-        if logic["signal_hint"] == "BUY_MORE" and not advantage_lost:
-            signal = "BUY_MORE"
-        elif advantage_lost or logic["signal_hint"] == "WARNING":
-            signal = "WARNING"
-        else:
-            signal = "HOLD"
+            # 信号判定
+            if logic["signal_hint"] == "BUY_MORE" and not advantage_lost:
+                signal = "BUY_MORE"
+            elif advantage_lost or logic["signal_hint"] == "WARNING":
+                signal = "WARNING"
+            else:
+                signal = "HOLD"
 
-        _update_signal(code, signal)
-        detail = "; ".join(filter(None, [advantage_reason, logic["reason"]]))
-        _log_monitor_event(code, signal, logic, trail_hit, drift_hit,
-                           advantage_lost, detail)
-        logger.info("  %s | 赛道风险=%s 持仓风险=%s | %s",
-                    signal, logic["sector_risk"], logic["holding_risk"], detail)
+            _update_signal(code, signal)
+            detail = "; ".join(filter(None, [advantage_reason, logic["reason"]]))
+            _log_monitor_event(code, signal, logic, trail_hit, drift_hit,
+                               advantage_lost, detail)
+            logger.info("  %s | 赛道风险=%s 持仓风险=%s | %s",
+                        signal, logic["sector_risk"], logic["holding_risk"], detail)
 
-    conn.close()
     logger.info("监控完成: 扫描 %d 只", len(rows))
 
 
