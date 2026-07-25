@@ -1,0 +1,29 @@
+version: "3.8"
+
+services:
+  ai-qfund:
+    image: ghcr.io/ariesljm/ai-qfund:latest
+    container_name: ai-qfund
+    restart: unless-stopped
+    ports:
+      - "9123:9123"
+    volumes:
+      - ai-qfund-data:/app/data
+      - ./config/settings.toml:/app/config/settings.toml:ro
+    environment:
+      - ENABLE_SCHEDULER=true
+      - SCHEDULER_HOUR=8
+      - SCHEDULER_MINUTE=0
+      - LLM_API_KEY=
+      - LLM_BASE_URL=
+      - LLM_MODEL=
+      - WEB_PORT=9123
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9123/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  ai-qfund-data:
