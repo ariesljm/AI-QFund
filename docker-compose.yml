@@ -9,7 +9,7 @@ services:
       - "9123:9123"
     volumes:
       - /root/workspace/ai-qfund/data:/app/data
-      - /root/workspace/ai-qfund/config/settings.toml:/app/config/settings.toml:ro
+      - /root/workspace/ai-qfund/config/settings.toml:/app/config/settings.toml
     environment:
       - ENABLE_SCHEDULER=true
       - SCHEDULER_HOUR=8

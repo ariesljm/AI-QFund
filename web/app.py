@@ -621,8 +621,12 @@ async def get_settings():
 
 @app.post("/api/settings")
 async def save_settings(body: dict):
-    _save_settings(body)
-    return {"status": "ok"}
+    try:
+        _save_settings(body)
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error("保存设置失败: %s", e)
+        return {"status": "error", "message": str(e)}
 
 
 @app.post("/api/check-password")
