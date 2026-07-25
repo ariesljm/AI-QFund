@@ -19,7 +19,7 @@ from fastapi.templating import Jinja2Templates
 import json
 from urllib.request import urlopen
 
-from data_store import _db_conn, SETTINGS_PATH, _save_settings, _load_settings
+from data_store import _get_db, _db_conn, SETTINGS_PATH, _save_settings, _load_settings
 from recommend import run_recommendation
 
 logger = logging.getLogger("web")
@@ -105,11 +105,8 @@ def _scheduler_loop():
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    with _db_conn() as conn:
-        try:
-            conn.execute("ALTER TABLE recommend_log ADD COLUMN combo REAL")
-        except Exception:
-            pass
+    conn = _get_db()
+    conn.close()
     t = threading.Thread(target=_scheduler_loop, daemon=True)
     t.start()
     yield

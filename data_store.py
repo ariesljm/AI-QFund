@@ -56,9 +56,11 @@ def _get_db() -> sqlite3.Connection:
 
 def _init_schema(conn: sqlite3.Connection) -> None:
     schema = Path("schema.sql")
-    if schema.exists():
-        conn.executescript(schema.read_text(encoding="utf-8"))
-        conn.commit()
+    if not schema.exists():
+        logger.warning("schema.sql 未找到，跳过建表 (路径: %s)", schema.resolve())
+        return
+    conn.executescript(schema.read_text(encoding="utf-8"))
+    conn.commit()
 
 
 @contextmanager
@@ -76,11 +78,13 @@ def _db_conn():
 
 def _migrate(conn: sqlite3.Connection) -> None:
     # recommend_log 扩展列
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(recommend_log)").fetchall()}
-    for col, typ in [("return_rate", "REAL"), ("feature_snapshot", "TEXT"), ("entry_nav", "REAL")]:
-        if col not in cols:
-            conn.execute(f"ALTER TABLE recommend_log ADD COLUMN {col} {typ}")
-            conn.commit()
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "recommend_log" in tables:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(recommend_log)").fetchall()}
+        for col, typ in [("return_rate", "REAL"), ("feature_snapshot", "TEXT"), ("entry_nav", "REAL")]:
+            if col not in cols:
+                conn.execute(f"ALTER TABLE recommend_log ADD COLUMN {col} {typ}")
+                conn.commit()
 
     # 赛道选择记录
     conn.execute(
@@ -135,10 +139,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
     conn.commit()
 
     # macro_news 扩展列
-    macro_cols = {r[1] for r in conn.execute("PRAGMA table_info(macro_news)").fetchall()}
-    if "flow_json" not in macro_cols:
-        conn.execute("ALTER TABLE macro_news ADD COLUMN flow_json TEXT")
-        conn.commit()
+    if "macro_news" in tables:
+        macro_cols = {r[1] for r in conn.execute("PRAGMA table_info(macro_news)").fetchall()}
+        if "flow_json" not in macro_cols:
+            conn.execute("ALTER TABLE macro_news ADD COLUMN flow_json TEXT")
+            conn.commit()
 
     # 删除旧表（仅当新表已创建时执行一次）
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}

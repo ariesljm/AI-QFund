@@ -14,9 +14,9 @@ services:
       - ENABLE_SCHEDULER=true
       - SCHEDULER_HOUR=8
       - SCHEDULER_MINUTE=0
-      - LLM_API_KEY=
-      - LLM_BASE_URL=
-      - LLM_MODEL=
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_BASE_URL=${LLM_BASE_URL:-}
+      - LLM_MODEL=${LLM_MODEL:-}
       - WEB_PORT=9123
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9123/"]

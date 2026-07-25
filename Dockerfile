@@ -8,14 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 COPY pyproject.toml uv.lock ./
-
-RUN uv pip install --system numpy pandas
-
-RUN uv pip install --system lightgbm curl-cffi tls-client
-
-RUN uv pip install --system aiohttp fastapi uvicorn jinja2 openai requests
-
-RUN uv cache clean
+RUN uv pip install --system pyproject.toml && uv cache clean
 
 COPY . .
 

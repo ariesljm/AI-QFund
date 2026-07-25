@@ -22,6 +22,9 @@ docs/*.png
 .env
 *.local
 
+# 配置文件（含密钥），用 .example 模板代替
+config/settings.toml
+
 # IDE / OS
 .idea/
 .vscode/
