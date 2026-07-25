@@ -55,7 +55,7 @@ def _get_db() -> sqlite3.Connection:
 
 
 def _init_schema(conn: sqlite3.Connection) -> None:
-    schema = Path("data/schema.sql")
+    schema = Path("schema.sql")
     if schema.exists():
         conn.executescript(schema.read_text(encoding="utf-8"))
         conn.commit()

@@ -19,6 +19,8 @@ RUN uv cache clean
 
 COPY . .
 
+COPY data/schema.sql schema.sql
+
 RUN mkdir -p data/logs config
 
 ENV PYTHONUNBUFFERED=1
