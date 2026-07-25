@@ -17,7 +17,6 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 import json
-from urllib.request import urlopen
 
 from data_store import _get_db, _db_conn, SETTINGS_PATH, _save_settings, _load_settings
 from recommend import run_recommendation
@@ -262,6 +261,7 @@ async def index(request: Request):
     # 宏观摘要（财联社实时快讯）
     news_items = ["暂无快讯"]
     try:
+        from fetch import fetch as _fetch
         import time as _time, hashlib as _hashlib
         _CLS = "https://www.cls.cn/v1/roll/get_roll_list"
         def _sign(p):
@@ -270,8 +270,7 @@ async def index(request: Request):
         ts = int(_time.time())
         p = {"app":"CailianpressWeb","os":"web","sv":"8.4.6","refresh_type":"1","rn":"20","last_time":str(ts),"category":""}
         p["sign"] = _sign(p)
-        with urlopen(f"{_CLS}?{'&'.join(f'{k}={p[k]}' for k in p)}", timeout=8) as r:
-            d = json.loads(r.read().decode("utf-8"))
+        d = _fetch(f"{_CLS}?{'&'.join(f'{k}={p[k]}' for k in p)}").json()
         items = d.get("data", {}).get("roll_data", [])
         if items:
             titles = [(i.get("title") or i.get("content") or "").strip() for i in items if i.get("title") or i.get("content")]
@@ -579,6 +578,7 @@ async def index(request: Request):
 
 @app.get("/api/realtime-news")
 async def realtime_news():
+    from fetch import fetch as _fetch
     import time as _time, hashlib as _hashlib
     _CLS_API = "https://www.cls.cn/v1/roll/get_roll_list"
     def _sign(p):
@@ -592,8 +592,7 @@ async def realtime_news():
         }
         params["sign"] = _sign(params)
         url = f"{_CLS_API}?{'&'.join(f'{k}={params[k]}' for k in params)}"
-        with urlopen(url, timeout=8) as r:
-            data = json.loads(r.read().decode("utf-8"))
+        data = _fetch(url).json()
         items = data.get("data", {}).get("roll_data", [])
         return items
     except Exception as e:

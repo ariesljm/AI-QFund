@@ -10,6 +10,8 @@ import log_utils  # noqa: F401
 
 logger = logging.getLogger("data_store")
 
+_MIGRATION_DONE = False
+
 DB_PATH = Path("data/qfund.db")
 SETTINGS_PATH = Path("config/settings.toml")
 
@@ -77,6 +79,10 @@ def _db_conn():
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
+    global _MIGRATION_DONE
+    if _MIGRATION_DONE:
+        return
+
     # recommend_log 扩展列
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     if "recommend_log" in tables:
@@ -168,6 +174,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "update_date TEXT)"
     )
     conn.commit()
+
+    _MIGRATION_DONE = True
 
 
 def _save_settings(settings: dict) -> bool:
