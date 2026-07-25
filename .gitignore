@@ -28,5 +28,11 @@ docs/*.png
 .DS_Store
 Thumbs.db
 
-# opencode 子项目依赖（保留 skills，忽略依赖）
-.opencode/node_modules/
+# opencode（agent skills 与配置，非运行时）
+.opencode/
+
+# 测试
+test_basic.py
+
+# 模型文件
+models/
