@@ -89,15 +89,6 @@ CREATE TABLE IF NOT EXISTS recommend_log (
     created_at TEXT DEFAULT (datetime('now'))
 );
 
--- 进化规则
-CREATE TABLE IF NOT EXISTS evolution_rules (
-    id TEXT PRIMARY KEY,
-    rule TEXT NOT NULL,
-    source_trade_id INTEGER,
-    created_date TEXT NOT NULL,
-    active INTEGER DEFAULT 1
-);
-
 -- 每日宏观摘要
 CREATE TABLE IF NOT EXISTS macro_news (
     date TEXT PRIMARY KEY,

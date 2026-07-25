@@ -141,14 +141,18 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # macro_news 扩展列
     if "macro_news" in tables:
         macro_cols = {r[1] for r in conn.execute("PRAGMA table_info(macro_news)").fetchall()}
-        if "flow_json" not in macro_cols:
-            conn.execute("ALTER TABLE macro_news ADD COLUMN flow_json TEXT")
-            conn.commit()
+        for col, typ in [("flow_json", "TEXT"), ("context_json", "TEXT")]:
+            if col not in macro_cols:
+                conn.execute(f"ALTER TABLE macro_news ADD COLUMN {col} {typ}")
+                conn.commit()
 
     # 删除旧表（仅当新表已创建时执行一次）
-    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-    if "evolution_insights" in tables and "evolution_rules" in tables:
-        # 检查 evolution_rules 是否已无数据或新表已有数据，避免误删
+    if "evolution_rules" in tables:
+        evolution_rules_exists = True
+    else:
+        evolution_rules_exists = False
+
+    if evolution_rules_exists and "evolution_insights" in tables:
         old_cnt = conn.execute("SELECT COUNT(*) FROM evolution_rules").fetchone()[0]
         new_cnt = conn.execute("SELECT COUNT(*) FROM evolution_insights").fetchone()[0]
         if old_cnt == 0 or new_cnt > 0:

@@ -427,7 +427,7 @@ async def index(request: Request):
             "type": c[0] if len(c) > 5 else "",
         })
     # 累计收益总和
-    total_return = round(sum(c["return"] for c in candidate_list if c["return"] is not None), 2) if candidate_list else None
+    total_return = round(sum(c["return"] for c in candidate_list if c["return"] is not None), 2) if candidate_list else 0
     rec_count = len(candidate_list)
     hit_count = sum(1 for c in candidate_list if c["return"] is not None and c["return"] > 0)
     hit_rate = round(hit_count / rec_count * 100, 1) if rec_count > 0 else 0
