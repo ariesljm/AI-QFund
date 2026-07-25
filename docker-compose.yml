@@ -8,8 +8,8 @@ services:
     ports:
       - "9123:9123"
     volumes:
-      - ai-qfund-data:/app/data
-      - ./config/settings.toml:/app/config/settings.toml:ro
+      - /root/workspace/ai-qfund/data:/app/data
+      - /root/workspace/ai-qfund/config/settings.toml:/app/config/settings.toml:ro
     environment:
       - ENABLE_SCHEDULER=true
       - SCHEDULER_HOUR=8
@@ -24,6 +24,3 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
-
-volumes:
-  ai-qfund-data:

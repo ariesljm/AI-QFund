@@ -12,7 +12,7 @@ RUN uv sync --frozen
 
 COPY . .
 
-RUN mkdir -p data/logs
+RUN mkdir -p data/logs config
 
 ENV PYTHONUNBUFFERED=1
 
