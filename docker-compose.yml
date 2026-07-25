@@ -3,6 +3,7 @@ version: "3.8"
 services:
   ai-qfund:
     image: ghcr.io/ariesljm/ai-qfund:latest
+    pull_policy: always
     container_name: ai-qfund
     restart: unless-stopped
     ports:
