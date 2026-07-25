@@ -49,8 +49,16 @@ def _get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(str(DB_PATH))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    _init_schema(conn)
     _migrate(conn)
     return conn
+
+
+def _init_schema(conn: sqlite3.Connection) -> None:
+    schema = Path("data/schema.sql")
+    if schema.exists():
+        conn.executescript(schema.read_text(encoding="utf-8"))
+        conn.commit()
 
 
 @contextmanager
