@@ -84,6 +84,40 @@ def is_industry_code(code: str) -> bool:
     return any(low <= num <= high for low, high in INDUSTRY_CODE_RANGES)
 
 
+# 非申万行业的板块名称黑名单（BK 代码范围内但实为指数/概念/地域板块）
+_NON_INDUSTRY_KEYWORDS = {
+    # 指数类
+    "HS300", "AH股", "上证", "深证", "创业", "科创", "中证",
+    "MSCI", "富时", "标准普尔", "道琼斯", "纳斯达克",
+    # 风格类
+    "大盘股", "小盘股", "微盘股", "中盘股", "权重股", "百元股", "次新股",
+    # 地域类
+    "深圳", "上海", "北京", "广东", "深圳地产", "上海本地", "北京本地", "广东本地",
+    # 索引标记
+    "R", "ETF", "LOF",
+    # 持仓/持股风格（非行业）
+    "重仓", "持股",
+    # 概念题材（非行业）
+    "概念", "信创", "中特估", "绿色", "新能源",
+    # 外资/机构/社保
+    "QFII", "养老金", "机构", "社保", "北向",
+    # 业绩预告类
+    "预增", "预减", "预亏", "预盈",
+    # 其他技术/交易类
+    "做市", "连板",
+}
+
+
+def is_industry_name(name: str) -> bool:
+    """判断板块名称是否属于申万二级行业（排除指数/概念/地域板块）。"""
+    if not name or not name.strip():
+        return False
+    for kw in _NON_INDUSTRY_KEYWORDS:
+        if kw in name:
+            return False
+    return True
+
+
 @dataclass
 class SectorInfo:
     code: str          # BKxxxx

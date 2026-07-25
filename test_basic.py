@@ -39,40 +39,6 @@ def test_calc_atr():
     print("calc_atr 测试通过")
 
 
-def test_calc_regime():
-    """测试大盘状态机。"""
-    from features import calc_regime
-    
-    # 使用内存数据库测试
-    import sqlite3
-    conn = sqlite3.connect(":memory:")
-    conn.execute("""
-        CREATE TABLE index_daily (
-            code TEXT, date TEXT, open REAL, high REAL, low REAL,
-            close REAL, volume REAL, ma60 REAL
-        )
-    """)
-    
-    # 插入测试数据：close > ma60 + 2% → BULL
-    conn.execute(
-        "INSERT INTO index_daily VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        ("sh000300", "2024-01-01", 100, 105, 95, 103, 1000, 100)
-    )
-    regime = calc_regime(conn, "sh000300")
-    assert regime == "BULL", f"应为 BULL: {regime}"
-    
-    # 插入测试数据：close < ma60 - 2% → BEAR
-    conn.execute(
-        "INSERT INTO index_daily VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        ("sh000300", "2024-01-02", 100, 105, 95, 97, 1000, 100)
-    )
-    regime = calc_regime(conn, "sh000300")
-    assert regime == "BEAR", f"应为 BEAR: {regime}"
-    
-    conn.close()
-    print("calc_regime 测试通过")
-
-
 def test_db_conn():
     """测试数据库连接 context manager。"""
     import sqlite3
@@ -389,7 +355,6 @@ def test_calc_loss():
 if __name__ == "__main__":
     test_calc_hurst()
     test_calc_atr()
-    test_calc_regime()
     test_db_conn()
     test_parse_llm_result()
     test_build_prompt()

@@ -181,14 +181,16 @@ def _fetch_curl_subprocess(url: str, params: dict | None = None, timeout: float 
     else:
         full_url = url
 
+    import sys as _sys
+    curl_cmd = "curl.exe" if _sys.platform == "win32" else "curl"
     result = subprocess.run(
-        ["curl.exe", "-4", "-s", "-m", str(int(timeout)), "--compressed", full_url],
+        [curl_cmd, "-4", "-s", "-m", str(int(timeout)), "--compressed", full_url],
         capture_output=True,
         text=True,
         timeout=timeout + 5,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"curl.exe 失败 (rc={result.returncode}): {result.stderr[:200]}")
+        raise RuntimeError(f"{curl_cmd} 失败 (rc={result.returncode}): {result.stderr[:200]}")
 
     r = requests.Response()
     r.status_code = 200

@@ -14,10 +14,27 @@ DB_PATH = Path("data/qfund.db")
 SETTINGS_PATH = Path("config/settings.toml")
 
 
+import os as _os
+
+_ENV_OVERRIDE_MAP = {
+    "LLM_BASE_URL": ("llm", "base_url"),
+    "LLM_API_KEY": ("llm", "api_key"),
+    "LLM_MODEL": ("llm", "model"),
+    "SCHEDULER_HOUR": ("scheduler", "hour"),
+    "SCHEDULER_MINUTE": ("scheduler", "minute"),
+    "WEB_PORT": ("web", "port"),
+}
+
+
 def _load_settings():
     import tomllib
     with open(SETTINGS_PATH, "rb") as f:
-        return tomllib.load(f)
+        settings = tomllib.load(f)
+    for env_key, (section, key) in _ENV_OVERRIDE_MAP.items():
+        val = _os.environ.get(env_key)
+        if val:
+            settings.setdefault(section, {})[key] = val
+    return settings
 
 
 def _get_db() -> sqlite3.Connection:

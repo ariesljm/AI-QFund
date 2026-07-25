@@ -13,7 +13,7 @@ from datetime import datetime
 
 from data_foundation import _get_db, _call_llm
 from fetch import fetch as _fetch
-from sector_api import is_industry_code
+from sector_api import is_industry_code, is_industry_name
 
 logger = logging.getLogger("macro_agent")
 
@@ -191,14 +191,16 @@ def _fetch_news(date_str: str) -> dict:
         data = json.loads(txt)
         allbk = (data.get("data") or {}).get("allbk", [])
         if allbk:
-            sectors = [b for b in allbk if not _fake_sector(b.get('n', '') or '')]
+            sectors = [b for b in allbk if not _fake_sector(b.get('n', '') or '')
+                       and is_industry_code(b.get('c', '') or '')
+                       and is_industry_name(b.get('n', '') or '')]
             sorted_by_chg = sorted(sectors, key=lambda x: float(x.get("u", 0) or 0), reverse=True)
             gainers = sorted_by_chg[:9]
             losers = sorted_by_chg[-5:][::-1]
             top_gainers = "、".join(f"{d['n']}({float(d.get('u',0)or 0):+.2f}%)" for d in gainers)
             top_losers = "、".join(f"{d['n']}({float(d.get('u',0)or 0):+.2f}%)" for d in losers)
-            by_flow = max(allbk, key=lambda x: float(x.get("zjl", 0) or 0))
-            etf_net_flow = f"{by_flow['n']}: {float(by_flow.get('zjl',0)or 0):,.0f}元"
+            by_flow = max(sectors, key=lambda x: float(x.get("zjl", 0) or 0)) if sectors else None
+            etf_net_flow = f"{by_flow['n']}: {float(by_flow.get('zjl',0)or 0):,.0f}元" if by_flow else ""
     except Exception as e:
         logger.warning("板块排行抓取失败: %s", e)
 
@@ -260,7 +262,9 @@ def _fetch_flow(date_str: str) -> dict:
         if not allbk:
             return result
 
-        sectors = [b for b in allbk if not _fake_sector(b.get('n', '') or '') and is_industry_code(b.get('c', '') or '')]
+        sectors = [b for b in allbk if not _fake_sector(b.get('n', '') or '')
+                   and is_industry_code(b.get('c', '') or '')
+                   and is_industry_name(b.get('n', '') or '')]
         sorted_by_flow = sorted(sectors, key=lambda x: float(x.get("zjl", 0) or 0), reverse=True)
         lines = []
         for d in sorted_by_flow[:10]:
@@ -305,11 +309,26 @@ def _load_sector_insights() -> str:
     return "\n".join(f"  - {r[0]}" for r in rows)
 
 
+def _load_available_sectors() -> list[str]:
+    conn = _get_db()
+    rows = conn.execute(
+        "SELECT DISTINCT rbsa_industry_1 FROM fund_features "
+        "WHERE rbsa_industry_1 IS NOT NULL AND rbsa_industry_1 != ''"
+    ).fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+
 def _build_sector_prompt(date_str: str, news: dict, flow: dict) -> str:
     lessons = _load_sector_insights()
+    available = _load_available_sectors()
     lines = [
-        f"你是专业的宏观分析师。基于 {date_str} 的多源数据，从A股可投资的申万二级行业中，"
-        "挑选未来短期最值得关注的3-5个赛道，以及需要回避的赛道。",
+        f"你是专业的宏观分析师。基于 {date_str} 的多源数据，"
+        "从【可选赛道清单】中挑选未来短期最值得关注的3-5个赛道，以及需要回避的赛道。",
+        "注意：你只能从【可选赛道清单】中选择行业，不要选清单之外的行业名。",
+        "",
+        f"【可选赛道清单】（共{len(available)}个，只有这些行业有可投基金）：",
+        "、".join(sorted(available)),
         "",
         "【行业板块排行】",
         f"领涨行业: {news.get('top_gainers', '无数据')}",

@@ -14,24 +14,6 @@ logger = logging.getLogger("features")
 
 
 
-def calc_regime(conn: sqlite3.Connection, index_code: str = "sh000300") -> str:
-    cur = conn.execute(
-        "SELECT close, ma60 FROM index_daily WHERE code = ? ORDER BY date DESC LIMIT 1",
-        (index_code,),
-    )
-    row = cur.fetchone()
-    if not row or row[1] is None:
-        logger.warning("无法计算 regime，EMA60 数据不足")
-        return "NEUTRAL"
-    close, ema60 = row
-    ratio = close / ema60
-    if ratio > 1.02:
-        return "BULL"
-    elif ratio < 0.98:
-        return "BEAR"
-    return "NEUTRAL"
-
-
 def calc_hurst(series: np.ndarray, max_lag: int = 20) -> float:
     if len(series) < max_lag + 10:
         return 0.5
@@ -178,12 +160,10 @@ def calc_features(code: str, conn: sqlite3.Connection,
     return features
 
 
-def calc_all_features(regime: str | None = None, batch_commit: int = 500) -> int:
+def calc_all_features(batch_commit: int = 500) -> int:
     from data_store import _get_db
-    
+
     conn = _get_db()
-    if regime is None:
-        regime = calc_regime(conn)
     all_codes = [
         r[0] for r in conn.execute(
             "SELECT code FROM fund_basic WHERE is_buyable = 1"
@@ -237,8 +217,8 @@ def calc_all_features(regime: str | None = None, batch_commit: int = 500) -> int
         and c not in holdings_need_rbsa
     }
     logger.info(
-        "待计算特征基金: %d 只, 跳过已最新 %d 只, 强制重算RBSA %d 只, 当前 regime=%s",
-        total - len(skip_codes), len(skip_codes), len(holdings_need_rbsa), regime,
+        "待计算特征基金: %d 只, 跳过已最新 %d 只, 强制重算RBSA %d 只",
+        total - len(skip_codes), len(skip_codes), len(holdings_need_rbsa),
     )
     done = 0
     saved = 0
@@ -253,12 +233,12 @@ def calc_all_features(regime: str | None = None, batch_commit: int = 500) -> int
             rbsa_industry_1, rbsa_weight_1 = rbsa_data.get(code, ("", 0.0))
             conn.execute(
                 "INSERT OR REPLACE INTO fund_features "
-                "(code, date, regime, hurst_60d, momentum_20d, calmar, downside_vol, "
+                "(code, date, hurst_60d, momentum_20d, calmar, downside_vol, "
                 "capture_up, capture_down, bias_60d, rbsa_industry_1, rbsa_weight_1, "
                 "etf_flow_slope_5d) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    features["code"], features["date"], regime,
+                    features["code"], features["date"],
                     features.get("hurst_60d"), features.get("momentum_20d"),
                     features.get("calmar"), features.get("downside_vol"),
                     features.get("capture_up"), features.get("capture_down"),

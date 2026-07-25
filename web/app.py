@@ -73,6 +73,13 @@ def _run_pipeline(force: bool = False):
 def _scheduler_loop():
     global _last_run_date
     _sched_logger = logging.getLogger("scheduler")
+
+    import os as _os
+    enabled = _os.environ.get("ENABLE_SCHEDULER", "true").lower() in ("1", "true", "yes")
+    if not enabled:
+        _sched_logger.info("调度器已通过 ENABLE_SCHEDULER 环境变量禁用")
+        return
+
     _sched_logger.info("调度器启动，模式: daemon线程")
     while True:
         try:
@@ -338,6 +345,7 @@ async def index(request: Request):
 
     # 赛道分析（从 context_json 解析，依赖 LLM 管线）
     sector_reasoning = ""
+    regime_label = "NEUTRAL"
     try:
         import json as _json
         cj = _q1(
@@ -348,6 +356,8 @@ async def index(request: Request):
         if cj:
             ctx = _json.loads(cj[0])
             sector_reasoning = ctx.get("sector_reasoning", "")
+            raw_regime = (ctx.get("regime_label") or "neutral").upper()
+            regime_label = raw_regime if raw_regime in ("BULL", "BEAR") else "NEUTRAL"
     except Exception:
         pass
 
@@ -545,6 +555,7 @@ async def index(request: Request):
         "today": today,
         "sector_list": sector_list,
         "sector_reasoning": sector_reasoning,
+        "regime_label": regime_label,
         "nav_pcts": nav_pcts,
         "nav_dates": nav_dates,
         "hs_pcts": hs_pcts,
@@ -712,10 +723,11 @@ async def get_fund_detail(code: str):
 
 if __name__ == "__main__":
     import uvicorn
+    import os as _os
     try:
-        with open(SETTINGS_PATH, "rb") as f:
-            cfg = tomllib.load(f)
-        port = cfg.get("web", {}).get("port", 8000)
+        settings = _load_settings()
+        port = int(settings.get("web", {}).get("port", 9123))
     except Exception:
-        port = 8000
-    uvicorn.run("web.app:app", host="0.0.0.0", port=port, reload=True)
+        port = 9123
+    reload = _os.environ.get("UVICORN_RELOAD", "").lower() in ("1", "true", "yes")
+    uvicorn.run("web.app:app", host="0.0.0.0", port=port, reload=reload)

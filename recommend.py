@@ -17,7 +17,7 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-from features import calc_regime, calc_hurst
+from features import calc_hurst
 from macro_agent import build_macro_context, MacroContext
 from data_store import _get_db
 from data_foundation import fetch_fund_nav_incremental
@@ -493,9 +493,6 @@ def _build_final_prompt(candidates: list[dict], ctx: MacroContext, insights: lis
                 )
     lines += [
         "",
-        "【今日宏观摘要】",
-        ctx.news_summary,
-        "",
         "【任务指令】",
         "基于以上所有信息（赛道推论、重仓股、新闻匹配、进化规则），",
         "从候选中选出最有潜力的一只基金。重点考虑：",
@@ -692,7 +689,6 @@ def run_recommendation(retrain: bool = False, force: bool = False) -> None:
     """
     date_str = datetime.now().strftime("%Y-%m-%d")
     conn = _get_db()
-    regime = calc_regime(conn)
     insights = _load_insights(conn)
     conn.close()
 
@@ -709,6 +705,8 @@ def run_recommendation(retrain: bool = False, force: bool = False) -> None:
 
     logger.info("=== LLM 宏观分析 + 选赛道 ===")
     ctx = build_macro_context(date_str, force=force)
+    llm_regime = ctx.regime_label.upper()
+    llm_regime = llm_regime if llm_regime in ("BULL", "BEAR") else "NEUTRAL"
     logger.info("选定赛道: %s | 回避: %s | 大盘: %s",
                 ctx.recommended_sectors, ctx.risk_sectors, ctx.regime_label)
 
@@ -745,9 +743,9 @@ def run_recommendation(retrain: bool = False, force: bool = False) -> None:
         conn.execute(
             "INSERT INTO recommend_log "
             "(recommend_date, code, name, rank, score, combo, regime, buy_reason, status) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'REJECT')",
-            (date_str, selected["selected_code"], selected["selected_name"],
-             0, 0.0, 0.0, regime,
+             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'REJECT')",
+             (date_str, selected["selected_code"], selected["selected_name"],
+              0, 0.0, 0.0, llm_regime,
              f"风控拦截: 20日动量{sel_momentum:.1f}% 低于阈值{guard:.0f}%"),
         )
         conn.commit()
@@ -775,7 +773,7 @@ def run_recommendation(retrain: bool = False, force: bool = False) -> None:
         logger.info("净值同步: %s 新增 %d 条", selected["selected_code"], new_rows)
     conn.close()
 
-    _save_recommendation(date_str, selected, finalists, vetoed, regime, feature_snapshot)
+    _save_recommendation(date_str, selected, finalists, vetoed, llm_regime, feature_snapshot)
 
     # 记录赛道选择（关联推荐日志，供进化闭环分析）
     _write_sector_selection(date_str, ctx, json.loads(feature_snapshot))

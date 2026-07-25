@@ -853,6 +853,32 @@ def update_industry_map(force: bool = False) -> int:
     return len(records)
 
 
+def _build_candidates(stock_code: str) -> list[tuple[str, dict]]:
+    """根据股票代码生成 emweb 查询候选列表。
+
+    港股（5位数字）: 优先尝试 HK 前缀的 HSF10，再尝试独立 HKF10。
+    北交所（92开头）: BJ 前缀。
+    A股（6开头=上交所，0/3开头=深交所）。
+    """
+    hsf10 = "https://emweb.securities.eastmoney.com/PC_HSF10/CompanySurvey/PageAjax"
+    hkf10 = "https://emweb.securities.eastmoney.com/PC_HKF10/CompanySurvey/PageAjax"
+
+    if len(stock_code) == 5:
+        return [
+            (hsf10, {"code": f"HK{stock_code}"}),
+            (hkf10, {"code": stock_code}),
+        ]
+    elif stock_code.startswith("92"):
+        return [
+            (hsf10, {"code": f"BJ{stock_code}"}),
+            (hsf10, {"code": f"SZ{stock_code}"}),
+        ]
+    elif stock_code.startswith("6"):
+        return [(hsf10, {"code": f"SH{stock_code}"})]
+    else:
+        return [(hsf10, {"code": f"SZ{stock_code}"})]
+
+
 def _fetch_industry_map() -> list[tuple[str, str, str]]:
     """从东方财富 emweb 拉取股票→申万二级行业映射。
 
@@ -879,32 +905,27 @@ def _fetch_industry_map() -> list[tuple[str, str, str]]:
 
     async def _fetch_one(session, stock_code: str):
         nonlocal success, fail
-        # 转换为 emweb 格式：6开头=SH，0/3开头=SZ
-        if stock_code.startswith("6"):
-            code = f"SH{stock_code}"
-        else:
-            code = f"SZ{stock_code}"
+        candidate_urls = _build_candidates(stock_code)
         async with semaphore:
-            for _ in range(2):  # 重试一次
-                try:
-                    url = "https://emweb.securities.eastmoney.com/PC_HSF10/CompanySurvey/PageAjax"
-                    async with session.get(url, params={"code": code}, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                        if resp.status != 200:
-                            continue
-                        data = await resp.json(content_type=None)
-                        items = data.get("jbzl", [])
-                        if items:
-                            item = items[0]
-                            em2016 = item.get("EM2016", "")
-                            if em2016:
-                                # EM2016 格式: "食品饮料-白酒-白酒"
-                                parts = em2016.split("-")
-                                industry = parts[1] if len(parts) > 1 else parts[0]
-                                results[stock_code] = (em2016, industry)
-                                success += 1
-                                return
-                except Exception:
-                    pass
+            for url, params in candidate_urls:
+                for _ in range(2):
+                    try:
+                        async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                            if resp.status != 200:
+                                continue
+                            data = await resp.json(content_type=None)
+                            items = data.get("jbzl", [])
+                            if items:
+                                item = items[0]
+                                em2016 = item.get("EM2016", "")
+                                if em2016:
+                                    parts = em2016.split("-")
+                                    industry = parts[1] if len(parts) > 1 else parts[0]
+                                    results[stock_code] = (em2016, industry)
+                                    success += 1
+                                    return
+                    except Exception:
+                        pass
             fail += 1
 
     async def _run():
@@ -972,17 +993,11 @@ def run_pipeline(steps: list[int] | None = None):
         n_etf = save_index_daily("sh510300", etf_data)
         logger.info("沪深300ETF(510300)日线新增 %d 条", n_etf)
 
-    # Step 4: 大盘状态机
+    # Step 4: 重仓股（全量并发下载）
     if 4 in steps:
-        logger.info("=== Step 4: 大盘状态机 ===")
-        regime = _features.calc_regime(conn)
-        logger.info("当前大盘状态: %s", regime)
-
-    # Step 5: 重仓股（全量并发下载）
-    if 5 in steps:
-        logger.info("=== Step 5: 重仓股数据获取 ===")
+        logger.info("=== Step 4: 重仓股数据获取 ===")
         asyncio.run(async_download_all_holdings())
-        # 持仓入库后立即更新行业映射，确保 Step 7 特征计算中 RBSA 可用
+        # 持仓入库后立即更新行业映射，确保 Step 6 特征计算中 RBSA 可用
         logger.info("更新申万行业映射（持仓→行业）...")
         total_mapped = update_industry_map(force=True)
         logger.info("行业映射完成: %d 条", total_mapped)
@@ -1001,8 +1016,7 @@ def run_pipeline(steps: list[int] | None = None):
     # Step 7: 特征计算（全量本地计算入库）
     if 7 in steps:
         logger.info("=== Step 7: 特征计算 ===")
-        regime = _features.calc_regime(conn)
-        _features.calc_all_features(regime=regime)
+        _features.calc_all_features()
 
     # Step 8: 推荐引擎（需模型就绪）
     if 8 in steps:

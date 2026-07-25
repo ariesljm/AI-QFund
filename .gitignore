@@ -12,6 +12,7 @@ data/*.db-shm
 
 # runtime 产物
 data/last_*.txt
+data/logs/
 
 # 生成文档
 docs/*.html

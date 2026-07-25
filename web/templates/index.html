@@ -133,7 +133,7 @@ button:focus-visible { outline: 2px solid #1A1A1A; outline-offset: 2px; }
 <div class="lg:col-span-4 flex flex-col justify-center pr-lg lg:border-r border-outline-variant">
 <div class="flex items-center justify-between mb-sm md:mb-md">
 <span class="text-on-surface-variant font-label-sm text-[13px] md:text-[14px] uppercase tracking-[0.2em] font-black">MARKET OVERVIEW / 核心指数</span>
-<span class="text-[13px] font-black">大盘状态：{% if latest and latest.regime == 'BULL' %}<span class="text-up">牛市</span>{% elif latest and latest.regime == 'BEAR' %}<span class="text-down">熊市</span>{% else %}中性{% endif %}</span>
+<span class="text-[13px] font-black">大盘状态：{% if regime_label == 'BULL' %}<span class="text-up">牛市</span>{% elif regime_label == 'BEAR' %}<span class="text-down">熊市</span>{% else %}中性{% endif %}</span>
 </div>
 <div class="grid grid-cols-2 gap-md md:gap-xl">
 <div class="flex flex-col">
@@ -300,7 +300,7 @@ FLASH / 实时快讯
 </div>
 {% endif %}
 <h3 class="text-[14px] font-black uppercase mb-xs text-on-surface-variant">推荐理由 / REASON</h3>
-<p class="text-on-surface text-[13px] leading-snug line-clamp-3">
+<p class="text-on-surface text-[13px] leading-snug">
 {{ latest.reason if latest else '暂无推荐，请先运行推荐引擎。' }}
 </p>
 </div>
@@ -608,11 +608,6 @@ async function fetchFundDetail(code) {
         var d = await r.json();
         if (d.error) { container.innerHTML = '<p class="text-error font-black">' + _esc(d.error) + '</p>'; return; }
         var f = d.fund;
-        var todayAnalysis = [];
-        if (f.regime) todayAnalysis.push('<span class="font-black">市场环境:</span> <span class="border border-primary px-2 py-0.5 text-[12px] font-black">' + _esc(f.regime) + '</span>');
-        if (f.display_score !== undefined) todayAnalysis.push('<span class="font-black">综合评分:</span> <span class="font-display-data">' + f.display_score + '</span>');
-        if (f.entry_nav !== null) todayAnalysis.push('<span class="font-black">推荐净值:</span> <span class="font-display-data">' + f.entry_nav.toFixed(4) + '</span>');
-        if (f.combo !== null) todayAnalysis.push('<span class="font-black">组合分数:</span> <span class="font-display-data">' + (f.combo).toFixed(4) + '</span>');
 
         var holdingsHtml = '';
         if (d.top_holdings && d.top_holdings.length) {
@@ -672,10 +667,6 @@ async function fetchFundDetail(code) {
             '<div class="border-b border-outline-variant pb-md">' +
             '<h3 class="font-label-sm text-[14px] uppercase tracking-widest font-black mb-xs">' + _esc(f.name) + '</h3>' +
             '<p class="text-[12px] text-on-surface-variant">' + _esc(f.type || '--') + ' | ' + _esc(f.first_date || '--') + ' | 状态: <span class="font-black">' + _esc(f.status) + '</span></p>' +
-            '</div>' +
-            '<div>' +
-            '<h4 class="font-label-sm text-[13px] uppercase tracking-widest font-black mb-sm border-b border-primary pb-1">今日分析</h4>' +
-            '<div class="flex flex-wrap gap-x-md gap-y-1 text-[13px]">' + todayAnalysis.join('') + '</div>' +
             '</div>' +
             '<div>' +
             '<h4 class="font-label-sm text-[13px] uppercase tracking-widest font-black mb-sm border-b border-primary pb-1">推荐理由</h4>' +
@@ -795,7 +786,6 @@ async function triggerPipeline() {
     statusEl.classList.remove('hidden');
     logEl.classList.add('hidden');
     logEl.textContent = '';
-    openModal('systemLogModal');
     try {
         var r = await fetch('/api/run-pipeline', { method: 'POST' });
         var d = await r.json();
