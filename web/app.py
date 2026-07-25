@@ -48,20 +48,23 @@ def _pipeline_log(msg: str) -> None:
     print(line, file=sys.stderr, flush=True)
 
 
-from pipeline import run as run_pipeline
+from data_foundation import run_pipeline as run_data_foundation
 
 def _run_pipeline_wrapper(force: bool = False):
     global _pipeline_status
     _pipeline_logs.clear()
     _pipeline_status = {"state": "running", "message": "管线启动..."}
-    
+
     handler = _PipelineLogHandler()
     handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)-7s] %(name)s: %(message)s", datefmt="%H:%M:%S"))
     handler.setLevel(logging.INFO)
     root = logging.getLogger()
     root.addHandler(handler)
-    
+
     try:
+        _pipeline_log("[启动] 数据基座开始执行")
+        run_data_foundation()
+        _pipeline_log("[启动] 推荐引擎开始执行")
         run_recommendation(force=force)
         _pipeline_status = {"state": "done", "message": "管线执行完成"}
     except Exception as e:
