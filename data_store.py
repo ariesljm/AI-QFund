@@ -37,12 +37,28 @@ def _load_settings():
     global _SETTINGS_CACHE
     if _SETTINGS_CACHE is not None:
         return _SETTINGS_CACHE
-    with open(SETTINGS_PATH, "rb") as f:
-        settings = _tomllib.load(f)
+    try:
+        with open(SETTINGS_PATH, "rb") as f:
+            settings = _tomllib.load(f)
+    except FileNotFoundError:
+        settings = {}
     for env_key, (section, key) in _ENV_OVERRIDE_MAP.items():
         val = _os.environ.get(env_key)
         if val:
             settings.setdefault(section, {})[key] = val
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+        import json
+        rows = conn.execute("SELECT key, value FROM meta WHERE key LIKE 'settings:%'").fetchall()
+        conn.close()
+        for key, value in rows:
+            parts = key.split(":", 2)
+            if len(parts) == 3:
+                _, section, name = parts
+                settings.setdefault(section, {})[name] = json.loads(value)
+    except Exception:
+        pass
     _SETTINGS_CACHE = settings
     return settings
 
@@ -180,24 +196,33 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 def _save_settings(settings: dict) -> bool:
     import re
-    text = SETTINGS_PATH.read_text(encoding="utf-8")
-    for section, values in settings.items():
-        for key, value in values.items():
-            if isinstance(value, bool):
-                line = f'{key} = {"true" if value else "false"}'
-            elif isinstance(value, int):
-                line = f'{key} = {value}'
-            elif isinstance(value, float):
-                line = f'{key} = {value}'
-            else:
-                line = f'{key} = "{value}"'
-            text = re.sub(
-                rf'^{re.escape(key)}\s*=.*$',
-                line,
-                text,
-                flags=re.MULTILINE,
-            )
-    SETTINGS_PATH.write_text(text, encoding="utf-8")
+    try:
+        text = SETTINGS_PATH.read_text(encoding="utf-8")
+        for section, values in settings.items():
+            for key, value in values.items():
+                if isinstance(value, bool):
+                    line = f'{key} = {"true" if value else "false"}'
+                elif isinstance(value, int):
+                    line = f'{key} = {value}'
+                elif isinstance(value, float):
+                    line = f'{key} = {value}'
+                else:
+                    line = f'{key} = "{value}"'
+                text = re.sub(rf'^{re.escape(key)}\s*=.*$', line, text, flags=re.MULTILINE)
+        SETTINGS_PATH.write_text(text, encoding="utf-8")
+    except OSError:
+        db_path = Path("data/qfund.db")
+        if not db_path.exists():
+            raise
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+        for section, values in settings.items():
+            for key, value in values.items():
+                import json
+                conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                             (f"settings:{section}:{key}", json.dumps(value, ensure_ascii=False)))
+        conn.commit()
+        conn.close()
     global _SETTINGS_CACHE
     _SETTINGS_CACHE = None
     logger.info("配置已保存: %s", {k: list(v.keys()) for k, v in settings.items()})

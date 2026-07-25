@@ -62,7 +62,7 @@ def _run_pipeline_wrapper(force: bool = False):
     root.addHandler(handler)
     
     try:
-        run_pipeline(force=force)
+        run_recommendation(force=force)
         _pipeline_status = {"state": "done", "message": "管线执行完成"}
     except Exception as e:
         _pipeline_log(f"[错误] 管线执行失败: {e}")
