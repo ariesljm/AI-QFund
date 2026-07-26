@@ -588,11 +588,8 @@ var _logCount = 0;
 var FUND_SKEL = '<div class="space-y-md"><div class="skel h-6 w-3/4"></div><div class="skel h-4 w-1/2"></div><div class="skel h-4 w-full"></div><div class="skel h-4 w-5/6"></div><div class="skel h-20 w-full"></div><div class="skel h-40 w-full"></div></div>';
 
 function _level(str) {
-    if (str.includes('[ERROR]')) return 'ERROR';
-    if (str.includes('[WARNING]')) return 'WARNING';
-    if (str.includes('[INFO]')) return 'INFO';
-    if (str.includes('[DEBUG]')) return 'DEBUG';
-    return '';
+    var m = str.match(/\[(ERROR|WARNING|INFO|DEBUG)\s*\]/);
+    return m ? m[1] : '';
 }
 
 function _timestamp(str) { return str.substring(0, 19).trim(); }

@@ -3,6 +3,8 @@
 import logging
 import sqlite3
 from contextlib import contextmanager
+
+_schema_warned = False
 from datetime import datetime
 from pathlib import Path
 
@@ -77,7 +79,10 @@ def _init_schema(conn: sqlite3.Connection) -> None:
     if not schema.exists():
         schema = Path(__file__).parent / "schema.sql"
     if not schema.exists():
-        logger.warning("schema.sql 未找到，跳过初始化")
+        global _schema_warned
+        if not _schema_warned:
+            _schema_warned = True
+            logger.warning("schema.sql 未找到，跳过初始化")
         return
     conn.executescript(schema.read_text(encoding="utf-8"))
     conn.commit()
