@@ -263,26 +263,39 @@ async def index(request: Request):
             "type": rec[10] or "",
         }
 
-    # 宏观摘要（财联社实时快讯）
+    # 宏观摘要（从 macro_news 取管线已入库的快讯，与 LLM 分析数据源一致）
     news_items = ["暂无快讯"]
     try:
-        from fetch import fetch as _fetch
-        import time as _time, hashlib as _hashlib
-        _CLS = "https://www.cls.cn/v1/roll/get_roll_list"
-        def _sign(p):
-            s = "&".join(f"{k}={p[k]}" for k in sorted(p.keys()))
-            return _hashlib.md5(_hashlib.sha1(s.encode()).hexdigest().encode()).hexdigest()
-        ts = int(_time.time())
-        p = {"app":"CailianpressWeb","os":"web","sv":"8.4.6","refresh_type":"1","rn":"20","last_time":str(ts),"category":""}
-        p["sign"] = _sign(p)
-        d = _fetch(f"{_CLS}?{'&'.join(f'{k}={p[k]}' for k in p)}").json()
-        items = d.get("data", {}).get("roll_data", [])
-        if items:
-            titles = [(i.get("title") or i.get("content") or "").strip() for i in items if i.get("title") or i.get("content")]
-            if titles:
-                news_items = titles
+        row = _q1(
+            "SELECT news_summary, top_gainers, top_losers, etf_net_flow FROM macro_news "
+            "ORDER BY date DESC LIMIT 1"
+        )
+        if row and row[0]:
+            text = row[0]
+            items = []
+            for seg in text.replace("；", "\n").replace("。", "\n").replace("；", "\n").split("\n"):
+                seg = seg.strip().strip("【东方财富快讯】").strip("【财联社电报】").strip()
+                if seg and len(seg) > 4 and not seg.startswith(("http", "www")):
+                    items.append(seg)
+            if items:
+                news_items = items
+        top_gainers = row[1] if row and row[1] else ""
+        top_losers = row[2] if row and row[2] else ""
+        etf_net_flow = row[3] if row and row[3] else ""
+        if top_gainers:
+            for g in top_gainers.replace("、", "\n").split("\n"):
+                g = g.strip()
+                if g:
+                    news_items.insert(0, "↑ " + g)
+        if top_losers:
+            for l in top_losers.replace("、", "\n").split("\n"):
+                l = l.strip()
+                if l:
+                    news_items.append("↓ " + l)
+        if etf_net_flow:
+            news_items.insert(0, "资金流向: " + etf_net_flow)
     except Exception as e:
-        logger.warning("财联社快讯抓取失败: %s", e)
+        logger.warning("快讯加载失败: %s", e)
     macro_data = {
         "news": "；".join(news_items),
         "news_items": news_items,
