@@ -622,14 +622,18 @@ async def realtime_news():
 
 
 @app.get("/api/logs")
-async def get_logs(lines: int = 100):
+async def get_logs(lines: int = 100, start: int = 0):
     from log_utils import LOG_FILE
     if not LOG_FILE.exists():
         return {"lines": [], "total": 0}
     with open(str(LOG_FILE), "r", encoding="utf-8", errors="replace") as f:
         all_lines = f.readlines()
-    tail = all_lines[-lines:] if len(all_lines) > lines else all_lines
-    return {"lines": tail, "total": len(all_lines)}
+    total = len(all_lines)
+    if start > 0 and start < total:
+        tail = all_lines[start:start + lines]
+    else:
+        tail = all_lines[-lines:] if total > lines else all_lines
+    return {"lines": tail, "total": total}
 
 
 @app.get("/api/settings")

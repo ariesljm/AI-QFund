@@ -466,26 +466,35 @@ FLASH / 实时快讯
 
 <!-- System Log Modal -->
 <div class="fixed inset-0 bg-primary/80 backdrop-blur-sm z-[10000] hidden flex items-center justify-center p-sm md:p-md" id="systemLogModal">
-<div class="bg-background w-full max-w-2xl border-2 border-primary flex flex-col shadow-[12px_12px_0px_rgba(0,0,0,1)] overflow-hidden max-h-[90vh]">
-<div class="p-md border-b border-primary flex justify-between items-center bg-primary text-white">
+<div class="bg-background w-full max-w-4xl border-2 border-primary flex flex-col shadow-[12px_12px_0px_rgba(0,0,0,1)] overflow-hidden max-h-[90vh]">
+<div class="p-md border-b border-primary flex justify-between items-center bg-primary text-white select-none">
 <h3 class="font-label-sm text-[14px] uppercase font-black flex items-center gap-xs tracking-widest">
 <span class="material-symbols-outlined text-[18px]">terminal</span>
 LIVE LOG STREAM / 系统实时日志
 </h3>
+<div class="flex items-center gap-sm">
+<span class="text-[12px] opacity-60" id="logCount">0 条</span>
+<button class="text-[12px] font-bold uppercase tracking-wider px-sm py-1 border border-white/30 hover:bg-white/10 transition-colors" onclick="clearLogs()">清空</button>
 <button class="material-symbols-outlined hover:rotate-90 transition-transform" onclick="closeModal('systemLogModal')">close</button>
 </div>
-        <div class="flex-1 p-md font-mono text-[14px] overflow-y-auto max-h-[600px] bg-surface-container-low text-primary relative visible-scrollbar" id="logContainer">
-          <button class="absolute bottom-2 right-2 z-10 w-8 h-8 bg-primary text-white rounded-full flex items-center justify-center shadow-lg opacity-70 hover:opacity-100 transition-opacity hidden" id="logScrollBtn" title="滚动到底部" onclick="document.getElementById('logContainer').scrollTop=document.getElementById('logContainer').scrollHeight;document.getElementById('logScrollBtn').classList.add('hidden');">
-            <span class="material-symbols-outlined text-[18px]">arrow_downward</span>
-          </button>
-          <div class="space-y-1" id="logLines">
-            {% for i in range(6) %}
-            <p class="skel h-4 w-{{ ['full', '3/4', '5/6', '2/3', '4/5', '3/5'][i] }}" style="animation-delay:{{ i * 0.15 }}s"></p>
-            {% endfor %}
-          </div>
-        </div>
-        <p id="pipelineStatus" class="text-[12px] font-bold text-on-surface-variant mt-2 px-md hidden"></p>
-        <pre id="pipelineLog" class="text-[11px] font-mono text-on-surface bg-surface-container p-2 mt-1 mx-md mb-md max-h-[400px] overflow-y-auto hidden whitespace-pre-wrap visible-scrollbar"></pre>
+</div>
+<div class="flex gap-1 px-md pt-sm pb-1 border-b border-primary/10 select-none flex-wrap" id="logFilters">
+<button class="log-filter text-[11px] font-bold uppercase tracking-wider px-sm py-1 border border-primary/20 bg-primary/5 hover:bg-primary/10 transition-colors active" data-level="all">全部</button>
+<button class="log-filter text-[11px] font-bold uppercase tracking-wider px-sm py-1 border border-primary/20 hover:bg-primary/10 transition-colors" data-level="ERROR" style="color:#B71C1C">ERROR</button>
+<button class="log-filter text-[11px] font-bold uppercase tracking-wider px-sm py-1 border border-primary/20 hover:bg-primary/10 transition-colors" data-level="WARNING" style="color:#D32F2F">WARNING</button>
+<button class="log-filter text-[11px] font-bold uppercase tracking-wider px-sm py-1 border border-primary/20 hover:bg-primary/10 transition-colors" data-level="INFO" style="color:#1A1A1A">INFO</button>
+<button class="log-filter text-[11px] font-bold uppercase tracking-wider px-sm py-1 border border-primary/20 hover:bg-primary/10 transition-colors" data-level="DEBUG" style="color:#888">DEBUG</button>
+<div class="flex-1"></div>
+<input class="text-[12px] font-mono border border-primary/20 bg-surface-container-low px-sm py-1 outline-none focus:border-primary w-48" placeholder="搜索日志..." id="logSearch" oninput="applyLogFilter()">
+</div>
+<div class="flex-1 font-mono text-[13px] overflow-y-auto bg-surface-container-low text-primary relative visible-scrollbar" id="logContainer">
+<button class="absolute bottom-2 right-2 z-10 w-8 h-8 bg-primary text-white rounded-full flex items-center justify-center shadow-lg opacity-70 hover:opacity-100 transition-opacity hidden" id="logScrollBtn" title="滚动到底部" onclick="document.getElementById('logContainer').scrollTop=document.getElementById('logContainer').scrollHeight;document.getElementById('logScrollBtn').classList.add('hidden');">
+<span class="material-symbols-outlined text-[18px]">arrow_downward</span>
+</button>
+<div id="logLines"></div>
+</div>
+<p id="pipelineStatus" class="text-[12px] font-bold text-on-surface-variant px-md hidden"></p>
+<pre id="pipelineLog" class="text-[11px] font-mono text-on-surface bg-surface-container px-md py-1 mx-md mb-md max-h-[200px] overflow-y-auto hidden whitespace-pre-wrap visible-scrollbar"></pre>
 </div>
 </div>
 
@@ -575,17 +584,52 @@ LIVE LOG STREAM / 系统实时日志
 <script>
 function _esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 var logInterval = null;
+var _logCount = 0;
 var FUND_SKEL = '<div class="space-y-md"><div class="skel h-6 w-3/4"></div><div class="skel h-4 w-1/2"></div><div class="skel h-4 w-full"></div><div class="skel h-4 w-5/6"></div><div class="skel h-20 w-full"></div><div class="skel h-40 w-full"></div></div>';
+
+function _level(str) {
+    if (str.includes('[ERROR]')) return 'ERROR';
+    if (str.includes('[WARNING]')) return 'WARNING';
+    if (str.includes('[INFO]')) return 'INFO';
+    if (str.includes('[DEBUG]')) return 'DEBUG';
+    return '';
+}
+
+function _timestamp(str) { return str.substring(0, 19).trim(); }
+
+function _message(str) {
+    var m = str.substring(19).trim();
+    return m.replace(/\[\w+\]\s*/, '').trim();
+}
+
+function applyLogFilter() {
+    var level = (document.querySelector('.log-filter.active') || {}).dataset.level || 'all';
+    var query = (document.getElementById('logSearch').value || '').toLowerCase();
+    document.querySelectorAll('#logLines .log-row').forEach(function(el) {
+        var show = true;
+        if (level !== 'all' && el.dataset.level !== level) show = false;
+        if (show && query && !el.textContent.toLowerCase().includes(query)) show = false;
+        el.style.display = show ? '' : 'none';
+    });
+}
+
+function clearLogs() {
+    document.getElementById('logLines').innerHTML = '';
+    _logCount = 0;
+}
+
 function openModal(id) {
     document.getElementById(id).classList.remove('hidden');
     if (id === 'systemLogModal') {
+        _logCount = 0;
+        document.getElementById('logLines').innerHTML = '';
         fetchLogs();
         logInterval = setInterval(fetchLogs, 5000);
-        var logContainer = document.getElementById('logContainer');
-        logContainer.addEventListener('scroll', function() {
+        var container = document.getElementById('logContainer');
+        container.addEventListener('scroll', function() {
             var btn = document.getElementById('logScrollBtn');
             if (!btn) return;
-            var atBottom = logContainer.scrollHeight - logContainer.scrollTop - logContainer.clientHeight < 80;
+            var atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
             if (atBottom) btn.classList.add('hidden');
             else btn.classList.remove('hidden');
         });
@@ -594,6 +638,16 @@ function openModal(id) {
         loadSettings();
     }
 }
+
+document.addEventListener('click', function(e) {
+    if (e.target.classList.contains('log-filter')) {
+        document.querySelectorAll('.log-filter').forEach(function(b) { b.classList.remove('active'); b.style.background = ''; });
+        e.target.classList.add('active');
+        e.target.style.background = 'rgba(0,0,0,0.1)';
+        applyLogFilter();
+    }
+});
+
 function closeModal(id) {
     document.getElementById(id).classList.add('hidden');
     if (id === 'systemLogModal' && logInterval) {
@@ -716,27 +770,39 @@ async function fetchLogs() {
     if (!container || !linesEl) return;
     var atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
     try {
-        var r = await fetch('/api/logs?lines=200');
+        var r = await fetch('/api/logs?lines=200&start=' + _logCount);
         var data = await r.json();
-        if (!data.lines || !data.lines.length) {
-            linesEl.innerHTML = '<p class="opacity-50">暂无日志</p>';
-            return;
+        if (!data.lines || !data.lines.length) return;
+        for (var i = 0; i < data.lines.length; i++) {
+            var l = data.lines[i];
+            var lvl = _level(l);
+            var ts = _timestamp(l);
+            var msg = _message(l);
+            var row = document.createElement('div');
+            row.className = 'log-row flex items-start gap-1 px-md py-[3px] hover:bg-surface-container transition-colors';
+            row.dataset.level = lvl || 'INFO';
+            if (lvl === 'ERROR') {
+                row.style.background = '#FFF0F0';
+                row.innerHTML = '<span class="shrink-0 w-[52px] text-[11px] font-black text-error uppercase">ERROR</span><span class="shrink-0 text-[11px] opacity-50 w-[130px]">' + _esc(ts) + '</span><span class="break-all text-error font-medium">' + _esc(msg) + '</span>';
+            } else if (lvl === 'WARNING') {
+                row.innerHTML = '<span class="shrink-0 w-[52px] text-[11px] font-black text-tertiary uppercase">WARN</span><span class="shrink-0 text-[11px] opacity-50 w-[130px]">' + _esc(ts) + '</span><span class="break-all text-primary">' + _esc(msg) + '</span>';
+            } else if (lvl === 'DEBUG') {
+                row.innerHTML = '<span class="shrink-0 w-[52px] text-[11px] font-black opacity-40 uppercase">DEBUG</span><span class="shrink-0 text-[11px] opacity-30 w-[130px]">' + _esc(ts) + '</span><span class="break-all opacity-50">' + _esc(msg) + '</span>';
+            } else {
+                row.innerHTML = '<span class="shrink-0 w-[52px] text-[11px] font-black opacity-60 uppercase">INFO</span><span class="shrink-0 text-[11px] opacity-50 w-[130px]">' + _esc(ts) + '</span><span class="break-all">' + _esc(msg) + '</span>';
+            }
+            linesEl.appendChild(row);
         }
-        linesEl.innerHTML = data.lines.map(function(l) {
-            var c = '';
-            if (l.includes('[ERROR]')) c = 'text-error font-black';
-            else if (l.includes('[WARNING]')) c = 'text-tertiary font-bold';
-            else if (l.includes('[DEBUG]')) c = 'opacity-50';
-            return '<p class="' + c + ' break-all">' + _esc(l) + '</p>';
-        }).join('');
-        if (atBottom) {
-            container.scrollTop = container.scrollHeight;
-        } else {
+        _logCount += data.lines.length;
+        document.getElementById('logCount').textContent = _logCount + ' 条';
+        if (atBottom) container.scrollTop = container.scrollHeight;
+        else {
             var btn = document.getElementById('logScrollBtn');
             if (btn) btn.classList.remove('hidden');
         }
+        applyLogFilter();
     } catch(e) {
-        linesEl.innerHTML = '<p class="text-error font-black">日志加载失败: ' + _esc(String(e.message || e)) + '</p>';
+        console.error('日志加载失败:', e);
     }
 }
 
