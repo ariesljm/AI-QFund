@@ -8,11 +8,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 COPY pyproject.toml uv.lock ./
-RUN uv pip install --system -r pyproject.toml && uv cache clean
+RUN uv sync --system --no-dev && uv cache clean
 
 COPY . .
-
-COPY data/schema.sql schema.sql
 
 RUN mkdir -p data/logs config
 
