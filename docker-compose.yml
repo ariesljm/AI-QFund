@@ -12,6 +12,7 @@ services:
       - /root/workspace/ai-qfund/data:/app/data
       - /root/workspace/ai-qfund/config/settings.toml:/app/config/settings.toml
     environment:
+      - TZ=Asia/Shanghai
       - ENABLE_SCHEDULER=true
       - SCHEDULER_HOUR=8
       - SCHEDULER_MINUTE=0
