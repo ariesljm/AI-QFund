@@ -1,5 +1,5 @@
 -- AI-QFund 数据库 Schema（SQLite WAL 模式）
--- 由 DEVELOPMENT_PLAN.md Phase 0 定义
+-- 单一真相源：data_store._init_schema 读取此文件，_migrate 补充列变更
 
 -- 基金基本信息
 CREATE TABLE IF NOT EXISTS fund_basic (
@@ -66,7 +66,6 @@ CREATE TABLE IF NOT EXISTS fund_features (
     bias_60d REAL,
     rbsa_industry_1 TEXT,
     rbsa_weight_1 REAL,
-    etf_flow_slope_5d REAL,
     PRIMARY KEY (code, date)
 );
 
@@ -83,9 +82,11 @@ CREATE TABLE IF NOT EXISTS recommend_log (
     buy_reason TEXT,
     sell_reason TEXT,
     status TEXT DEFAULT 'HOLD',
-    exit_date REAL,
+    exit_date TEXT,
     highest_nav REAL,
     return_rate REAL,
+    feature_snapshot TEXT,
+    entry_nav REAL,
     created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -95,19 +96,67 @@ CREATE TABLE IF NOT EXISTS macro_news (
     news_summary TEXT,
     top_gainers TEXT,
     top_losers TEXT,
-    etf_net_flow TEXT
+    etf_net_flow TEXT,
+    flow_json TEXT,
+    context_json TEXT
 );
 
--- 通用元数据（键值对），记录各类数据的最近更新时间等
+-- 通用元数据（键值对）
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT
 );
 
--- 股票→申万二级行业映射（由 akshare 定期更新）
+-- 股票→申万二级行业映射
 CREATE TABLE IF NOT EXISTS stock_industry_map (
     stock_code TEXT PRIMARY KEY,
     industry_code TEXT,
     industry_name TEXT,
     update_date TEXT
+);
+
+-- 赛道选择记录（进化闭环用）
+CREATE TABLE IF NOT EXISTS sector_selections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    recommend_log_id INTEGER,
+    recommended_sectors TEXT,
+    risk_sectors TEXT,
+    sector_reasoning TEXT,
+    regime_label TEXT,
+    key_news_snippet TEXT,
+    outcome TEXT DEFAULT '待定',
+    outcome_date TEXT,
+    outcome_note TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- 监控事件记录
+CREATE TABLE IF NOT EXISTS monitor_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL,
+    date TEXT NOT NULL,
+    signal TEXT NOT NULL,
+    trigger_trailing BOOLEAN DEFAULT 0,
+    trigger_drift BOOLEAN DEFAULT 0,
+    trigger_sector_adv BOOLEAN DEFAULT 0,
+    logic_verdict TEXT,
+    sector_risk BOOLEAN,
+    holding_risk BOOLEAN,
+    detail TEXT,
+    recommend_log_id INTEGER,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- 进化洞察（替代旧 evolution_rules）
+CREATE TABLE IF NOT EXISTS evolution_insights (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    insight TEXT NOT NULL,
+    insight_type TEXT NOT NULL,
+    source_ids TEXT,
+    confidence REAL DEFAULT 1.0,
+    created_date TEXT NOT NULL,
+    last_applied_date TEXT,
+    apply_count INTEGER DEFAULT 0,
+    active INTEGER DEFAULT 1
 );

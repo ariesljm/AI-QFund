@@ -44,12 +44,13 @@ def update_highest_nav(code: str, since_date: str) -> float | None:
 
 
 def calc_atr(navs: list[float], period: int = 14) -> float:
+    """在收益率序列上计算 ATR，避免低净值基金被过早止损。"""
     if len(navs) < 2:
         return 0.0
-    tr = [abs(navs[i] - navs[i - 1]) for i in range(1, len(navs))]
-    if len(tr) < period:
-        return float(np.mean(tr)) if tr else 0.0
-    return float(np.mean(tr[-period:]))
+    rets = [navs[i] / navs[i - 1] - 1.0 for i in range(1, len(navs))]
+    if len(rets) < period:
+        return float(np.mean(np.abs(rets))) if rets else 0.0
+    return float(np.mean(np.abs(rets[-period:])))
 
 
 def check_trailing_stop(code: str, highest_nav: float, atr: float,
@@ -61,10 +62,10 @@ def check_trailing_stop(code: str, highest_nav: float, atr: float,
     current = navs[-1]
     if highest_nav is None or highest_nav <= 0 or atr <= 0:
         return False, ""
-    if highest_nav - current > _ATR_MULTIPLE * atr:
+    drawdown_pct = (highest_nav - current) / highest_nav
+    if drawdown_pct > _ATR_MULTIPLE * atr:
         return True, (
-            f"追踪止损: 最高{highest_nav:.4f} - 当前{current:.4f}"
-            f"={highest_nav - current:.4f} > 2×ATR({atr:.4f})"
+            f"追踪止损: 回撤{drawdown_pct:.2%} > 2×ATR({atr:.4f})"
         )
     return False, ""
 
@@ -256,21 +257,21 @@ def _exit_position(code: str, sell_reason: str) -> None:
     with _db_conn() as conn:
         today = datetime.now().strftime("%Y-%m-%d")
         reco = conn.execute(
-            f"SELECT recommend_date FROM recommend_log "
+            f"SELECT recommend_date, entry_nav FROM recommend_log "
             f"WHERE code=? AND status IN ({','.join('?'*len(_HOLD_STATES))}) "
             "ORDER BY id DESC LIMIT 1",
             (code, *_HOLD_STATES),
         ).fetchone()
         return_rate = None
         if reco:
-            nav_r = conn.execute(
-                "SELECT cum_nav FROM fund_nav WHERE code=? AND date=?", (code, reco[0])
-            ).fetchone()
+            entry_nav = reco[1]
+            # 用最新净值计算收益，而非依赖 recommend_date 当日净值
             nav_e = conn.execute(
-                "SELECT cum_nav FROM fund_nav WHERE code=? AND date=?", (code, today)
+                "SELECT cum_nav FROM fund_nav WHERE code=? "
+                "ORDER BY date DESC LIMIT 1", (code,)
             ).fetchone()
-            if nav_r and nav_e and nav_r[0] and nav_e[0]:
-                return_rate = nav_e[0] / nav_r[0] - 1.0
+            if entry_nav and nav_e and nav_e[0]:
+                return_rate = nav_e[0] / entry_nav - 1.0
         conn.execute(
             "UPDATE recommend_log SET status='EXIT', sell_reason=?, exit_date=?, return_rate=? "
             f"WHERE code=? AND status IN ({','.join('?'*len(_HOLD_STATES))})",

@@ -386,7 +386,8 @@ async def index(request: Request):
         "SELECT r.code, fb.name, "
         "MIN(r.recommend_date) AS first_date, "
         "COUNT(*) AS rec_count, "
-        "MAX(r.status) AS status "
+        "MAX(r.status) AS status, "
+        "MAX(r.exit_date) AS exit_date "
         "FROM recommend_log r "
         "LEFT JOIN fund_basic fb ON fb.code = r.code "
         "GROUP BY r.code "
@@ -395,7 +396,7 @@ async def index(request: Request):
     candidate_list = []
     today_str = datetime.now().strftime("%Y-%m-%d")
     for c in candidates:
-        code, name, first_date, rec_count, status = c[0], c[1], c[2], c[3], c[4] or "HOLD"
+        code, name, first_date, rec_count, status, exit_date = c[0], c[1], c[2], c[3], c[4] or "HOLD", c[5]
         # 首次推荐净值（优先读 recommend_log.entry_nav，缺失时查 fund_nav 当日净值，无则 --）
         entry_nav = _q1(
             "SELECT entry_nav FROM recommend_log WHERE code=? AND recommend_date=? ORDER BY id ASC LIMIT 1",
@@ -428,7 +429,8 @@ async def index(request: Request):
             "return": ret,
             "rec_count": rec_count,
             "status": status,
-            "type": c[0] if len(c) > 5 else "",
+            "exit_date": exit_date or "",
+            "type": c[0] if len(c) > 6 else "",
         })
     # 累计收益总和
     total_return = round(sum(c["return"] for c in candidate_list if c["return"] is not None), 2) if candidate_list else 0
@@ -504,18 +506,31 @@ async def index(request: Request):
             hs300_pct = round((hs300_now[0] / hs300_start[0] - 1) * 100, 2)
             alpha = round(total_return - hs300_pct, 2)
     # 逐基金alpha贡献（按推荐日期排序，用于alpha曲线）
+    # ponytail: 对已平仓基金用 exit_date 截断持有期，避免基准延伸至今日
     sorted_candidates = sorted(candidate_list, key=lambda x: x["first_date"] or "")
     cum_alpha = 0.0
     for c in sorted_candidates:
         if c["return"] is not None and c["first_date"]:
-            hs_row = _q1(
+            hs_start = _q1(
                 "SELECT close FROM index_daily WHERE code='sh000300' AND date<=? ORDER BY date DESC LIMIT 1",
                 (c["first_date"],),
             )
-            hs_now = _q1("SELECT close FROM index_daily WHERE code='sh000300' ORDER BY date DESC LIMIT 1")
-            if hs_row and hs_row[0] and hs_now and hs_now[0]:
-                hs_ret = (hs_now[0] / hs_row[0] - 1) * 100
-                cum_alpha += c["return"] - hs_ret
+            end_str = c["exit_date"] or today_str
+            hs_end = _q1(
+                "SELECT close FROM index_daily WHERE code='sh000300' AND date<=? ORDER BY date DESC LIMIT 1",
+                (end_str,),
+            )
+            if hs_start and hs_start[0] and hs_end and hs_end[0]:
+                hs_ret = (hs_end[0] / hs_start[0] - 1) * 100
+                fund_ret = c["return"]
+                if c.get("exit_date") and c["status"] == "EXIT":
+                    end_nav = _q1(
+                        "SELECT cum_nav FROM fund_nav WHERE code=? AND date<=? ORDER BY date DESC LIMIT 1",
+                        (c["code"], end_str),
+                    )
+                    if end_nav and end_nav[0] and c["first_nav"] and c["first_nav"] > 0:
+                        fund_ret = round((end_nav[0] / c["first_nav"] - 1) * 100, 2)
+                cum_alpha += fund_ret - hs_ret
                 alpha_pcts.append(round(cum_alpha, 2))
     # alpha曲线SVG（自动缩放）
     alpha_svg = ""

@@ -60,8 +60,7 @@ def calc_rbsa(holdings: list[dict], conn: sqlite3.Connection | None = None) -> l
     return [{"industry": ind, "weight": w} for ind, w in sorted_industries[:3]]
 
 
-def calc_features(code: str, conn: sqlite3.Connection,
-                   market_etf_flow_slope: float | None = None) -> dict:
+def calc_features(code: str, conn: sqlite3.Connection) -> dict:
     cur = conn.execute(
         "SELECT date, cum_nav FROM fund_nav WHERE code = ? ORDER BY date ASC",
         (code,),
@@ -101,9 +100,8 @@ def calc_features(code: str, conn: sqlite3.Connection,
     )
     idx_rows = cur_idx.fetchall()
     idx_volumes = np.array([r[2] for r in idx_rows], dtype=float) if idx_rows else np.array([])
+    idx_closes = np.array([r[1] for r in idx_rows], dtype=float) if idx_rows else np.array([])
     if len(idx_rows) >= 60 and len(returns) >= 60:
-        idx_dates = [r[0] for r in idx_rows]
-        idx_closes = np.array([r[1] for r in idx_rows], dtype=float)
         idx_returns = np.diff(idx_closes) / idx_closes[:-1]
         idx_returns = idx_returns[np.isfinite(idx_returns)]
         min_len = min(60, len(returns), len(idx_returns))
@@ -122,9 +120,10 @@ def calc_features(code: str, conn: sqlite3.Connection,
     else:
         features["capture_up"] = 1.0
         features["capture_down"] = 1.0
-    if len(navs) >= 60:
-        ma60 = np.mean(navs[-60:])
-        features["bias_60d"] = float((navs[-1] - ma60) / ma60 * 100)
+    # bias_60d 改为指数乖离率（沪深300 close vs MA60），表征大盘超跌反弹环境
+    if len(idx_rows) >= 60:
+        idx_ma60 = np.mean(idx_closes[-60:])
+        features["bias_60d"] = float((idx_closes[-1] - idx_ma60) / idx_ma60 * 100)
     else:
         features["bias_60d"] = 0.0
     # 数据质量校验：检测 NaN/Inf/极端值
@@ -139,24 +138,6 @@ def calc_features(code: str, conn: sqlite3.Connection,
     if abs(features.get("bias_60d", 0)) > 25:
         logger.warning("基金 %s 60日偏离度异常: %.2f%%", code, features["bias_60d"])
 
-    if market_etf_flow_slope is not None:
-        features["etf_flow_slope_5d"] = market_etf_flow_slope
-    else:
-        cur_etf = conn.execute(
-            "SELECT volume FROM index_daily WHERE code = 'sh510300' ORDER BY date ASC"
-        )
-        etf_vols = np.array([r[0] for r in cur_etf.fetchall()], dtype=float)
-        if len(etf_vols) >= 5:
-            vol_window = etf_vols[-5:]
-            vol_window = vol_window[vol_window > 0]
-            if len(vol_window) >= 2:
-                x = np.arange(len(vol_window), dtype=float)
-                y = np.log(vol_window)
-                features["etf_flow_slope_5d"] = float(np.polyfit(x, y, 1)[0])
-            else:
-                features["etf_flow_slope_5d"] = 0.0
-        else:
-            features["etf_flow_slope_5d"] = 0.0
     return features
 
 
@@ -184,19 +165,15 @@ def calc_all_features(batch_commit: int = 500) -> int:
             if top:
                 rbsa_data[code] = (top[0]["industry"], top[0]["weight"])
         logger.info("RBSA 预加载完成: %d 只基金有行业暴露", len(rbsa_data))
-        market_etf_flow_slope = 0.0
-        cur_etf = conn.execute(
-            "SELECT volume FROM index_daily WHERE code = 'sh510300' ORDER BY date ASC"
-        )
-        etf_vols = np.array([r[0] for r in cur_etf.fetchall()], dtype=float)
-        if len(etf_vols) >= 5:
-            vw = etf_vols[-5:]
-            vw = vw[vw > 0]
-            if len(vw) >= 2:
-                x = np.arange(len(vw), dtype=float)
-                y = np.log(vw)
-                market_etf_flow_slope = float(np.polyfit(x, y, 1)[0])
-        logger.info("市场级 ETF 资金流斜率: %.6f", market_etf_flow_slope)
+        # 大盘状态机：沪深300 close vs MA60 → BULL/BEAR
+        regime = "NEUTRAL"
+        idx_row = conn.execute(
+            "SELECT close, ma60 FROM index_daily WHERE code='sh000300' ORDER BY date DESC LIMIT 1"
+        ).fetchone()
+        if idx_row and idx_row[0] and idx_row[1] and idx_row[1] > 0:
+            regime = "BULL" if idx_row[0] > idx_row[1] else "BEAR"
+        logger.info("大盘状态机: %s (close=%s, ma60=%s)", regime,
+                     idx_row[0] if idx_row else None, idx_row[1] if idx_row else None)
         local_feat = dict(
             conn.execute("SELECT code, date FROM fund_features").fetchall()
         )
@@ -227,24 +204,22 @@ def calc_all_features(batch_commit: int = 500) -> int:
             if code in skip_codes:
                 done += 1
                 continue
-            features = calc_features(code, conn, market_etf_flow_slope=market_etf_flow_slope)
+            features = calc_features(code, conn)
             done += 1
             if features:
                 rbsa_industry_1, rbsa_weight_1 = rbsa_data.get(code, ("", 0.0))
                 conn.execute(
                     "INSERT OR REPLACE INTO fund_features "
-                    "(code, date, hurst_60d, momentum_20d, calmar, downside_vol, "
-                    "capture_up, capture_down, bias_60d, rbsa_industry_1, rbsa_weight_1, "
-                    "etf_flow_slope_5d) "
+                    "(code, date, regime, hurst_60d, momentum_20d, calmar, downside_vol, "
+                    "capture_up, capture_down, bias_60d, rbsa_industry_1, rbsa_weight_1) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
-                        features["code"], features["date"],
+                        features["code"], features["date"], regime,
                         features.get("hurst_60d"), features.get("momentum_20d"),
                         features.get("calmar"), features.get("downside_vol"),
                         features.get("capture_up"), features.get("capture_down"),
                         features.get("bias_60d"),
                         rbsa_industry_1, rbsa_weight_1,
-                        features.get("etf_flow_slope_5d"),
                     ),
                 )
                 saved += 1

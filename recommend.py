@@ -28,25 +28,37 @@ MODEL_PATH = Path("models/lgb_model.txt")
 FEATURE_COLS = [
     "hurst_60d", "momentum_20d", "calmar", "downside_vol",
     "capture_up", "capture_down", "bias_60d",
-    "etf_flow_slope_5d",
 ]
 _FORWARD_WINDOW = 20
 
 
 def _load_ranking_cfg() -> dict:
-    return {
-        "rel_strength_weight": 0.6,
-        "calmar_weight": 0.2,
-        "hurst_weight": 0.2,
+    """从 meta 表读取排序权重，找不到则用默认值。"""
+    defaults = {
+        "model_weight": 0.5,
+        "rel_strength_weight": 0.15,
+        "calmar_weight": 0.1,
+        "hurst_weight": 0.1,
         "momentum_guard_pct": -15.0,
     }
+    try:
+        with _db_conn() as conn:
+            row = conn.execute(
+                "SELECT value FROM meta WHERE key = 'ranking_cfg'"
+            ).fetchone()
+            if row:
+                import json
+                cfg = json.loads(row[0])
+                defaults.update({k: v for k, v in cfg.items() if k in defaults})
+    except Exception:
+        pass
+    return defaults
 
 
 # ========== 2.1 标注数据准备 ==========
 
 def _features_from_window(navs: np.ndarray, idx_closes: np.ndarray,
-                          idx_volumes: np.ndarray,
-                          etf_volumes: np.ndarray | None = None) -> dict | None:
+                          idx_volumes: np.ndarray) -> dict | None:
     if len(navs) < 60:
         return None
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -85,21 +97,25 @@ def _features_from_window(navs: np.ndarray, idx_closes: np.ndarray,
     else:
         feat["capture_up"] = feat["capture_down"] = 1.0
 
-    feat["bias_60d"] = float((navs[-1] - np.mean(navs[-60:])) / np.mean(navs[-60:]) * 100)
-    ev = etf_volumes if etf_volumes is not None else idx_volumes
-    if len(ev) >= 5:
-        vw = ev[-5:][ev[-5:] > 0]
-        if len(vw) >= 2:
-            feat["etf_flow_slope_5d"] = float(np.polyfit(np.arange(len(vw), dtype=float), np.log(vw), 1)[0])
-        else:
-            feat["etf_flow_slope_5d"] = 0.0
+    # bias_60d 改为指数乖离率（沪深300 close vs MA60）
+    if len(idx_closes) >= 60:
+        feat["bias_60d"] = float((idx_closes[-1] - np.mean(idx_closes[-60:])) / np.mean(idx_closes[-60:]) * 100)
     else:
-        feat["etf_flow_slope_5d"] = 0.0
+        feat["bias_60d"] = 0.0
     feat["rbsa_weight_1"] = 0.0
     return feat
 
 
-def prepare_lgb_training_data() -> tuple[pd.DataFrame, pd.Series]:
+_MAX_TRAIN_FUNDS = 2000
+"""ponytail: 全量12K基金特征计算太慢，限2000只代表性样本训练。"""
+
+
+def prepare_lgb_training_data() -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
+    """面板样本 + walk-forward 时间划分，返回 (X_train, y_train, X_val, y_val)。
+
+    ponytail: 不预加载全库NAV（14M行→51s），改用逐基金SQL流式处理，
+    并限制基金数避免训练过慢。
+    """
     with _db_conn() as conn:
         idx_rows = conn.execute(
             "SELECT date, close, volume FROM index_daily WHERE code = 'sh000300' ORDER BY date ASC"
@@ -113,59 +129,70 @@ def prepare_lgb_training_data() -> tuple[pd.DataFrame, pd.Series]:
         idx_vol = idx_df["volume"]
         idx_ret_fwd = idx_close.shift(-_FORWARD_WINDOW) / idx_close - 1.0
 
-        etf_rows = conn.execute(
-            "SELECT date, volume FROM index_daily WHERE code = 'sh510300' ORDER BY date ASC"
-        ).fetchall()
-        etf_df = pd.DataFrame(etf_rows, columns=["date", "volume"]) if etf_rows else pd.DataFrame(columns=["date", "volume"])
-        etf_df["date"] = pd.to_datetime(etf_df["date"])
-        etf_df = etf_df.set_index("date").sort_index()
-        etf_vol = etf_df["volume"]
+        fund_codes = [
+            r[0] for r in conn.execute(
+                "SELECT code FROM fund_nav GROUP BY code "
+                "HAVING COUNT(*) >= ? ORDER BY RANDOM() LIMIT ?",
+                (60 + _FORWARD_WINDOW, _MAX_TRAIN_FUNDS),
+            ).fetchall()
+        ]
+        if not fund_codes:
+            logger.warning("训练集为空")
+            empty = pd.DataFrame(columns=FEATURE_COLS)
+            return empty, pd.Series(dtype=float, name="alpha_20d"), empty, pd.Series(dtype=float, name="alpha_20d")
 
-        nav_rows = conn.execute(
-            "SELECT code, date, cum_nav FROM fund_nav ORDER BY code, date ASC"
-        ).fetchall()
-    nav_df = pd.DataFrame(nav_rows, columns=["code", "date", "cum_nav"])
-    nav_df["date"] = pd.to_datetime(nav_df["date"])
+        # 面板采样：每只基金沿时间轴每 _STEP 天取一个样本
+        _STEP = 20
+        samples = []
+        for code in fund_codes:
+            rows = conn.execute(
+                "SELECT date, cum_nav FROM fund_nav WHERE code=? ORDER BY date ASC",
+                (code,),
+            ).fetchall()
+            dates = [pd.Timestamp(r[0]) for r in rows]
+            navs = [r[1] for r in rows]
+            if len(dates) < 60 + _FORWARD_WINDOW:
+                continue
+            navs_arr = np.array(navs, dtype=float)
+            max_pos = len(dates) - 1 - _FORWARD_WINDOW
+            for pos in range(60, max_pos + 1, _STEP):
+                d = dates[pos]
+                if d not in idx_ret_fwd.index or pd.isna(idx_ret_fwd[d]):
+                    continue
+                y = navs_arr[pos + _FORWARD_WINDOW] / navs_arr[pos] - 1.0 - idx_ret_fwd[d]
+                idx_pos = idx_close.index.get_indexer([d])[0]
+                if idx_pos < 0 or idx_pos < 60:
+                    continue
+                idx_closes_w = idx_close.iloc[idx_pos - 59: idx_pos + 1].to_numpy(dtype=float)
+                idx_vols_w = idx_vol.iloc[idx_pos - 59: idx_pos + 1].to_numpy(dtype=float)
+                feat = _features_from_window(navs_arr[:pos + 1], idx_closes_w, idx_vols_w)
+                if feat is None or any(pd.isna(v) for v in feat.values()):
+                    continue
+                samples.append((d, feat, y))
 
-    X_list, y_list = [], []
-    for code, g in nav_df.groupby("code"):
-        g = g.set_index("date")["cum_nav"].sort_index()
-        if len(g) < 60 + _FORWARD_WINDOW:
-            continue
-        last_pos = len(g) - 1 - _FORWARD_WINDOW
-        d = g.index[last_pos]
-        d20 = g.index[last_pos + _FORWARD_WINDOW]
-        fund_fwd = g[d20] / g[d] - 1.0
-        if d not in idx_ret_fwd.index or pd.isna(idx_ret_fwd[d]):
-            continue
-        y = fund_fwd - idx_ret_fwd[d]
-        idx_pos = idx_close.index.get_indexer([d])[0]
-        if idx_pos < 0 or idx_pos < 60:
-            continue
-        idx_closes_w = idx_close.iloc[idx_pos - 59: idx_pos + 1].to_numpy(dtype=float)
-        idx_vols_w = idx_vol.iloc[idx_pos - 59: idx_pos + 1].to_numpy(dtype=float)
-        etf_vols_w = idx_vols_w
-        if len(etf_vol) > 0:
-            try:
-                etf_pos = etf_vol.index.get_indexer([d])[0]
-                if etf_pos >= 60:
-                    etf_vols_w = etf_vol.iloc[etf_pos - 59: etf_pos + 1].to_numpy(dtype=float)
-            except Exception:
-                pass
-        feat = _features_from_window(g.iloc[: last_pos + 1].to_numpy(dtype=float),
-                                      idx_closes_w, idx_vols_w, etf_vols_w)
-        if feat is None or any(pd.isna(v) for v in feat.values()):
-            continue
-        X_list.append(feat)
-        y_list.append(y)
+    if not samples:
+        logger.warning("训练集为空")
+        empty = pd.DataFrame(columns=FEATURE_COLS)
+        return empty, pd.Series(dtype=float, name="alpha_20d"), empty, pd.Series(dtype=float, name="alpha_20d")
 
-    X = pd.DataFrame(X_list, columns=FEATURE_COLS)
-    y = pd.Series(y_list, name="alpha_20d")
-    logger.info("训练集构建完成: 样本 %d 条, 特征 %d 维", len(X), len(FEATURE_COLS))
-    return X, y
+    # walk-forward：按时间排序，最后 20% 样本作验证集
+    samples.sort(key=lambda x: x[0])
+    split_idx = int(len(samples) * 0.8)
+    train_s, val_s = samples[:split_idx], samples[split_idx:]
+
+    X_train = pd.DataFrame([s[1] for s in train_s], columns=FEATURE_COLS)
+    y_train = pd.Series([s[2] for s in train_s], name="alpha_20d")
+    X_val = pd.DataFrame([s[1] for s in val_s], columns=FEATURE_COLS)
+    y_val = pd.Series([s[2] for s in val_s], name="alpha_20d")
+
+    logger.info("训练集构建完成: %d只基金, 训练 %d 条, 验证 %d 条, 特征 %d 维",
+                len(fund_codes), len(X_train), len(X_val), len(FEATURE_COLS))
+    return X_train, y_train, X_val, y_val
 
 
-def train_lgb_model(X: pd.DataFrame, y: pd.Series) -> lgb.Booster:
+def train_lgb_model(X_train: pd.DataFrame, y_train: pd.Series,
+                    X_val: pd.DataFrame | None = None,
+                    y_val: pd.Series | None = None) -> lgb.Booster:
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     params = {
         "objective": "regression", "metric": "rmse",
@@ -173,10 +200,18 @@ def train_lgb_model(X: pd.DataFrame, y: pd.Series) -> lgb.Booster:
         "min_data_in_leaf": 20, "feature_fraction": 0.9,
         "verbose": -1, "seed": 42,
     }
-    train_data = lgb.Dataset(X, label=y)
-    booster = lgb.train(params, train_data, num_boost_round=200)
+    train_data = lgb.Dataset(X_train, label=y_train)
+    if X_val is not None and len(X_val) > 0 and y_val is not None and len(y_val) > 0:
+        val_data = lgb.Dataset(X_val, label=y_val, reference=train_data)
+        booster = lgb.train(
+            params, train_data, num_boost_round=500,
+            valid_sets=[val_data],
+            callbacks=[lgb.early_stopping(stopping_rounds=50, verbose=False)],
+        )
+    else:
+        booster = lgb.train(params, train_data, num_boost_round=200)
     booster.save_model(str(MODEL_PATH))
-    logger.info("LightGBM 模型已保存: %s", MODEL_PATH)
+    logger.info("LightGBM 模型已保存: %s (best_iter=%s)", MODEL_PATH, booster.best_iteration)
     return booster
 
 
@@ -291,6 +326,32 @@ def _index_momentum() -> float:
     return (idx[0][0] / idx[-1][0] - 1) * 100 if len(idx) >= 21 else 0.0
 
 
+def _get_market_regime() -> str:
+    """从沪深300收盘价 vs MA60 判断大盘状态：BULL/BEAR。"""
+    with _db_conn() as conn:
+        row = conn.execute(
+            "SELECT close, ma60 FROM index_daily WHERE code='sh000300' "
+            "AND close IS NOT NULL AND ma60 IS NOT NULL "
+            "ORDER BY date DESC LIMIT 1"
+        ).fetchone()
+    if not row or not row[0] or not row[1] or row[1] <= 0:
+        return "NEUTRAL"
+    return "BULL" if row[0] > row[1] else "BEAR"
+
+
+def _regime_combo_weights(regime: str, cfg: dict) -> dict:
+    """根据大盘状态调整因子权重：BULL 偏动量+赫斯特，BEAR 偏卡玛。"""
+    w_model = cfg["model_weight"]
+    w_rs = cfg["rel_strength_weight"]
+    w_cal = cfg["calmar_weight"]
+    w_hurst = cfg["hurst_weight"]
+    if regime == "BULL":
+        w_rs *= 1.3; w_hurst *= 1.3; w_cal *= 0.5
+    elif regime == "BEAR":
+        w_cal *= 1.5; w_rs *= 0.7; w_hurst *= 0.5
+    return {"model": w_model, "rs": w_rs, "cal": w_cal, "hurst": w_hurst}
+
+
 def _add_sector_relatives(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df["sector_rel_momentum"] = 0.0
@@ -321,7 +382,7 @@ def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> list[dict]:
     with _db_conn() as conn:
         placeholders = ",".join("?" * len(sectors))
         rows = conn.execute(
-            f"SELECT ff.code, fb.name, ff.rbsa_industry_1, "
+            f"SELECT ff.code, fb.name, ff.rbsa_industry_1, ff.regime, "
             f"{', '.join('ff.' + c for c in FEATURE_COLS)} "
             f"FROM fund_features ff "
             f"JOIN fund_basic fb ON fb.code = ff.code "
@@ -334,7 +395,7 @@ def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> list[dict]:
             logger.info("赛道内无匹配基金，降级为全市场 Top 10")
             return rank_funds(model)
 
-        cols = ["code", "name", "sector"] + FEATURE_COLS
+        cols = ["code", "name", "sector", "regime"] + FEATURE_COLS
         df = pd.DataFrame(rows, columns=cols)
         df = df.dropna(subset=FEATURE_COLS)
         if df.empty:
@@ -342,7 +403,8 @@ def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> list[dict]:
 
     df = df[~df["sector"].isin(risk_sectors)]
     df = _add_sector_relatives(df)
-    df = df[df["momentum_20d"] >= _load_ranking_cfg()["momentum_guard_pct"]]
+    cfg = _load_ranking_cfg()
+    df = df[df["momentum_20d"] >= cfg["momentum_guard_pct"]]
 
     X = df[FEATURE_COLS].astype(float)
     df["score"] = model.predict(X)
@@ -354,13 +416,15 @@ def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> list[dict]:
     score_min, score_max = df["score"].min(), df["score"].max()
     score_range = score_max - score_min if score_max > score_min else 1.0
     df["score_norm"] = (df["score"] - score_min) / score_range
+    regime = df["regime"].iloc[0] if "regime" in df.columns and len(df) > 0 and pd.notna(df["regime"].iloc[0]) else _get_market_regime()
+    w = _regime_combo_weights(regime, cfg)
     df["combo"] = (
-        df["rel_strength"] * 0.3
-        + df["sector_rel_momentum"] * 0.3
-        + calmar_clipped * 0.1
-        + df["sector_rel_calmar"] * 0.1
-        + (df["hurst_60d"] - 0.5) * 10 * 0.15
-        + df["score_norm"] * 0.05
+        df["score_norm"] * w["model"]
+        + df["rel_strength"] * w["rs"]
+        + df["sector_rel_momentum"] * 0.15
+        + calmar_clipped * w["cal"]
+        + df["sector_rel_calmar"] * 0.05
+        + (df["hurst_60d"] - 0.5) * 10 * w["hurst"]
     )
 
     top_per_sector = []
@@ -418,11 +482,13 @@ def rank_funds(model: lgb.Booster) -> list[dict]:
     score_min, score_max = df["score"].min(), df["score"].max()
     score_range = score_max - score_min if score_max > score_min else 1.0
     df["score_norm"] = (df["score"] - score_min) / score_range
+    regime = df["regime"].iloc[0] if "regime" in df.columns and len(df) > 0 and pd.notna(df["regime"].iloc[0]) else _get_market_regime()
+    w = _regime_combo_weights(regime, cfg)
     df["combo"] = (
-        df["rel_strength"] * cfg["rel_strength_weight"]
-        + calmar_clipped * cfg["calmar_weight"]
-        + (df["hurst_60d"] - 0.5) * 10 * cfg["hurst_weight"]
-        + df["score_norm"] * 0.05
+        df["score_norm"] * w["model"]
+        + df["rel_strength"] * w["rs"]
+        + calmar_clipped * w["cal"]
+        + (df["hurst_60d"] - 0.5) * 10 * w["hurst"]
     )
     top = df.sort_values("combo", ascending=False).head(10)
     candidates = []
@@ -625,8 +691,9 @@ def _save_recommendation(date_str: str, selected: dict, candidates: list[dict],
         ).fetchone()
         real_name = real_name[0] if real_name else selected["selected_name"]
         entry_nav_row = conn.execute(
-            "SELECT cum_nav FROM fund_nav WHERE code=? AND date=? LIMIT 1",
-            (selected["selected_code"], date_str),
+            "SELECT cum_nav FROM fund_nav WHERE code=? "
+            "ORDER BY date DESC LIMIT 1",
+            (selected["selected_code"],),
         ).fetchone()
         entry_nav = entry_nav_row[0] if entry_nav_row else None
         exists = conn.execute(
@@ -659,11 +726,11 @@ def run_recommendation(retrain: bool = False, force: bool = False) -> None:
 
     if retrain or not MODEL_PATH.exists():
         logger.info("=== 准备训练数据并训练 LightGBM ===")
-        X, y = prepare_lgb_training_data()
-        if len(X) == 0:
+        X_train, y_train, X_val, y_val = prepare_lgb_training_data()
+        if len(X_train) == 0:
             logger.error("训练样本为空，终止推荐")
             return
-        model = train_lgb_model(X, y)
+        model = train_lgb_model(X_train, y_train, X_val, y_val)
     else:
         logger.info("=== 加载已保存模型 ===")
         model = lgb.Booster(model_file=str(MODEL_PATH))

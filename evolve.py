@@ -28,37 +28,17 @@ _OUTCOME_DAYS_THRESHOLD = 20
 # ── 排序自纠偏（保留）──────────────────────────────────────
 
 def _apply_ranking_weights(weights: dict) -> bool:
+    """将排序权重写入 meta 表，供 recommend._load_ranking_cfg 读取。"""
     try:
-        text = _RANKING_CFG_PATH.read_text(encoding="utf-8")
+        with _db_conn() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('ranking_cfg', ?)",
+                (json.dumps(weights),),
+            )
+        return True
     except Exception as e:
-        logger.warning("读取排位配置文件失败: %s", e)
+        logger.warning("写入排序权重失败: %s", e)
         return False
-    lines = text.splitlines()
-    keys = ("rel_strength_weight", "calmar_weight", "hurst_weight", "momentum_guard_pct")
-    in_block = False
-    out, covered = [], {k: False for k in keys}
-    for ln in lines:
-        if re.match(r"\s*\[ranking\]\s*$", ln):
-            in_block = True
-            out.append(ln)
-            continue
-        if in_block and re.match(r"\s*\[.+\]\s*$", ln):
-            in_block = False
-        if in_block:
-            m = re.match(r"\s*([a-z_]+)\s*=", ln)
-            if m and m.group(1) in covered:
-                out.append(f"{m.group(1)} = {weights[m.group(1)]}")
-                covered[m.group(1)] = True
-                continue
-        out.append(ln)
-    if in_block:
-        for k in keys:
-            if not covered[k]:
-                out.append(f"{k} = {weights[k]}")
-    else:
-        out += ["", "[ranking]"] + [f"{k} = {weights[k]}" for k in keys]
-    _RANKING_CFG_PATH.write_text("\n".join(out) + "\n", encoding="utf-8")
-    return True
 
 
 def _review_ranking_all() -> list[str]:
@@ -100,8 +80,9 @@ def _review_ranking_all() -> list[str]:
 
     if fixes:
         new = {
-            "rel_strength_weight": 0.8, "calmar_weight": 0.15,
-            "hurst_weight": 0.05, "momentum_guard_pct": -15.0,
+            "model_weight": 0.5, "rel_strength_weight": 0.3,
+            "calmar_weight": 0.1, "hurst_weight": 0.05,
+            "momentum_guard_pct": -15.0,
         }
         _apply_ranking_weights(new)
     return fixes

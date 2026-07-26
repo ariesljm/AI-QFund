@@ -151,7 +151,7 @@ def get_industry_sectors(sort_by: str = "change_pct", limit: int = 30) -> list[S
         ))
 
     if sort_by == "change_pct":
-        industries.sort(key=lambda s: abs(s.change_pct), reverse=True)
+        industries.sort(key=lambda s: s.change_pct, reverse=True)
     # 其他排序方式可扩展
 
     return industries[:limit]
