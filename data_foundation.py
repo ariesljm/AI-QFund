@@ -966,7 +966,34 @@ def _fetch_industry_map() -> list[tuple[str, str, str]]:
             await asyncio.gather(*tasks)
 
     asyncio.run(_run())
-    logger.info("行业查询完成: 成功 %d, 失败 %d", success, fail)
+    logger.info("首次行业查询完成: 成功 %d, 失败 %d", success, fail)
+
+    # 补查失败的股票（异步并发可能因限速/超时未命中）
+    failed = [s for s in all_stocks if s not in results]
+    if failed:
+        logger.info("开始补查 %d 只...", len(failed))
+        _headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://emweb.securities.eastmoney.com/"}
+        for sc in failed:
+            time.sleep(1)
+            for url, params in _build_candidates(sc):
+                try:
+                    resp = requests.get(url, params=params, headers=_headers, timeout=30)
+                    if resp.status_code != 200:
+                        continue
+                    data = resp.json()
+                    items = data.get("jbzl", [])
+                    if items:
+                        item = items[0]
+                        em2016 = item.get("EM2016", "")
+                        if em2016:
+                            parts = em2016.split("-")
+                            industry = parts[1] if len(parts) > 1 else parts[0]
+                            results[sc] = (em2016, industry)
+                            break
+                except Exception as e:
+                    logger.debug("补查股票 %s 失败: %s", sc, e)
+        recovered = len([s for s in failed if s in results])
+        logger.info("补查完成: 恢复 %d 只", recovered)
 
     # 港股（5位代码）emweb F10 接口已废弃（404），改用 push2 实时行情接口回退
     _hk_unmapped = [s for s in all_stocks if len(s) == 5 and s not in results]
