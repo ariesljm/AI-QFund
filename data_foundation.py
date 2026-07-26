@@ -84,6 +84,7 @@ def fetch_fund_list(settings: dict | None = None) -> list[dict]:
 
     for ft, type_label in type_map.items():
         page = 1
+        skipped_pages: list[int] = []
         while True:
             params = {
                 "op": "ph",
@@ -104,14 +105,28 @@ def fetch_fund_list(settings: dict | None = None) -> list[dict]:
             resp = _fetch(url, params)
             text = resp.text
 
-            # 解析 JS 赋值：var rankData = {datas:["...","..."],...};
             m = re.search(r"var rankData\s*=\s*(\{.*\});", text, re.DOTALL)
             if not m:
                 logger.warning("类型 %s 第 %d 页解析失败", ft, page)
-                break
+                skipped_pages.append(page)
+                if page >= 200:  # 安全上限，避免死循环
+                    break
+                page += 1
+                time.sleep(1)
+                continue
 
-            obj_str = re.sub(r"([A-Za-z_]\w*)\s*:", r'"\1":', m.group(1))
-            obj = literal_eval(obj_str)
+            try:
+                obj_str = re.sub(r"([A-Za-z_]\w*)\s*:", r'"\1":', m.group(1))
+                obj = literal_eval(obj_str)
+            except Exception as e:
+                logger.warning("类型 %s 第 %d 页 JSON 解析失败: %s", ft, page, e)
+                skipped_pages.append(page)
+                if page >= 200:
+                    break
+                page += 1
+                time.sleep(1)
+                continue
+
             rows = obj.get("datas") or []
             if not rows:
                 break
@@ -122,10 +137,8 @@ def fetch_fund_list(settings: dict | None = None) -> list[dict]:
                     continue
                 code = fields[0].strip()
                 name = fields[1].strip()
-                # 先按代码前缀剔除场内上市基金（确定可靠，不依赖名称）
                 if code.startswith(_EXCLUDE_CODE_PREFIXES):
                     continue
-                # 再按名称关键词过滤不可投类型（名称维度兜底）
                 if any(kw in name for kw in _EXCLUDE_KEYWORDS):
                     continue
                 all_funds.append({
@@ -139,7 +152,41 @@ def fetch_fund_list(settings: dict | None = None) -> list[dict]:
             if page >= all_pages:
                 break
             page += 1
-            time.sleep(0.3)  # 避免请求过快
+            time.sleep(0.3)
+
+        # 补查解析失败的页
+        if skipped_pages:
+            logger.info("类型 %s 补查失败页面: %s", ft, skipped_pages)
+            for pg in skipped_pages:
+                try:
+                    params["pi"] = pg
+                    resp = _fetch(url, params)
+                    text = resp.text
+                    m = re.search(r"var rankData\s*=\s*(\{.*\});", text, re.DOTALL)
+                    if not m:
+                        continue
+                    obj_str = re.sub(r"([A-Za-z_]\w*)\s*:", r'"\1":', m.group(1))
+                    obj = literal_eval(obj_str)
+                    rows = obj.get("datas") or []
+                    for row_str in rows:
+                        fields = row_str.split("|")
+                        if len(fields) < 4:
+                            continue
+                        code = fields[0].strip()
+                        name = fields[1].strip()
+                        if code.startswith(_EXCLUDE_CODE_PREFIXES):
+                            continue
+                        if any(kw in name for kw in _EXCLUDE_KEYWORDS):
+                            continue
+                        all_funds.append({
+                            "code": code,
+                            "name": name,
+                            "type": type_label,
+                            "is_buyable": 1,
+                        })
+                    logger.info("补查类型 %s 第 %d 页成功", ft, pg)
+                except Exception:
+                    pass
 
         logger.info("类型 %s 拉取完成，累计 %d 条", ft, len(all_funds))
 
@@ -269,18 +316,18 @@ async def _async_fetch_one(
             resp = await fetch_async(session, url, timeout=15)
             text = await resp.text()
             navs = _parse_nav_response(text, code)
-            return code, navs
+            return code, navs, False
         except Exception as e:
             logger.debug("基金 %s 异步拉取失败: %s", code, e)
-            return code, []
+            return code, [], True
 
 
 async def _async_batch_fetch(
     codes: list[str],
     url_template: str,
     concurrency: int = 20,
-) -> dict[str, list[dict]]:
-    """并发拉取一批基金净值，返回 {code: [nav_list]}。"""
+) -> tuple[dict[str, list[dict]], set[str]]:
+    """并发拉取一批基金净值，返回 ({code: [nav_list]}, 失败基金集合)。"""
     semaphore = asyncio.Semaphore(concurrency)
     headers = _HEADERS_ASYNC.copy()
     # ponytail: 复用 TCP/TLS 连接（keep-alive），关闭 force_close 显著提速
@@ -290,7 +337,16 @@ async def _async_batch_fetch(
         tasks = [_async_fetch_one(session, c, url_template, semaphore) for c in codes]
         results = await asyncio.gather(*tasks)
 
-    return {code: navs for code, navs in results}
+    navs_dict = {}
+    failed = set()
+    for code, navs, err in results:
+        if err:
+            failed.add(code)
+            if navs:
+                navs_dict[code] = navs
+        else:
+            navs_dict[code] = navs
+    return navs_dict, failed
 
 
 # ========== 1.2c 真·增量：基于 lsjz 分页接口 ==========
@@ -357,6 +413,7 @@ async def _async_fetch_lsjz(
     page_size = 60
     all_navs: list[dict] = []
     page = 1
+    first_failed = False
     async with semaphore:
         while True:
             params = {
@@ -376,6 +433,8 @@ async def _async_fetch_lsjz(
                 total = data.get("TotalCount") or 0
             except Exception as e:
                 logger.debug("基金 %s lsjz 拉取失败(第%d页): %s", code, page, e)
+                if page == 1:
+                    first_failed = True
                 break
 
             all_navs.extend(_parse_lsjz_list(lsjz_list))
@@ -388,7 +447,7 @@ async def _async_fetch_lsjz(
                 break
             page += 1
 
-    return code, all_navs
+    return code, all_navs, first_failed
 
 
 async def async_update_nav_incremental(
@@ -447,10 +506,10 @@ async def async_update_nav_incremental(
         return 0
 
     semaphore = asyncio.Semaphore(concurrency)
-    # ponytail: 复用连接提速
     connector = aiohttp.TCPConnector(limit=concurrency, ttl_dns_cache=300, enable_cleanup_closed=True)
     total_new = 0
     total_done = 0
+    all_failed: set[str] = set()
     start_time = time.monotonic()
 
     async with aiohttp.ClientSession(headers=_LSJZ_HEADERS, connector=connector) as session:
@@ -464,9 +523,11 @@ async def async_update_nav_incremental(
 
             batch_new = 0
             with _db_conn() as conn:
-                for code, navs in results:
+                for code, navs, failed in results:
                     batch_new += _save_nav_batch(conn, code, navs)
                     total_done += 1
+                    if failed:
+                        all_failed.add(code)
             total_new += batch_new
 
             elapsed = time.monotonic() - start_time
@@ -475,6 +536,28 @@ async def async_update_nav_incremental(
                 "进度 %d/%d (+%d), 速度 %.1f/s",
                 total_done, len(tasks_meta), batch_new, speed,
             )
+
+    # 补查异步并发中失败的基金
+    if all_failed:
+        logger.info("补查 %d 只净值增量拉取失败的基金...", len(all_failed))
+        for code in all_failed:
+            time.sleep(1)
+            try:
+                resp = requests.get(
+                    lsjz_url,
+                    params={"fundCode": code, "pageIndex": 1, "pageSize": 60,
+                            "startDate": "", "endDate": end_date},
+                    headers=_LSJZ_HEADERS, timeout=30,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    lsjz_list = (data.get("Data") or {}).get("LSJZList") or []
+                    navs = _parse_lsjz_list(lsjz_list)
+                    if navs:
+                        with _db_conn() as conn:
+                            total_new += _save_nav_batch(conn, code, navs)
+            except Exception as e:
+                logger.debug("补查基金 %s 净值增量失败: %s", code, e)
 
     elapsed = time.monotonic() - start_time
     logger.info("增量更新完成: %d 条净值, 耗时 %.1f 秒", total_new, elapsed)
@@ -535,12 +618,14 @@ async def async_download_all_nav(
 
     total_new = 0
     total_done = 0
+    all_failed: set[str] = set()
     start_time = time.monotonic()
 
     # 分批下载
     for i in range(0, len(all_codes), batch_size):
         batch = all_codes[i : i + batch_size]
-        results = await _async_batch_fetch(batch, url_template, concurrency)
+        results, failed = await _async_batch_fetch(batch, url_template, concurrency)
+        all_failed |= failed
 
         batch_new = 0
         with _db_conn() as conn:
@@ -557,6 +642,24 @@ async def async_download_all_nav(
             "进度 %d/%d (+%d), 速度 %.1f/s, ETA %.0fs",
             total_done, len(all_codes), batch_new, speed, eta,
         )
+
+    # 补查异步并发中失败的基金
+    if all_failed:
+        logger.info("补查 %d 只净值拉取失败的基金...", len(all_failed))
+        for code in all_failed:
+            time.sleep(1)
+            try:
+                resp = requests.get(
+                    url_template.format(code=code),
+                    headers=_HEADERS_ASYNC, timeout=30,
+                )
+                if resp.status_code == 200:
+                    navs = _parse_nav_response(resp.text, code)
+                    if navs:
+                        with _db_conn() as conn:
+                            total_new += _save_nav_batch(conn, code, navs)
+            except Exception as e:
+                logger.debug("补查基金 %s 净值失败: %s", code, e)
 
     elapsed = time.monotonic() - start_time
     logger.info("全量下载完成: %d 条净值, 耗时 %.1f 秒", total_new, elapsed)
@@ -702,10 +805,10 @@ async def _async_fetch_holdings_one(
             except (UnicodeDecodeError, LookupError):
                 text = raw.decode("gbk", errors="replace")
             report_date, holdings = _parse_holdings_html(text)
-            return code, report_date, holdings
+            return code, report_date, holdings, False
         except Exception as e:
             logger.debug("基金 %s 持仓异步拉取失败: %s", code, e)
-            return code, None, []
+            return code, None, [], True
 
 
 async def async_download_all_holdings(
@@ -761,6 +864,7 @@ async def async_download_all_holdings(
         total_rows = 0
         total_done = 0
         funds_with_holdings = 0
+        all_failed: set[str] = set()
         start_time = time.monotonic()
 
         async with aiohttp.ClientSession(headers=_HOLDINGS_HEADERS, connector=connector, trust_env=False) as session:
@@ -773,7 +877,9 @@ async def async_download_all_holdings(
                 results = await asyncio.gather(*coros)
 
                 batch_rows = 0
-                for code, report_date, holdings in results:
+                for code, report_date, holdings, failed in results:
+                    if failed:
+                        all_failed.add(code)
                     if holdings and report_date and report_date != local_latest.get(code):
                         conn.executemany(
                             "INSERT OR REPLACE INTO fund_holdings "
@@ -796,6 +902,36 @@ async def async_download_all_holdings(
                     "进度 %d/%d (+%d 条), 速度 %.1f/s, ETA %.0fs",
                     total_done, len(all_codes), batch_rows, speed, eta,
                 )
+
+        # 补查异步并发中失败的基金
+        if all_failed:
+            logger.info("补查 %d 只持仓拉取失败的基金...", len(all_failed))
+            for code in all_failed:
+                time.sleep(1)
+                try:
+                    resp = requests.get(
+                        holdings_url,
+                        params={"type": "jjcc", "code": code, "topline": "10", "year": "", "month": ""},
+                        headers=_HOLDINGS_HEADERS, timeout=30,
+                    )
+                    if resp.status_code == 200:
+                        text = resp.text
+                        report_date, holdings = _parse_holdings_html(text)
+                        if holdings and report_date and report_date != local_latest.get(code):
+                            conn.executemany(
+                                "INSERT OR REPLACE INTO fund_holdings "
+                                "(code, report_date, stock_code, stock_name, weight) "
+                                "VALUES (?, ?, ?, ?, ?)",
+                                [(code, report_date, h["stock_code"], h["stock_name"], h["weight"])
+                                 for h in holdings],
+                            )
+                            total_rows += len(holdings)
+                            funds_with_holdings += 1
+                            local_latest[code] = report_date
+                except Exception as e:
+                    logger.debug("补查基金 %s 持仓失败: %s", code, e)
+            conn.commit()
+
     elapsed = time.monotonic() - start_time
     logger.info(
         "持仓下载完成: %d 只有持仓, 共 %d 条, 耗时 %.1f 秒",
