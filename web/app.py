@@ -642,7 +642,9 @@ async def get_logs(lines: int = 100, start: int = 0):
     with open(str(LOG_FILE), "r", encoding="utf-8", errors="replace") as f:
         all_lines = f.readlines()
     total = len(all_lines)
-    if start > 0 and start < total:
+    if start >= total:
+        tail = []
+    elif start > 0:
         tail = all_lines[start:start + lines]
     else:
         tail = all_lines[-lines:] if total > lines else all_lines

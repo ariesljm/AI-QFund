@@ -612,7 +612,6 @@ function applyLogFilter() {
 
 function clearLogs() {
     document.getElementById('logLines').innerHTML = '';
-    _logCount = 0;
 }
 
 function openModal(id) {
@@ -790,7 +789,7 @@ async function fetchLogs() {
             }
             linesEl.appendChild(row);
         }
-        _logCount += data.lines.length;
+        _logCount = data.total;
         document.getElementById('logCount').textContent = _logCount + ' 条';
         if (atBottom) container.scrollTop = container.scrollHeight;
         else {
