@@ -12,7 +12,7 @@ RUN uv pip install --system -r pyproject.toml && uv cache clean
 
 COPY . .
 
-RUN mkdir -p data/logs config
+RUN cp data/schema.sql /app/schema.sql && mkdir -p data/logs config
 
 ENV PYTHONUNBUFFERED=1
 

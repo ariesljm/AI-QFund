@@ -75,7 +75,9 @@ def _get_db() -> sqlite3.Connection:
 def _init_schema(conn: sqlite3.Connection) -> None:
     schema = Path(__file__).parent / "data" / "schema.sql"
     if not schema.exists():
-        logger.warning("schema.sql 未找到，跳过初始化 (路径: %s)", schema.resolve())
+        schema = Path(__file__).parent / "schema.sql"
+    if not schema.exists():
+        logger.warning("schema.sql 未找到，跳过初始化")
         return
     conn.executescript(schema.read_text(encoding="utf-8"))
     conn.commit()
