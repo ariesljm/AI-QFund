@@ -361,13 +361,7 @@ def _suggest_sectors(date_str: str, news: dict, flow: dict) -> MacroContext:
     flow_top = flow.get("top_flows", [])
     flow_out = flow.get("top_outflows", [])
     if content is None:
-        return MacroContext(
-            news_summary=news.get("summary", ""),
-            cls_stock_mentions=cls_stocks,
-            date=date_str,
-            top_flows=flow_top,
-            top_outflows=flow_out,
-        )
+        raise RuntimeError("LLM赛道选择调用失败，无法完成宏观分析")
 
     cleaned = _re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip(), flags=_re.IGNORECASE)
     try:
@@ -384,11 +378,4 @@ def _suggest_sectors(date_str: str, news: dict, flow: dict) -> MacroContext:
             top_outflows=flow_out,
         )
     except Exception as e:
-        logger.warning("LLM 赛道选择解析失败: %s", e)
-        return MacroContext(
-            news_summary=news.get("summary", ""),
-            cls_stock_mentions=cls_stocks,
-            date=date_str,
-            top_flows=flow_top,
-            top_outflows=flow_out,
-        )
+        raise RuntimeError(f"LLM赛道选择返回无法解析: {e}") from e

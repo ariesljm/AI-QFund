@@ -22,6 +22,7 @@ import requests
 import features as _features
 from data_store import _db_conn, _get_db, _load_settings, _meta_get, _meta_set, _save_nav_batch, save_fund_list, save_index_daily, save_holdings
 from fetch import fetch_async
+from fetch import fetch as _push2_fetch
 
 try:
     import aiohttp
@@ -872,6 +873,41 @@ def _build_candidates(stock_code: str) -> list[tuple[str, dict]]:
         return [(hsf10, {"code": f"SZ{stock_code}"})]
 
 
+def _fetch_hk_industry_push2(hk_stocks: list[str], results: dict[str, tuple[str, str]]) -> int:
+    """港股行业映射回退方案：通过 push2 实时行情 API 获取行业分类。
+
+    emweb 的 PC_HKF10 接口已废弃（返回 404），HSF10+HK 前缀无数据，
+    改用 push2.eastmoney.com 的个股行情接口获取 f100（所属行业）字段。
+
+    Returns: 成功映射的数量
+    """
+    added = 0
+    for stock_code in hk_stocks:
+        secid = f"116.{stock_code}"
+        try:
+            resp = _push2_fetch(
+                "https://push2.eastmoney.com/api/qt/stock/get",
+                {
+                    "secid": secid,
+                    "fields": "f57,f58,f100",
+                    "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+                },
+                timeout=10,
+            )
+            data = resp.json()
+            stock_data = data.get("data")
+            if stock_data and isinstance(stock_data, dict):
+                industry = stock_data.get("f100", "")
+                if industry and industry != "-":
+                    results[stock_code] = (industry, industry)
+                    added += 1
+                    logger.debug("港股 %s 行业映射(push2): %s", stock_code, industry)
+                    continue
+        except Exception as e:
+            logger.debug("港股 %s push2 查询失败: %s", stock_code, e)
+    return added
+
+
 def _fetch_industry_map() -> list[tuple[str, str, str]]:
     """从东方财富 emweb 拉取股票→申万二级行业映射。
 
@@ -931,6 +967,12 @@ def _fetch_industry_map() -> list[tuple[str, str, str]]:
 
     asyncio.run(_run())
     logger.info("行业查询完成: 成功 %d, 失败 %d", success, fail)
+
+    # 港股（5位代码）emweb F10 接口已废弃（404），改用 push2 实时行情接口回退
+    _hk_unmapped = [s for s in all_stocks if len(s) == 5 and s not in results]
+    if _hk_unmapped:
+        _hk_success = _fetch_hk_industry_push2(_hk_unmapped, results)
+        logger.info("港股 push2 行业回退: 新增 %d 条", _hk_success)
 
     return [(sc, info[0], info[1]) for sc, info in results.items()]
 
@@ -1050,25 +1092,33 @@ def _call_llm(
     temperature: float = 0.2,
     max_tokens: int = 1024,
 ) -> str | None:
-    """统一 LLM 调用接口，包含重试逻辑。"""
+    """统一 LLM 调用接口，包含重试逻辑。
+    
+    重试策略：限流(429)、服务端错误(5xx)、网络瞬时异常 → 指数退避重试最多3次。
+    配置缺失或客户端错误(4xx非429) → 不重试直接返回 None。
+    """
     settings = _load_settings()
     llm_cfg = settings.get("llm", {})
     api_key = llm_cfg.get("api_key", "")
     if not api_key:
         logger.warning("LLM 未配置")
         return None
-    
+
     t0 = time.time()
     attempt = 0
     try:
         from openai import OpenAI
         client = OpenAI(base_url=llm_cfg.get("base_url"), api_key=api_key)
-        
+
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
-        
+
+        # ponytail: 可重试的错误：429限流、5xx服务端、网络瞬时异常
+        _RETRYABLE_TERMS = ("429", "500", "502", "503", "504",
+                             "RateLimit", "ConnectionError", "Timeout",
+                             "Connection reset", "RemoteDisconnected")
         for attempt in range(3):
             t_call = time.time()
             try:
@@ -1085,16 +1135,21 @@ def _call_llm(
                             resp.usage.total_tokens if resp.usage else 0)
                 return resp.choices[0].message.content
             except Exception as e:
-                if "429" in str(e) or "RateLimit" in type(e).__name__:
-                    logger.warning("LLM 限流 (attempt %d/3): %s", attempt + 1, e)
-                    time.sleep(2 ** attempt * 2)
+                e_str = str(e)
+                e_type = type(e).__name__
+                is_retryable = any(term in e_str or term in e_type for term in _RETRYABLE_TERMS)
+                if is_retryable:
+                    delay = 2 ** attempt * 2
+                    logger.warning("LLM 可重试错误 (attempt %d/3, %ds后重试): %s: %s",
+                                   attempt + 1, delay, e_type, e_str[:120])
+                    time.sleep(delay)
                     continue
                 elapsed = (time.time() - t0) * 1000
-                logger.error("LLM 调用失败: attempt=%d/%d duration=%dms error=%s",
-                             attempt + 1, 3, int(elapsed), e)
+                logger.error("LLM 不可重试错误: attempt=%d/%d duration=%dms error=%s: %s",
+                             attempt + 1, 3, int(elapsed), e_type, e_str[:120])
                 return None
         elapsed = (time.time() - t0) * 1000
-        logger.error("LLM 限流重试耗尽: attempts=%d duration=%dms", attempt + 1, int(elapsed))
+        logger.error("LLM 重试耗尽: attempts=%d duration=%dms", attempt + 1, int(elapsed))
         return None
     except Exception as e:
         elapsed = (time.time() - t0) * 1000

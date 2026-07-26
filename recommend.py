@@ -501,7 +501,6 @@ def _build_final_prompt(candidates: list[dict], ctx: MacroContext, insights: lis
         "4. 必须包含：今天宏观分析的结论（大盘走势、资金流向、板块轮动）",
         "5. 必须包含：这只基金重仓的行业和股票，以及为什么这些持仓是好的",
         "6. 必须包含：最近有什么利好消息或政策支持这个行业",
-        "7. 从上面的【赛道推论】中提取今天LLM的行业分析，用自己的话总结成2-3句话放在理由开头",
         "",
         "输出要求（务必严格遵守）：",
         "1. 只输出一个纯 JSON 对象，不要使用 markdown 代码块（禁止 ```json）。",
@@ -553,26 +552,14 @@ def _llm_final_pick(candidates: list[dict], ctx: MacroContext, insights: list) -
     content = _call_llm(prompt, system_prompt=system_prompt, max_tokens=4096)
 
     if content is None:
-        logger.warning("LLM 调用失败，降级选取第1名")
-        top = candidates[0]
-        return {
-            "selected_code": top["code"], "selected_name": top["name"],
-            "reason": "LLM 调用失败，按赛道排序直接选取第1名",
-            "vetoed": [],
-        }
+        raise RuntimeError("LLM最终定论调用失败，无法完成基金推荐")
 
     valid_codes = {c["code"]: c["name"] for c in candidates}
     result = _parse_llm_result(content, valid_codes)
     if result is not None:
         return result
 
-    logger.error("LLM 返回无法解析，降级选取第1名，原始响应: %s", content[:300])
-    top = candidates[0]
-    return {
-        "selected_code": top["code"], "selected_name": top["name"],
-        "reason": "LLM 返回无法解析，按赛道排序选取第1名",
-        "vetoed": [],
-    }
+    raise RuntimeError(f"LLM最终定论返回无法解析: {content[:300]}")
 
 
 def _parse_llm_result(content: str, valid_codes: dict) -> dict | None:
@@ -623,25 +610,6 @@ def _dump_recommendation(date_str, code, name, rank, score, regime, candidates, 
 def _save_recommendation(date_str: str, selected: dict, candidates: list[dict],
                           vetoed: list, regime: str, feature_snapshot: str = "") -> None:
     with _db_conn() as conn:
-        exists = conn.execute(
-            "SELECT id, entry_nav FROM recommend_log WHERE recommend_date = ? LIMIT 1", (date_str,)
-        ).fetchone()
-        if exists and exists[1] is not None:
-            logger.info("当日 %s 已存在推荐记录且 entry_nav 不为空，跳过", date_str)
-            return
-        # 补 entry_nav（首次插入或补充已有记录）
-        entry_nav_row = conn.execute(
-            "SELECT cum_nav FROM fund_nav WHERE code=? AND date=? LIMIT 1",
-            (selected["selected_code"], date_str),
-        ).fetchone()
-        entry_nav = entry_nav_row[0] if entry_nav_row else None
-        if exists:
-            conn.execute(
-                "UPDATE recommend_log SET entry_nav = ? WHERE id = ?",
-                (entry_nav, exists[0]),
-            )
-            logger.info("补写 entry_nav=%s 到 id=%s", entry_nav, exists[0])
-            return
         rank = next(
             (i + 1 for i, c in enumerate(candidates) if c["code"] == selected["selected_code"]), 1)
         score = next(
@@ -656,6 +624,17 @@ def _save_recommendation(date_str: str, selected: dict, candidates: list[dict],
             "SELECT name FROM fund_basic WHERE code = ?", (selected["selected_code"],)
         ).fetchone()
         real_name = real_name[0] if real_name else selected["selected_name"]
+        entry_nav_row = conn.execute(
+            "SELECT cum_nav FROM fund_nav WHERE code=? AND date=? LIMIT 1",
+            (selected["selected_code"], date_str),
+        ).fetchone()
+        entry_nav = entry_nav_row[0] if entry_nav_row else None
+        exists = conn.execute(
+            "SELECT id FROM recommend_log WHERE recommend_date = ? LIMIT 1", (date_str,)
+        ).fetchone()
+        if exists:
+            conn.execute("DELETE FROM recommend_log WHERE recommend_date = ?", (date_str,))
+            logger.info("删除当日旧推荐，准备写入新推荐")
         conn.execute(
             "INSERT INTO recommend_log "
             "(recommend_date, code, name, rank, score, combo, regime, buy_reason, status, feature_snapshot, entry_nav) "
@@ -663,8 +642,8 @@ def _save_recommendation(date_str: str, selected: dict, candidates: list[dict],
             (date_str, selected["selected_code"], real_name,
              rank, score, combo, regime, reason, feature_snapshot, entry_nav),
         )
-    logger.info("推荐入库: %s %s (排名%d, 分数%.4f)",
-                selected["selected_code"], real_name, rank, score or 0.0)
+        logger.info("推荐入库: %s %s (排名%d, 分数%.4f)",
+                    selected["selected_code"], real_name, rank, score or 0.0)
     _dump_recommendation(date_str, selected["selected_code"], real_name, rank, score,
                          regime, candidates, vetoed)
 
@@ -768,7 +747,8 @@ def _write_sector_selection(date_str: str, ctx: MacroContext,
                             sel_features: dict) -> None:
     with _db_conn() as conn:
         log_id = conn.execute(
-            "SELECT id FROM recommend_log ORDER BY recommend_date DESC LIMIT 1"
+            "SELECT id FROM recommend_log WHERE recommend_date = ? ORDER BY id DESC LIMIT 1",
+            (date_str,),
         ).fetchone()
         log_id = log_id[0] if log_id else None
         # ponytail: 每天只保留一条赛道选择，先清旧再写入避免重复累积

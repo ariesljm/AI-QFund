@@ -243,22 +243,24 @@ async def index(request: Request):
     today = datetime.now().strftime("%Y-%m-%d")
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    # 今日推荐（最新一条 recommend_log 且 status='HOLD' 或 'PASS'）
+    # 今日推荐（最新一条 recommend_log）
     rec = _q1(
-        "SELECT r.code, fb.name, r.score, r.combo, r.regime, r.buy_reason, r.status, "
+        "SELECT r.id, r.code, fb.name, r.score, r.combo, r.regime, r.buy_reason, r.status, "
         "r.recommend_date, r.return_rate, fb.type "
         "FROM recommend_log r LEFT JOIN fund_basic fb ON fb.code = r.code "
-        "ORDER BY r.recommend_date DESC LIMIT 1"
+        "ORDER BY r.id DESC LIMIT 1"
     )
 
     latest = None
+    latest_rec_id = None
     if rec:
-        raw_reason = (rec[5] or "").split(" | 否决记录:")[0].strip()
+        latest_rec_id = rec[0]
+        raw_reason = (rec[6] or "").split(" | 否决记录:")[0].strip()
         latest = {
-            "code": rec[0], "name": rec[1], "score": _display_score(rec[3], rec[2]),
-            "regime": rec[4] or "NEUTRAL", "reason": raw_reason,
-            "status": rec[6], "date": rec[7] or today, "return": rec[8],
-            "type": rec[9] or "",
+            "code": rec[1], "name": rec[2], "score": _display_score(rec[4], rec[3]),
+            "regime": rec[5] or "NEUTRAL", "reason": raw_reason,
+            "status": rec[7], "date": rec[8] or today, "return": rec[9],
+            "type": rec[10] or "",
         }
 
     # 宏观摘要（财联社实时快讯）
@@ -545,6 +547,7 @@ async def index(request: Request):
     max_outflow = max((abs(s.get("flow", 0) or 0) for s in flow_outflows), default=0)
     return templates.TemplateResponse(request, "index.html", {
         "latest": latest,
+        "latest_rec_id": latest_rec_id or 0,
         "macro": macro_data,
         "candidates": candidate_list,
         "fund_pool": fund_pool,
@@ -656,6 +659,15 @@ async def run_pipeline():
 @app.get("/api/pipeline-status")
 async def get_pipeline_status():
     return _pipeline_status
+
+
+@app.get("/api/recommendation-status")
+async def recommendation_status():
+    """返回最新推荐ID和时间，前端用于检测推荐是否更新。"""
+    rec = _q1("SELECT id, created_at FROM recommend_log ORDER BY id DESC LIMIT 1")
+    if rec:
+        return {"id": rec[0], "updated_at": rec[1]}
+    return {"id": 0, "updated_at": None}
 
 
 @app.get("/api/pipeline-log")

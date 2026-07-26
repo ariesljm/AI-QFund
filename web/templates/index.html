@@ -82,7 +82,10 @@ body::before { content: ''; position: fixed; inset: 0; pointer-events: none; z-i
 @keyframes marquee-vertical-continuous { 0% { transform: translateY(0); } 100% { transform: translateY(-50%); } }
 .pulse-dot { animation: pulse 2s infinite; }
 @keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(1.2); } 100% { opacity: 1; transform: scale(1); } }
-.scrollbar-hide::-webkit-scrollbar { display: none; }
+.visible-scrollbar::-webkit-scrollbar { width: 6px; }
+.visible-scrollbar::-webkit-scrollbar-track { background: transparent; }
+.visible-scrollbar::-webkit-scrollbar-thumb { background: #1A1A1A; border-radius: 3px; }
+.visible-scrollbar { scrollbar-width: thin; scrollbar-color: #1A1A1A transparent; }
 .material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
 .news-ticker-border { border-top: 2px solid #1A1A1A; border-bottom: 1px solid #1A1A1A; }
 h1, h2, h3, h4 { letter-spacing: -0.01em; text-wrap: balance; }
@@ -471,7 +474,10 @@ LIVE LOG STREAM / 系统实时日志
 </h3>
 <button class="material-symbols-outlined hover:rotate-90 transition-transform" onclick="closeModal('systemLogModal')">close</button>
 </div>
-        <div class="flex-1 p-md font-mono text-[14px] overflow-y-auto max-h-[400px] scrollbar-hide bg-surface-container-low text-primary" id="logContainer">
+        <div class="flex-1 p-md font-mono text-[14px] overflow-y-auto max-h-[600px] bg-surface-container-low text-primary relative visible-scrollbar" id="logContainer">
+          <button class="absolute bottom-2 right-2 z-10 w-8 h-8 bg-primary text-white rounded-full flex items-center justify-center shadow-lg opacity-70 hover:opacity-100 transition-opacity hidden" id="logScrollBtn" title="滚动到底部" onclick="document.getElementById('logContainer').scrollTop=document.getElementById('logContainer').scrollHeight;document.getElementById('logScrollBtn').classList.add('hidden');">
+            <span class="material-symbols-outlined text-[18px]">arrow_downward</span>
+          </button>
           <div class="space-y-1">
             {% for i in range(6) %}
             <p class="skel h-4 w-{{ ['full', '3/4', '5/6', '2/3', '4/5', '3/5'][i] }}" style="animation-delay:{{ i * 0.15 }}s"></p>
@@ -479,7 +485,7 @@ LIVE LOG STREAM / 系统实时日志
           </div>
         </div>
         <p id="pipelineStatus" class="text-[12px] font-bold text-on-surface-variant mt-2 px-md hidden"></p>
-        <pre id="pipelineLog" class="text-[11px] font-mono text-on-surface bg-surface-container p-2 mt-1 mx-md mb-md max-h-[200px] overflow-y-auto hidden whitespace-pre-wrap"></pre>
+        <pre id="pipelineLog" class="text-[11px] font-mono text-on-surface bg-surface-container p-2 mt-1 mx-md mb-md max-h-[400px] overflow-y-auto hidden whitespace-pre-wrap visible-scrollbar"></pre>
 </div>
 </div>
 
@@ -575,6 +581,13 @@ function openModal(id) {
     if (id === 'systemLogModal') {
         fetchLogs();
         logInterval = setInterval(fetchLogs, 5000);
+        var logContainer = document.getElementById('logContainer');
+        logContainer.addEventListener('scroll', function() {
+            var btn = document.getElementById('logScrollBtn');
+            var atBottom = logContainer.scrollHeight - logContainer.scrollTop - logContainer.clientHeight < 80;
+            if (atBottom) btn.classList.add('hidden');
+            else btn.classList.remove('hidden');
+        });
     }
     if (id === 'settingsModal') {
         loadSettings();
@@ -699,8 +712,9 @@ window.onclick = function(event) {
 async function fetchLogs() {
     var container = document.getElementById('logContainer');
     if (!container) return;
+    var atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
     try {
-        var r = await fetch('/api/logs?lines=100');
+        var r = await fetch('/api/logs?lines=200');
         var data = await r.json();
         if (!data.lines || !data.lines.length) {
             container.innerHTML = '<p class="opacity-50">暂无日志</p>';
@@ -713,7 +727,11 @@ async function fetchLogs() {
             else if (l.includes('[DEBUG]')) c = 'opacity-50';
             return '<p class="' + c + ' break-all">' + _esc(l) + '</p>';
         }).join('');
-        container.scrollTop = container.scrollHeight;
+        if (atBottom) {
+            container.scrollTop = container.scrollHeight;
+        } else {
+            document.getElementById('logScrollBtn').classList.remove('hidden');
+        }
     } catch(e) {
         container.innerHTML = '<p class="text-error font-black">日志加载失败: ' + _esc(String(e.message || e)) + '</p>';
     }
@@ -806,10 +824,11 @@ async function triggerPipeline() {
             var sd = await sr.json();
             var ld = await lr.json();
             if (ld.lines && ld.lines.length > 0) {
+                var atBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 80;
                 for (var j = 0; j < ld.lines.length; j++) {
                     logEl.textContent += ld.lines[j] + '\n';
                 }
-                logEl.scrollTop = logEl.scrollHeight;
+                if (atBottom) logEl.scrollTop = logEl.scrollHeight;
                 seen += ld.lines.length;
             }
             if (sd.state === 'done') {
@@ -942,6 +961,19 @@ setInterval(_updateNews, 60000);
   buildControls();
   if (rows.length > 0) renderPage(1);
 })();
+
+// ── 推荐结果自动刷新 ──
+var _initialRecId = {{ latest_rec_id }};
+setInterval(function() {
+  fetch('/api/recommendation-status')
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.id && d.id !== _initialRecId) {
+        location.reload();
+      }
+    })
+    .catch(function() {});
+}, 30000);
 </script>
 </body>
 </html>
