@@ -478,7 +478,7 @@ LIVE LOG STREAM / 系统实时日志
           <button class="absolute bottom-2 right-2 z-10 w-8 h-8 bg-primary text-white rounded-full flex items-center justify-center shadow-lg opacity-70 hover:opacity-100 transition-opacity hidden" id="logScrollBtn" title="滚动到底部" onclick="document.getElementById('logContainer').scrollTop=document.getElementById('logContainer').scrollHeight;document.getElementById('logScrollBtn').classList.add('hidden');">
             <span class="material-symbols-outlined text-[18px]">arrow_downward</span>
           </button>
-          <div class="space-y-1">
+          <div class="space-y-1" id="logLines">
             {% for i in range(6) %}
             <p class="skel h-4 w-{{ ['full', '3/4', '5/6', '2/3', '4/5', '3/5'][i] }}" style="animation-delay:{{ i * 0.15 }}s"></p>
             {% endfor %}
@@ -584,6 +584,7 @@ function openModal(id) {
         var logContainer = document.getElementById('logContainer');
         logContainer.addEventListener('scroll', function() {
             var btn = document.getElementById('logScrollBtn');
+            if (!btn) return;
             var atBottom = logContainer.scrollHeight - logContainer.scrollTop - logContainer.clientHeight < 80;
             if (atBottom) btn.classList.add('hidden');
             else btn.classList.remove('hidden');
@@ -711,16 +712,17 @@ window.onclick = function(event) {
 
 async function fetchLogs() {
     var container = document.getElementById('logContainer');
-    if (!container) return;
+    var linesEl = document.getElementById('logLines');
+    if (!container || !linesEl) return;
     var atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
     try {
         var r = await fetch('/api/logs?lines=200');
         var data = await r.json();
         if (!data.lines || !data.lines.length) {
-            container.innerHTML = '<p class="opacity-50">暂无日志</p>';
+            linesEl.innerHTML = '<p class="opacity-50">暂无日志</p>';
             return;
         }
-        container.innerHTML = data.lines.map(function(l) {
+        linesEl.innerHTML = data.lines.map(function(l) {
             var c = '';
             if (l.includes('[ERROR]')) c = 'text-error font-black';
             else if (l.includes('[WARNING]')) c = 'text-tertiary font-bold';
@@ -730,10 +732,11 @@ async function fetchLogs() {
         if (atBottom) {
             container.scrollTop = container.scrollHeight;
         } else {
-            document.getElementById('logScrollBtn').classList.remove('hidden');
+            var btn = document.getElementById('logScrollBtn');
+            if (btn) btn.classList.remove('hidden');
         }
     } catch(e) {
-        container.innerHTML = '<p class="text-error font-black">日志加载失败: ' + _esc(String(e.message || e)) + '</p>';
+        linesEl.innerHTML = '<p class="text-error font-black">日志加载失败: ' + _esc(String(e.message || e)) + '</p>';
     }
 }
 
