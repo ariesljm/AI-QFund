@@ -27,5 +27,5 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ lower(github.repository) }}:latest
-            ghcr.io/${{ lower(github.repository) }}:${{ github.sha }}
+            ghcr.io/ariesljm/ai-qfund:latest
+            ghcr.io/ariesljm/ai-qfund:${{ github.sha }}
