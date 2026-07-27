@@ -12,6 +12,7 @@
 
 import json
 import logging
+from log_utils import get_logger
 import time
 from datetime import datetime
 
@@ -21,7 +22,7 @@ from data_store import _get_db
 from data_store import _db_conn
 from macro_agent import build_macro_context
 
-logger = logging.getLogger("monitor")
+logger = get_logger("monitor")
 
 _DRIFT_THRESHOLD = 0.15
 _ATR_MULTIPLE = 2.0

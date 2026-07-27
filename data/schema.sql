@@ -66,6 +66,10 @@ CREATE TABLE IF NOT EXISTS fund_features (
     bias_60d REAL,
     rbsa_industry_1 TEXT,
     rbsa_weight_1 REAL,
+    rbsa_industry_2 TEXT,
+    rbsa_weight_2 REAL DEFAULT 0,
+    rbsa_industry_3 TEXT,
+    rbsa_weight_3 REAL DEFAULT 0,
     PRIMARY KEY (code, date)
 );
 

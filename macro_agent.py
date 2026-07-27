@@ -6,6 +6,7 @@
 import hashlib
 import json
 import logging
+from log_utils import get_logger
 import re as _re
 import time as _time
 from dataclasses import dataclass, field, asdict
@@ -16,7 +17,7 @@ from data_store import _db_conn
 from fetch import fetch as _fetch
 from sector_api import is_industry_code, is_industry_name
 
-logger = logging.getLogger("macro_agent")
+logger = get_logger("macro_agent")
 
 _BOARD_URL = "https://push2ex.eastmoney.com/getAllBKChanges?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wzchanges&pageindex=0&pagesize=500"
 _FLOW_URL = "https://push2ex.eastmoney.com/getAllBKChanges?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wzchanges&pageindex=0&pagesize=500"
@@ -87,7 +88,7 @@ def _load_cache(date_str: str) -> MacroContext | None:
             d = json.loads(row[0])
             return MacroContext(**{k: v for k, v in d.items() if k in MacroContext.__dataclass_fields__})
         except Exception as e:
-            logger.warning("宏观缓存解析失败: %s", e)
+            logger.warning("宏观缓存解析失败: %s", str(e)[:120], exc_info=True)
     return None
 
 
@@ -164,7 +165,7 @@ def _fetch_cls() -> tuple[str, list[dict]]:
 
         return "\n".join(text_lines), stocks
     except Exception as e:
-        logger.warning("财联社电报抓取失败: %s", e)
+        logger.warning("财联社电报抓取失败: %s", str(e)[:120], exc_info=True)
         return "", []
 
 
@@ -199,7 +200,7 @@ def _fetch_news(date_str: str) -> dict:
             by_flow = max(sectors, key=lambda x: float(x.get("zjl", 0) or 0)) if sectors else None
             etf_net_flow = f"{by_flow['n']}: {float(by_flow.get('zjl',0)or 0):,.0f}元" if by_flow else ""
     except Exception as e:
-        logger.warning("板块排行抓取失败: %s", e)
+        logger.warning("板块排行抓取失败: %s", str(e)[:120], exc_info=True)
 
     kx_news = ""
     try:
@@ -219,7 +220,7 @@ def _fetch_news(date_str: str) -> dict:
                     break
         kx_news = "；".join(headlines)
     except Exception as e:
-        logger.warning("基金快讯抓取失败: %s", e)
+        logger.warning("基金快讯抓取失败: %s", str(e)[:120], exc_info=True)
 
     cls_text, cls_stocks = _fetch_cls()
 
@@ -283,7 +284,7 @@ def _fetch_flow(date_str: str) -> dict:
             )
         logger.info("资金流已获取: API返回%d条, 筛选后申万行业%d个", len(allbk), len(sectors))
     except Exception as e:
-        logger.warning("资金流抓取失败: %s", e)
+        logger.warning("资金流抓取失败: %s", str(e)[:120], exc_info=True)
     return result
 
 
@@ -305,7 +306,13 @@ def _load_available_sectors() -> list[str]:
     with _db_conn() as conn:
         rows = conn.execute(
             "SELECT DISTINCT rbsa_industry_1 FROM fund_features "
-            "WHERE rbsa_industry_1 IS NOT NULL AND rbsa_industry_1 != ''"
+            "WHERE rbsa_industry_1 IS NOT NULL AND rbsa_industry_1 != '' "
+            "UNION "
+            "SELECT DISTINCT rbsa_industry_2 FROM fund_features "
+            "WHERE rbsa_industry_2 IS NOT NULL AND rbsa_industry_2 != '' "
+            "UNION "
+            "SELECT DISTINCT rbsa_industry_3 FROM fund_features "
+            "WHERE rbsa_industry_3 IS NOT NULL AND rbsa_industry_3 != ''"
         ).fetchall()
     return [r[0] for r in rows]
 

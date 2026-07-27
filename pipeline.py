@@ -2,14 +2,16 @@
 
 import logging
 import time
+import uuid
 from datetime import datetime
 
 from data_foundation import run_pipeline as run_data_foundation
 from data_store import _db_conn
+from log_utils import set_correlation_id, get_logger
 from monitor import run_monitor
 from recommend import run_recommendation
 
-logger = logging.getLogger("pipeline")
+logger = get_logger("pipeline")
 
 _HOLDINGS_INTERVAL_DAYS = 7
 
@@ -34,6 +36,10 @@ def _daily_data_steps() -> list[int]:
 
 
 def run(force: bool = False) -> None:
+    cid = uuid.uuid4().hex[:12]
+    set_correlation_id(cid)
+    logger.info_event("pipeline_start", "管线启动", extra={"correlation_id": cid, "force": force})
+
     def _data_phase():
         run_data_foundation(steps=_daily_data_steps())
 
@@ -49,14 +55,17 @@ def run(force: bool = False) -> None:
     pipeline_start = time.time()
     for name, fn in phases:
         phase_start = time.time()
-        logger.info("[启动] %s开始执行", name)
+        logger.info_event("phase_start", f"{name}开始执行", extra={"phase": name})
         try:
             fn()
             phase_ms = (time.time() - phase_start) * 1000
-            logger.info("[完成] %s执行完毕 (%.0fms)", name, phase_ms)
+            logger.info_event("phase_end", f"{name}执行完毕",
+                              extra={"phase": name, "duration_ms": int(phase_ms)})
         except Exception as e:
             phase_ms = (time.time() - phase_start) * 1000
-            logger.error("[错误] %s执行失败 (%.0fms): %s", name, phase_ms, e)
+            logger.error_event("phase_failed", f"{name}执行失败",
+                               extra={"phase": name, "duration_ms": int(phase_ms), "error": str(e)})
             raise
     total_ms = (time.time() - pipeline_start) * 1000
-    logger.info("管线全流程完成 (%.0fms)", total_ms)
+    logger.info_event("pipeline_end", "管线全流程完成",
+                      extra={"duration_ms": int(total_ms)})

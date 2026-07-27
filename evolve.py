@@ -9,6 +9,7 @@
 
 import json
 import logging
+from log_utils import get_logger
 import re
 import time
 from datetime import datetime
@@ -19,7 +20,7 @@ import numpy as np
 from data_store import _get_db, _load_settings
 from data_store import _db_conn
 
-logger = logging.getLogger("evolve")
+logger = get_logger("evolve")
 
 _RANKING_CFG_PATH = Path("config/settings.toml")
 _OUTCOME_DAYS_THRESHOLD = 20
@@ -37,7 +38,7 @@ def _apply_ranking_weights(weights: dict) -> bool:
             )
         return True
     except Exception as e:
-        logger.warning("写入排序权重失败: %s", e)
+        logger.warning("写入排序权重失败: %s", str(e)[:120], exc_info=True)
         return False
 
 
@@ -245,7 +246,7 @@ def _batch_llm_analyze(successes: list, failures: list, neutrals: list | None = 
         if isinstance(result, dict) and "insight" in result:
             return [result]
     except Exception as e:
-        logger.warning("LLM 结果解析失败: %s", e)
+        logger.warning("LLM 结果解析失败: %s", str(e)[:120], exc_info=True)
     return []
 
 

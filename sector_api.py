@@ -7,14 +7,15 @@
 使用 push2ex 替代方案获取行业板块涨跌幅数据。
 """
 
-import json, logging, os
+import json, os
 import urllib3
 urllib3.disable_warnings()
 
 import requests
 from dataclasses import dataclass, field
+from log_utils import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # 绕过系统代理（127.0.0.1:10808 不可达时会导致所有 push2 请求失败）
 os.environ["NO_PROXY"] = "*"

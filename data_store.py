@@ -1,6 +1,7 @@
 """数据库持久化层：连接管理、迁移、数据写入。"""
 
 import logging
+from log_utils import get_logger
 import sqlite3
 from contextlib import contextmanager
 
@@ -10,7 +11,7 @@ from pathlib import Path
 
 import log_utils  # noqa: F401
 
-logger = logging.getLogger("data_store")
+logger = get_logger("data_store")
 
 _MIGRATION_DONE = False
 
@@ -199,6 +200,15 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "update_date TEXT)"
     )
     conn.commit()
+
+    # fund_features 扩展 RBSA 列
+    if "fund_features" in tables:
+        ff_cols = {row[1] for row in conn.execute("PRAGMA table_info(fund_features)").fetchall()}
+        for col, typ in [("rbsa_industry_2", "TEXT"), ("rbsa_weight_2", "REAL DEFAULT 0"),
+                         ("rbsa_industry_3", "TEXT"), ("rbsa_weight_3", "REAL DEFAULT 0")]:
+            if col not in ff_cols:
+                conn.execute(f"ALTER TABLE fund_features ADD COLUMN {col} {typ}")
+                conn.commit()
 
     _MIGRATION_DONE = True
 

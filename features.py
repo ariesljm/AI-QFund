@@ -1,6 +1,7 @@
 """特征计算模块：Hurst、动量、卡玛、RBSA、大盘状态机。"""
 
 import logging
+from log_utils import get_logger
 import sqlite3
 import time
 from datetime import datetime
@@ -9,7 +10,7 @@ import numpy as np
 
 import log_utils  # noqa: F401
 
-logger = logging.getLogger("features")
+logger = get_logger("features")
 
 
 
@@ -151,7 +152,7 @@ def calc_all_features(batch_commit: int = 500) -> int:
             ).fetchall()
         ]
         total = len(all_codes)
-        rbsa_data: dict[str, tuple[str, float]] = {}
+        rbsa_data: dict[str, list[dict]] = {}
         cur_r = conn.execute(
             "SELECT code, stock_code, stock_name, weight FROM fund_holdings "
             "WHERE report_date IN "
@@ -161,9 +162,9 @@ def calc_all_features(batch_commit: int = 500) -> int:
         for code, sc, sn, w in cur_r.fetchall():
             _rbsa_buf.setdefault(code, []).append({"stock_code": sc, "stock_name": sn, "weight": w})
         for code, holdings in _rbsa_buf.items():
-            top = calc_rbsa(holdings, conn)[:1]
+            top = calc_rbsa(holdings, conn)
             if top:
-                rbsa_data[code] = (top[0]["industry"], top[0]["weight"])
+                rbsa_data[code] = top
         logger.info("RBSA 预加载完成: %d 只基金有行业暴露", len(rbsa_data))
         # 大盘状态机：沪深300 close vs MA60 → BULL/BEAR
         regime = "NEUTRAL"
@@ -184,6 +185,8 @@ def calc_all_features(batch_commit: int = 500) -> int:
         cur_e = conn.execute(
             "SELECT code FROM fund_features "
             "WHERE (rbsa_industry_1 IS NULL OR rbsa_industry_1 = '' OR rbsa_industry_1 = '其他')"
+            "   OR (rbsa_industry_2 IS NULL OR rbsa_industry_2 = '')"
+            "   OR (rbsa_industry_3 IS NULL OR rbsa_industry_3 = '')"
         )
         for (c,) in cur_e.fetchall():
             if c in rbsa_data:
@@ -207,12 +210,21 @@ def calc_all_features(batch_commit: int = 500) -> int:
             features = calc_features(code, conn)
             done += 1
             if features:
-                rbsa_industry_1, rbsa_weight_1 = rbsa_data.get(code, ("", 0.0))
+                top = rbsa_data.get(code, [])
+                rbsa_industry_1 = top[0]["industry"] if len(top) > 0 else ""
+                rbsa_weight_1 = top[0]["weight"] if len(top) > 0 else 0.0
+                rbsa_industry_2 = top[1]["industry"] if len(top) > 1 else ""
+                rbsa_weight_2 = top[1]["weight"] if len(top) > 1 else 0.0
+                rbsa_industry_3 = top[2]["industry"] if len(top) > 2 else ""
+                rbsa_weight_3 = top[2]["weight"] if len(top) > 2 else 0.0
                 conn.execute(
                     "INSERT OR REPLACE INTO fund_features "
                     "(code, date, regime, hurst_60d, momentum_20d, calmar, downside_vol, "
-                    "capture_up, capture_down, bias_60d, rbsa_industry_1, rbsa_weight_1) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "capture_up, capture_down, bias_60d, "
+                    "rbsa_industry_1, rbsa_weight_1, "
+                    "rbsa_industry_2, rbsa_weight_2, "
+                    "rbsa_industry_3, rbsa_weight_3) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         features["code"], features["date"], regime,
                         features.get("hurst_60d"), features.get("momentum_20d"),
@@ -220,6 +232,8 @@ def calc_all_features(batch_commit: int = 500) -> int:
                         features.get("capture_up"), features.get("capture_down"),
                         features.get("bias_60d"),
                         rbsa_industry_1, rbsa_weight_1,
+                        rbsa_industry_2, rbsa_weight_2,
+                        rbsa_industry_3, rbsa_weight_3,
                     ),
                 )
                 saved += 1

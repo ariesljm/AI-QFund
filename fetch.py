@@ -269,7 +269,7 @@ def fetch(url: str, params: dict | None = None, timeout: float = 15) -> requests
             if not _is_retryable(e) or attempt == _MAX_RETRIES:
                 raise
             delay = _BASE_DELAY * (2 ** attempt)
-            logger.warning("请求失败(第%d次重试), %.1f秒后重试: %s", attempt + 1, delay, e)
+            logger.warning("请求失败(第%d次重试), %.1f秒后重试: %s", attempt + 1, delay, str(e)[:120], exc_info=True)
             time.sleep(delay)
 
     # 不应到达此处，但保持类型安全
@@ -312,7 +312,7 @@ async def fetch_async(
             if attempt == _MAX_RETRIES:
                 raise
             delay = _BASE_DELAY * (2 ** attempt)
-            logger.warning("异步请求失败(第%d次重试), %.1f秒后重试: %s", attempt + 1, delay, e)
+            logger.warning("异步请求失败(第%d次重试), %.1f秒后重试: %s", attempt + 1, delay, str(e)[:120], exc_info=True)
             await asyncio.sleep(delay)
         except aiohttp.ClientResponseError as e:
             if e.status in _RETRYABLE_HTTP_CODES and attempt < _MAX_RETRIES:

@@ -9,6 +9,7 @@
 
 import json
 import logging
+from log_utils import get_logger
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -22,7 +23,7 @@ from macro_agent import build_macro_context, MacroContext
 from data_store import _db_conn, _get_db
 from data_foundation import fetch_fund_nav_incremental
 
-logger = logging.getLogger("recommend")
+logger = get_logger("recommend")
 
 MODEL_PATH = Path("models/lgb_model.txt")
 FEATURE_COLS = [
@@ -382,33 +383,47 @@ def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> list[dict]:
     with _db_conn() as conn:
         placeholders = ",".join("?" * len(sectors))
         rows = conn.execute(
-            f"SELECT ff.code, fb.name, ff.rbsa_industry_1, ff.rbsa_weight_1, ff.regime, "
+            f"SELECT ff.code, fb.name, ff.regime, "
+            f"ff.rbsa_industry_1, ff.rbsa_weight_1, "
+            f"ff.rbsa_industry_2, ff.rbsa_weight_2, "
+            f"ff.rbsa_industry_3, ff.rbsa_weight_3, "
             f"{', '.join('ff.' + c for c in FEATURE_COLS)} "
             f"FROM fund_features ff "
             f"JOIN fund_basic fb ON fb.code = ff.code "
             f"WHERE fb.is_buyable = 1 "
-            f"AND ff.rbsa_industry_1 IN ({placeholders})",
-            sectors,
+            f"AND (ff.rbsa_industry_1 IN ({placeholders}) "
+            f"  OR ff.rbsa_industry_2 IN ({placeholders}) "
+            f"  OR ff.rbsa_industry_3 IN ({placeholders}))",
+            sectors + sectors + sectors,
         ).fetchall()
 
         if not rows:
             logger.info("赛道内无匹配基金，降级为全市场 Top 10")
             return rank_funds(model)
 
-        cols = ["code", "name", "sector", "rbsa_weight", "regime"] + FEATURE_COLS
+        cols = ["code", "name", "regime",
+                "rbsa_industry_1", "rbsa_weight_1",
+                "rbsa_industry_2", "rbsa_weight_2",
+                "rbsa_industry_3", "rbsa_weight_3"] + FEATURE_COLS
         df = pd.DataFrame(rows, columns=cols)
         df = df.dropna(subset=FEATURE_COLS)
         if df.empty:
             return rank_funds(model)
 
-        # 过滤行业集中度过低的基金（宽基指数等），RBSA 权重 < 20% 说明非行业主题基金
-        before = len(df)
-        df = df[df["rbsa_weight"] >= 20]
-        if len(df) < before:
-            logger.info("过滤低行业集中度 %d 只（宽基指数等）", before - len(df))
-        if df.empty:
-            logger.info("过滤后无基金，降级为全市场 Top 10")
-            return rank_funds(model)
+    # 展开多行业：一只基金如有多个行业匹配赛道，则重复出现
+    expanded = []
+    for _, r in df.iterrows():
+        for i in range(1, 4):
+            ind = r.get(f"rbsa_industry_{i}")
+            if ind and ind in sectors:
+                row = r.to_dict()
+                row["sector"] = ind
+                row["rbsa_weight"] = r.get(f"rbsa_weight_{i}", 0) or 0
+                expanded.append(row)
+    if not expanded:
+        logger.info("所有基金均无匹配行业，降级为全市场 Top 10")
+        return rank_funds(model)
+    df = pd.DataFrame(expanded)
 
     df = df[~df["sector"].isin(risk_sectors)]
     df = _add_sector_relatives(df)
@@ -434,6 +449,7 @@ def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> list[dict]:
         + calmar_clipped * w["cal"]
         + df["sector_rel_calmar"] * 0.05
         + (df["hurst_60d"] - 0.5) * 10 * w["hurst"]
+        + df["rbsa_weight"] * 0.003
     )
 
     top_per_sector = []
@@ -450,6 +466,12 @@ def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> list[dict]:
         results.append({
             "code": f["code"], "name": f["name"],
             "sector": f["sector"],
+            "rbsa_industry_1": f.get("rbsa_industry_1", ""),
+            "rbsa_industry_2": f.get("rbsa_industry_2", ""),
+            "rbsa_industry_3": f.get("rbsa_industry_3", ""),
+            "rbsa_weight_1": float(f.get("rbsa_weight_1", 0) or 0),
+            "rbsa_weight_2": float(f.get("rbsa_weight_2", 0) or 0),
+            "rbsa_weight_3": float(f.get("rbsa_weight_3", 0) or 0),
             "score": float(f["score"]), "combo": float(f["combo"]),
             "hurst_60d": float(f["hurst_60d"]), "momentum_20d": float(f["momentum_20d"]),
             "calmar": float(f["calmar"]),
@@ -469,11 +491,15 @@ def rank_funds(model: lgb.Booster) -> list[dict]:
             f"{', '.join('ff.' + c for c in FEATURE_COLS)} "
             "FROM fund_features ff "
             "JOIN fund_basic fb ON fb.code = ff.code "
+            "SELECT ff.code, fb.name, ff.regime, ff.rbsa_industry_1, ff.rbsa_weight_1, "
+            f"{', '.join('ff.' + c for c in FEATURE_COLS)} "
+            "FROM fund_features ff "
+            "JOIN fund_basic fb ON fb.code = ff.code "
             "WHERE fb.is_buyable = 1 "
             "AND ff.rbsa_industry_1 IS NOT NULL AND ff.rbsa_industry_1 != ''"
         ).fetchall()
 
-    cols = ["code", "name", "regime"] + FEATURE_COLS
+    cols = ["code", "name", "regime", "rbsa_industry_1", "rbsa_weight_1"] + FEATURE_COLS
     df = pd.DataFrame(rows, columns=cols)
     df = df.dropna(subset=FEATURE_COLS)
     if df.empty:
@@ -498,6 +524,7 @@ def rank_funds(model: lgb.Booster) -> list[dict]:
         + df["rel_strength"] * w["rs"]
         + calmar_clipped * w["cal"]
         + (df["hurst_60d"] - 0.5) * 10 * w["hurst"]
+        + df["rbsa_weight_1"] * 0.003
     )
     top = df.sort_values("combo", ascending=False).head(10)
     candidates = []
@@ -548,6 +575,14 @@ def _build_final_prompt(candidates: list[dict], ctx: MacroContext, insights: lis
             f"卡玛: {c['calmar']:.2f} | "
             f"Hurst: {c['hurst_60d']:.2f} | 组合分: {c['combo']:.3f}"
         )
+        ind_parts = []
+        for j in range(1, 4):
+            ind = c.get(f"rbsa_industry_{j}", "")
+            w = c.get(f"rbsa_weight_{j}", 0)
+            if ind and w:
+                ind_parts.append(f"{ind}({w:.1f}%)")
+        if ind_parts:
+            lines.append(f"  行业分布: {', '.join(ind_parts)}")
         holdings = c.get("holdings", [])
         if holdings:
             hds = [f"{h['stock_name']}({h['industry']},权重{h['weight']:.1f}%)" for h in holdings]
@@ -559,6 +594,20 @@ def _build_final_prompt(candidates: list[dict], ctx: MacroContext, insights: lis
                     f"  ⚡ 新闻匹配: 持仓股 {m['stock_name']} 出现在今日新闻 "
                     f"[等级={m['level']}] \"{m['title'][:50]}\""
                 )
+        rd = c.get("report_date")
+        months = c.get("holdings_months")
+        smm = c.get("sector_median_mom")
+        gap = c.get("mom_gap")
+        if rd and months is not None:
+            parts = [f"  持仓时效: {rd} (距今{months}个月)"]
+            fund_mom = c.get("momentum_20d", 0) or 0
+            parts.append(f"基金20日涨幅{fund_mom:+.1f}%")
+            if smm is not None and gap is not None:
+                parts.append(f"赛道同行中位数{smm:+.1f}%")
+                parts.append(f"偏离{gap:+.1f}%")
+                if abs(gap) > 5:
+                    parts.append("(走势异常)")
+            lines.append(" | ".join(parts))
     lines += [
         "",
         "【任务指令】",
@@ -594,10 +643,14 @@ def _build_final_prompt(candidates: list[dict], ctx: MacroContext, insights: lis
 
 
 def _llm_final_pick(candidates: list[dict], ctx: MacroContext, insights: list) -> dict:
-    """LLM 基于重仓股+CLS新闻匹配做最终选择，返回选定基金和否决记录。"""
+    """LLM 基于重仓股+CLS新闻匹配+持仓时效性做最终选择，返回选定基金和否决记录。"""
     from data_foundation import _call_llm
 
     with _db_conn() as conn:
+        latest_feature_date = conn.execute(
+            "SELECT MAX(date) FROM fund_features"
+        ).fetchone()[0]
+
         for c in candidates:
             hold_rows = conn.execute(
                 "SELECT h.stock_code, h.stock_name, h.weight, "
@@ -620,6 +673,43 @@ def _llm_final_pick(candidates: list[dict], ctx: MacroContext, insights: list) -
                         matched.append({"stock_name": h["stock_name"], "stock_code": h["stock_code"], **s})
                         break
             c["matched_news"] = matched
+
+            report_row = conn.execute(
+                "SELECT MAX(report_date) FROM fund_holdings WHERE code = ?",
+                (c["code"],),
+            ).fetchone()
+            report_date = report_row[0] if report_row else None
+            c["report_date"] = report_date
+            if report_date:
+                try:
+                    rd = datetime.strptime(report_date, "%Y-%m-%d")
+                    months = (datetime.now().year - rd.year) * 12 + (datetime.now().month - rd.month)
+                    c["holdings_months"] = max(0, months)
+                except Exception:
+                    c["holdings_months"] = None
+            else:
+                c["holdings_months"] = None
+
+            sector = c.get("sector") or c.get("rbsa_industry_1", "")
+            fund_mom = c.get("momentum_20d", 0) or 0
+            if sector and latest_feature_date:
+                peer_rows = conn.execute(
+                    "SELECT momentum_20d FROM fund_features "
+                    "WHERE rbsa_industry_1 = ? AND date = ? AND momentum_20d IS NOT NULL",
+                    (sector, latest_feature_date),
+                ).fetchall()
+                if len(peer_rows) >= 3:
+                    values = sorted(r[0] for r in peer_rows)
+                    n = len(values)
+                    median = values[n // 2] if n % 2 else (values[n // 2 - 1] + values[n // 2]) / 2
+                    c["sector_median_mom"] = round(float(median), 1)
+                    c["mom_gap"] = round(float(fund_mom) - float(median), 1)
+                else:
+                    c["sector_median_mom"] = None
+                    c["mom_gap"] = None
+            else:
+                c["sector_median_mom"] = None
+                c["mom_gap"] = None
 
     prompt = _build_final_prompt(candidates, ctx, insights)
     system_prompt = "你是量化基金推荐决策助手。必须只输出一个纯JSON对象，禁止使用markdown代码块，禁止任何前后说明文字。"
@@ -647,7 +737,7 @@ def _parse_llm_result(content: str, valid_codes: dict) -> dict | None:
     if not isinstance(parsed, dict):
         return None
     result = {str(k).strip(". "): v for k, v in parsed.items()}
-    code = result.get("selected_code")
+    code = str(result.get("selected_code") or "")
     if code in valid_codes:
         return {
             "selected_code": code,
@@ -705,19 +795,25 @@ def _save_recommendation(date_str: str, selected: dict, candidates: list[dict],
             (selected["selected_code"],),
         ).fetchone()
         entry_nav = entry_nav_row[0] if entry_nav_row else None
-        exists = conn.execute(
+        existing = conn.execute(
             "SELECT id FROM recommend_log WHERE recommend_date = ? LIMIT 1", (date_str,)
         ).fetchone()
-        if exists:
-            conn.execute("DELETE FROM recommend_log WHERE recommend_date = ?", (date_str,))
-            logger.info("删除当日旧推荐，准备写入新推荐")
-        conn.execute(
-            "INSERT INTO recommend_log "
-            "(recommend_date, code, name, rank, score, combo, regime, buy_reason, status, feature_snapshot, entry_nav) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'HOLD', ?, ?)",
-            (date_str, selected["selected_code"], real_name,
-             rank, score, combo, regime, reason, feature_snapshot, entry_nav),
-        )
+        if existing:
+            conn.execute(
+                "UPDATE recommend_log SET code=?, name=?, rank=?, score=?, combo=?, regime=?, "
+                "buy_reason=?, feature_snapshot=?, entry_nav=? WHERE id=?",
+                (selected["selected_code"], real_name, rank, score, combo, regime,
+                 reason, feature_snapshot, entry_nav, existing[0]),
+            )
+            logger.info("更新当日旧推荐")
+        else:
+            conn.execute(
+                "INSERT INTO recommend_log "
+                "(recommend_date, code, name, rank, score, combo, regime, buy_reason, status, feature_snapshot, entry_nav) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'HOLD', ?, ?)",
+                (date_str, selected["selected_code"], real_name,
+                 rank, score, combo, regime, reason, feature_snapshot, entry_nav),
+            )
         logger.info("推荐入库: %s %s (排名%d, 分数%.4f)",
                     selected["selected_code"], real_name, rank, score or 0.0)
     _dump_recommendation(date_str, selected["selected_code"], real_name, rank, score,

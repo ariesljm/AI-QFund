@@ -8,6 +8,7 @@
 import asyncio
 import json
 import logging
+from log_utils import get_logger
 import re
 import sqlite3
 import sys
@@ -30,7 +31,7 @@ try:
 except ImportError:
     HAS_AIOHTTP = False
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def _fetch(url: str, params: dict | None = None, timeout: float = 15) -> requests.Response:
@@ -41,8 +42,8 @@ def _fetch(url: str, params: dict | None = None, timeout: float = 15) -> request
 
 # ========== 数据源 URL 常量 ==========
 
-# 基金全量列表（天天基金排行接口，按类型分页拉取，返回 代码|名称|类型|...）
-_API_FUND_LIST_URL = "https://fundapi.eastmoney.com/fundtradenew.aspx"
+# 基金全量列表（天天基金官方的基金代码搜索 JS，由天天基金官方维护，格式固定）
+_API_FUND_LIST_URL = "https://fund.eastmoney.com/js/fundcode_search.js"
 
 # 单只基金历史净值（东方财富 pingzhongdata，{code} 替换为基金代码，仅首次全量用）
 _API_PINGZHONGDATA_URL = "http://fund.eastmoney.com/pingzhongdata/{code}.js"
@@ -71,131 +72,37 @@ _EXCLUDE_CODE_PREFIXES = ("15", "16", "18", "50", "51", "55", "56", "58", "59")
 
 
 def fetch_fund_list(settings: dict | None = None) -> list[dict]:
-    """获取并过滤基金列表，剔除不可投类型。
+    """从天天基金官方 JS 获取基金列表，剔除不可投类型。
 
     返回格式：[{"code": "000001", "name": "华夏成长", "type": "混合型", "is_buyable": 1}, ...]
     """
-    url = _API_FUND_LIST_URL
+    resp = requests.get(
+        _API_FUND_LIST_URL,
+        headers={"User-Agent": "Mozilla/5.0", "Referer": "https://fund.eastmoney.com/"},
+        timeout=30,
+    )
+    resp.encoding = "utf-8"
+    m = re.search(r"var\s+r\s*=\s*(\[.*?\])\s*;", resp.text, re.DOTALL)
+    if not m:
+        logger.error("基金列表 JS 解析失败")
+        return []
+    data = json.loads(m.group(1))
 
-    all_funds: list[dict] = []
-    # 按类型拉取：gp(股票), hh(混合), zs(指数), qdii, fof
-    # 只取股票型、混合型、指数型
-    type_map = {"gp": "股票型", "hh": "混合型", "zs": "指数型"}
-
-    for ft, type_label in type_map.items():
-        page = 1
-        skipped_pages: list[int] = []
-        while True:
-            params = {
-                "op": "ph",
-                "dt": "kf",
-                "ft": ft,
-                "rs": "",
-                "gs": "0",
-                "sc": "6yzf",
-                "st": "desc",
-                "sd": "2020-01-01",
-                "ed": datetime.now().strftime("%Y-%m-%d"),
-                "qdii": "",
-                "tabSubtype": ",,,,,",
-                "pi": page,
-                "pn": 200,
-                "dx": "1",
-            }
-            resp = _fetch(url, params)
-            text = resp.text
-
-            m = re.search(r"var rankData\s*=\s*(\{.*\});", text, re.DOTALL)
-            if not m:
-                logger.warning("类型 %s 第 %d 页解析失败", ft, page)
-                skipped_pages.append(page)
-                if page >= 200:  # 安全上限，避免死循环
-                    break
-                page += 1
-                time.sleep(1)
-                continue
-
-            try:
-                obj_str = re.sub(r"([A-Za-z_]\w*)\s*:", r'"\1":', m.group(1))
-                obj = literal_eval(obj_str)
-            except Exception as e:
-                logger.warning("类型 %s 第 %d 页 JSON 解析失败: %s", ft, page, e)
-                skipped_pages.append(page)
-                if page >= 200:
-                    break
-                page += 1
-                time.sleep(1)
-                continue
-
-            rows = obj.get("datas") or []
-            if not rows:
-                break
-
-            for row_str in rows:
-                fields = row_str.split("|")
-                if len(fields) < 4:
-                    continue
-                code = fields[0].strip()
-                name = fields[1].strip()
-                if code.startswith(_EXCLUDE_CODE_PREFIXES):
-                    continue
-                # 养老金 Y 类份额（名称以 Y 结尾）
-                if name.endswith("Y"):
-                    continue
-                if any(kw in name for kw in _EXCLUDE_KEYWORDS):
-                    continue
-                all_funds.append({
-                    "code": code,
-                    "name": name,
-                    "type": type_label,
-                    "is_buyable": 1,
-                })
-
-            all_pages = obj.get("allPages", 1)
-            if page >= all_pages:
-                break
-            page += 1
-            time.sleep(0.3)
-
-        # 补查解析失败的页
-        if skipped_pages:
-            logger.info("类型 %s 补查失败页面: %s", ft, skipped_pages)
-            for pg in skipped_pages:
-                try:
-                    params["pi"] = pg
-                    resp = _fetch(url, params)
-                    text = resp.text
-                    m = re.search(r"var rankData\s*=\s*(\{.*\});", text, re.DOTALL)
-                    if not m:
-                        continue
-                    obj_str = re.sub(r"([A-Za-z_]\w*)\s*:", r'"\1":', m.group(1))
-                    obj = literal_eval(obj_str)
-                    rows = obj.get("datas") or []
-                    for row_str in rows:
-                        fields = row_str.split("|")
-                        if len(fields) < 4:
-                            continue
-                        code = fields[0].strip()
-                        name = fields[1].strip()
-                        if code.startswith(_EXCLUDE_CODE_PREFIXES):
-                            continue
-                        if name.endswith("Y"):
-                            continue
-                        if any(kw in name for kw in _EXCLUDE_KEYWORDS):
-                            continue
-                        all_funds.append({
-                            "code": code,
-                            "name": name,
-                            "type": type_label,
-                            "is_buyable": 1,
-                        })
-                    logger.info("补查类型 %s 第 %d 页成功", ft, pg)
-                except Exception:
-                    pass
-
-        logger.info("类型 %s 拉取完成，累计 %d 条", ft, len(all_funds))
-
-    return all_funds
+    type_map = {"股票型": "股票型", "混合型": "混合型", "指数型": "指数型"}
+    result = []
+    for code, _, name, full_type, *_ in data:
+        base_type = full_type.split("-")[0]
+        if base_type not in type_map:
+            continue
+        if code.startswith(_EXCLUDE_CODE_PREFIXES):
+            continue
+        if name.endswith("Y"):
+            continue
+        if any(kw in name for kw in _EXCLUDE_KEYWORDS):
+            continue
+        result.append({"code": code, "name": name, "type": type_map[base_type], "is_buyable": 1})
+    logger.info("基金列表: 源 %d 只 → 筛选后 %d 只", len(data), len(result))
+    return result
 
 
 _LIST_UPDATE_INTERVAL_DAYS = 7
@@ -323,7 +230,7 @@ async def _async_fetch_one(
             navs = _parse_nav_response(text, code)
             return code, navs, False
         except Exception as e:
-            logger.debug("基金 %s 异步拉取失败: %s", code, e)
+            logger.debug("基金 %s 异步拉取失败: %s", code, str(e)[:120], exc_info=True)
             return code, [], True
 
 
@@ -437,7 +344,7 @@ async def _async_fetch_lsjz(
                 lsjz_list = (data.get("Data") or {}).get("LSJZList") or []
                 total = data.get("TotalCount") or 0
             except Exception as e:
-                logger.debug("基金 %s lsjz 拉取失败(第%d页): %s", code, page, e)
+                logger.debug("基金 %s lsjz 拉取失败(第%d页): %s", code, page, str(e)[:120], exc_info=True)
                 if page == 1:
                     first_failed = True
                 break
@@ -566,7 +473,7 @@ async def async_update_nav_incremental(
                             with _db_conn() as conn:
                                 total_new += _save_nav_batch(conn, code, navs)
                 except Exception as e:
-                    logger.debug("补查基金 %s 净值增量失败: %s", code, e)
+                    logger.debug("补查基金 %s 净值增量失败: %s", code, str(e)[:120], exc_info=True)
 
     elapsed = time.monotonic() - start_time
     logger.info("增量更新完成: %d 条净值, 耗时 %.1f 秒", total_new, elapsed)
@@ -672,7 +579,7 @@ async def async_download_all_nav(
                             with _db_conn() as conn:
                                 total_new += _save_nav_batch(conn, code, navs)
                 except Exception as e:
-                    logger.debug("补查基金 %s 净值失败: %s", code, e)
+                    logger.debug("补查基金 %s 净值失败: %s", code, str(e)[:120], exc_info=True)
 
     elapsed = time.monotonic() - start_time
     logger.info("全量下载完成: %d 条净值, 耗时 %.1f 秒", total_new, elapsed)
@@ -823,7 +730,7 @@ async def _async_fetch_holdings_one(
             report_date, holdings = _parse_holdings_html(text)
             return code, report_date, holdings, False
         except Exception as e:
-            logger.debug("基金 %s 持仓异步拉取失败: %s", code, e)
+            logger.debug("基金 %s 持仓异步拉取失败: %s", code, str(e)[:120], exc_info=True)
             return code, None, [], True
 
 
@@ -847,14 +754,17 @@ async def async_download_all_holdings(
             ).fetchall()
         ]
 
-        # 推算最新季报截止日
+        # 各季报法定披露截止日：季报 15 工作日（≈21 天），年报 90 天
+        # Q1(3-31)→4-21, Q2(6-30)→7-21, Q3(9-30)→10-21, Q4/年报(12-31)→3-31
         today = datetime.now()
-        m = today.month
-        if m <= 3:
+        m, d = today.month, today.day
+        if m < 4:
+            latest_quarter = f"{today.year - 1}-09-30"
+        elif m == 4 and d <= 21:
             latest_quarter = f"{today.year - 1}-12-31"
-        elif m <= 6:
+        elif m < 7 or (m == 7 and d <= 21):
             latest_quarter = f"{today.year}-03-31"
-        elif m <= 9:
+        elif m < 10 or (m == 10 and d <= 21):
             latest_quarter = f"{today.year}-06-30"
         else:
             latest_quarter = f"{today.year}-09-30"
@@ -948,8 +858,8 @@ async def async_download_all_holdings(
                                 total_rows += len(holdings)
                                 funds_with_holdings += 1
                                 local_latest[code] = report_date
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("补查基金 %s 失败: %s", code, str(e)[:120], exc_info=True)
                 conn.commit()
 
     elapsed = time.monotonic() - start_time
@@ -982,7 +892,7 @@ def update_industry_map(force: bool = False) -> int:
         try:
             records = _fetch_industry_map()
         except Exception as e:
-            logger.error("拉取行业映射失败: %s", e)
+            logger.error_event("industry_map_failed", "拉取行业映射失败", extra={"error": str(e)}, exc_info=True)
             return 0
 
         if not records:
@@ -1060,7 +970,7 @@ def _fetch_hk_industry_push2(hk_stocks: list[str], results: dict[str, tuple[str,
                     logger.debug("港股 %s 行业映射(push2): %s", stock_code, industry)
                     continue
         except Exception as e:
-            logger.debug("港股 %s push2 查询失败: %s", stock_code, e)
+            logger.debug("港股 %s push2 查询失败: %s", stock_code, str(e)[:120], exc_info=True)
     return added
 
 
@@ -1151,7 +1061,7 @@ def _fetch_industry_map() -> list[tuple[str, str, str]]:
                                 results[sc] = (em2016, industry)
                                 break
                     except Exception as e:
-                        logger.debug("补查股票 %s 失败: %s", sc, e)
+                        logger.debug("补查股票 %s 失败: %s", sc, str(e)[:120], exc_info=True)
             recovered = len([s for s in failed if s in results])
             logger.info("补查完成: 恢复 %d 只", recovered)
 
@@ -1179,7 +1089,10 @@ def run_pipeline(steps: list[int] | None = None):
         # Step 1: 基金列表（每周更新，不足 7 天自动跳过）
         if 1 in steps:
             logger.info("=== Step 1: 基金列表获取与过滤 ===")
+            t1 = time.time()
             update_fund_list_weekly()
+            logger.info_event("step_complete", "Step1 基金列表完成",
+                              extra={"step": 1, "duration_ms": int((time.time() - t1) * 1000)})
 
         # Step 2: 净值更新
         #   首次（本地无净值数据）→ async_download_all_nav：pingzhongdata 单请求/基金，高并发全量
@@ -1188,11 +1101,15 @@ def run_pipeline(steps: list[int] | None = None):
             has_nav = conn.execute("SELECT 1 FROM fund_nav LIMIT 1").fetchone()
             if has_nav:
                 logger.info("=== Step 2: 净值增量更新（并发增量）===")
+                t2 = time.time()
                 total_new = asyncio.run(async_update_nav_incremental(concurrency=20))
             else:
                 logger.info("=== Step 2: 净值首次全量下载（pingzhongdata 高并发）===")
+                t2 = time.time()
                 total_new = asyncio.run(async_download_all_nav(concurrency=50))
-            logger.info("净值更新完成，共新增 %d 条", total_new)
+            logger.info_event("step_complete", "Step2 净值更新完成",
+                              extra={"step": 2, "new_records": total_new,
+                                     "duration_ms": int((time.time() - t2) * 1000)})
 
         # Step 3: 宏观指数（增量续算，覆盖长假缺口）
         if 3 in steps:
@@ -1206,7 +1123,8 @@ def run_pipeline(steps: list[int] | None = None):
                 n = save_index_daily("sh000300", index_data)
                 logger.info("沪深300日线新增 %d 条", n)
             except Exception as e:
-                logger.error("沪深300 日线获取失败: %s", e)
+                logger.error_event("index_daily_failed", "沪深300 日线获取失败",
+                                   extra={"error": str(e)}, exc_info=True)
             # 同步拉取沪深300ETF（510300）日线，用于资金流斜率
             has_etf = conn.execute(
                 "SELECT 1 FROM index_daily WHERE code = 'sh510300' LIMIT 1"
@@ -1217,7 +1135,8 @@ def run_pipeline(steps: list[int] | None = None):
                 n_etf = save_index_daily("sh510300", etf_data)
                 logger.info("沪深300ETF(510300)日线新增 %d 条", n_etf)
             except Exception as e:
-                logger.error("沪深300ETF 日线获取失败: %s", e)
+                logger.error_event("etf_daily_failed", "沪深300ETF 日线获取失败",
+                                   extra={"error": str(e)}, exc_info=True)
 
         # Step 4: 重仓股（全量并发下载）
         if 4 in steps:
@@ -1327,9 +1246,10 @@ def _call_llm(
                     response_format={"type": "json_object"},
                 )
                 elapsed = (time.time() - t0) * 1000
-                logger.info("LLM 调用成功: model=%s attempt=%d/%d duration=%dms tokens=%d",
-                            llm_cfg.get("model"), attempt + 1, 3, int(elapsed),
-                            resp.usage.total_tokens if resp.usage else 0)
+                tokens = resp.usage.total_tokens if resp.usage else 0
+                logger.info_event("llm_success", "LLM 调用成功",
+                                  extra={"model": llm_cfg.get("model"), "attempt": attempt + 1,
+                                         "duration_ms": int(elapsed), "tokens": tokens})
                 return resp.choices[0].message.content
             except Exception as e:
                 e_str = str(e)
@@ -1337,18 +1257,24 @@ def _call_llm(
                 is_retryable = any(term in e_str or term in e_type for term in _RETRYABLE_TERMS)
                 if is_retryable:
                     delay = 2 ** attempt * 2
-                    logger.warning("LLM 可重试错误 (attempt %d/3, %ds后重试): %s: %s",
-                                   attempt + 1, delay, e_type, e_str[:120])
+                    logger.warn_event("llm_retry", f"LLM 可重试错误 ({delay}s后重试)",
+                                      extra={"attempt": attempt + 1, "delay": delay,
+                                             "error_type": e_type, "error": e_str[:120]})
                     time.sleep(delay)
                     continue
                 elapsed = (time.time() - t0) * 1000
-                logger.error("LLM 不可重试错误: attempt=%d/%d duration=%dms error=%s: %s",
-                             attempt + 1, 3, int(elapsed), e_type, e_str[:120])
+                logger.error_event("llm_fatal", "LLM 不可重试错误",
+                                   extra={"attempt": attempt + 1, "duration_ms": int(elapsed),
+                                          "error_type": e_type, "error": e_str[:120]},
+                                   exc_info=True)
                 return None
         elapsed = (time.time() - t0) * 1000
-        logger.error("LLM 重试耗尽: attempts=%d duration=%dms", attempt + 1, int(elapsed))
+        logger.error_event("llm_exhausted", "LLM 重试耗尽",
+                           extra={"attempts": attempt + 1, "duration_ms": int(elapsed)})
         return None
     except Exception as e:
         elapsed = (time.time() - t0) * 1000
-        logger.error("LLM 异常: duration=%dms error=%s", int(elapsed), e)
+        logger.error_event("llm_crash", "LLM 异常",
+                           extra={"duration_ms": int(elapsed), "error": str(e)},
+                           exc_info=True)
         return None
