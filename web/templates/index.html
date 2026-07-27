@@ -589,23 +589,35 @@ var _fetching = false;
 var FUND_SKEL = '<div class="space-y-md"><div class="skel h-6 w-3/4"></div><div class="skel h-4 w-1/2"></div><div class="skel h-4 w-full"></div><div class="skel h-4 w-5/6"></div><div class="skel h-20 w-full"></div><div class="skel h-40 w-full"></div></div>';
 
 function _level(str) {
-    var m = str.match(/\[(ERROR|WARNING|INFO|DEBUG)\s*\]/);
-    return m ? m[1] : '';
+    var s = str.indexOf('[');
+    if (s < 0) return '';
+    var e = str.indexOf(']', s);
+    if (e < 0) return '';
+    var inner = str.substring(s + 1, e).trim();
+    if (inner === 'ERROR' || inner === 'WARNING' || inner === 'INFO' || inner === 'DEBUG') return inner;
+    return '';
 }
 
-function _timestamp(str) { return str.substring(0, 19).trim(); }
+function _timestamp(str) {
+    var s = str.indexOf('[');
+    return s > 0 ? str.substring(0, s - 1).trim() : str.substring(0, 19).trim();
+}
 
 function _message(str) {
-    var m = str.substring(19).trim();
-    return m.replace(/\[\w+\]\s*/, '').trim();
+    var e = str.indexOf(']');
+    if (e < 0) return str.substring(19).trim();
+    var tail = str.substring(e + 1).trim();
+    var colon = tail.indexOf(':');
+    return colon > 0 ? tail.substring(colon + 1).trim() : tail;
 }
 
 function applyLogFilter() {
-    var level = (document.querySelector('.log-filter.active') || {}).dataset.level || 'all';
+    var btn = document.querySelector('.log-filter.active');
+    var level = btn ? btn.getAttribute('data-level') : 'all';
     var query = (document.getElementById('logSearch').value || '').toLowerCase();
     document.querySelectorAll('#logLines .log-row').forEach(function(el) {
         var show = true;
-        if (level !== 'all' && el.dataset.level !== level) show = false;
+        if (level !== 'all' && el.getAttribute('data-level') !== level) show = false;
         if (show && query && !el.textContent.toLowerCase().includes(query)) show = false;
         el.style.display = show ? '' : 'none';
     });
@@ -780,7 +792,7 @@ async function fetchLogs() {
             var msg = _message(l);
             var row = document.createElement('div');
             row.className = 'log-row flex items-start gap-1 px-md py-[3px] hover:bg-surface-container transition-colors';
-            row.dataset.level = lvl || 'INFO';
+            row.setAttribute('data-level', lvl || 'INFO');
             if (lvl === 'ERROR') {
                 row.style.background = '#FFF0F0';
                 row.innerHTML = '<span class="shrink-0 w-[52px] text-[11px] font-black text-error uppercase">ERROR</span><span class="shrink-0 text-[11px] opacity-50 w-[130px]">' + _esc(ts) + '</span><span class="break-all text-error font-medium">' + _esc(msg) + '</span>';
