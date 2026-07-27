@@ -1166,7 +1166,7 @@ def _fetch_industry_map() -> list[tuple[str, str, str]]:
 
 def run_pipeline(steps: list[int] | None = None):
     """执行数据基座全流程。steps=None 表示全部执行。"""
-    all_steps = {1, 2, 3, 4, 5, 6, 7, 8}
+    all_steps = {1, 2, 3, 4, 6, 7, 8}
     steps = steps or all_steps
 
     with _db_conn() as conn:
@@ -1189,36 +1189,41 @@ def run_pipeline(steps: list[int] | None = None):
                 total_new = asyncio.run(async_download_all_nav(concurrency=50))
             logger.info("净值更新完成，共新增 %d 条", total_new)
 
-        # Step 3: 宏观指数（EMA60 增量）
+        # Step 3: 宏观指数（增量续算，覆盖长假缺口）
         if 3 in steps:
             logger.info("=== Step 3: 宏观指数获取 ===")
-            # 本地有数据则只拉最近少量做增量续算；无数据则冷启动拉 250 条
             has_index = conn.execute(
                 "SELECT 1 FROM index_daily WHERE code = 'sh000300' LIMIT 1"
             ).fetchone()
-            datalen = 10 if has_index else 250
-            index_data = fetch_index_daily(datalen=datalen)
-            n = save_index_daily("sh000300", index_data)
-            logger.info("沪深300日线新增 %d 条", n)
+            datalen = 20 if has_index else 250
+            try:
+                index_data = fetch_index_daily(datalen=datalen)
+                n = save_index_daily("sh000300", index_data)
+                logger.info("沪深300日线新增 %d 条", n)
+            except Exception as e:
+                logger.error("沪深300 日线获取失败: %s", e)
             # 同步拉取沪深300ETF（510300）日线，用于资金流斜率
             has_etf = conn.execute(
                 "SELECT 1 FROM index_daily WHERE code = 'sh510300' LIMIT 1"
             ).fetchone()
-            etf_datalen = 10 if has_etf else 250
-            etf_data = fetch_etf_daily(datalen=etf_datalen)
-            n_etf = save_index_daily("sh510300", etf_data)
-            logger.info("沪深300ETF(510300)日线新增 %d 条", n_etf)
+            etf_datalen = 20 if has_etf else 250
+            try:
+                etf_data = fetch_etf_daily(datalen=etf_datalen)
+                n_etf = save_index_daily("sh510300", etf_data)
+                logger.info("沪深300ETF(510300)日线新增 %d 条", n_etf)
+            except Exception as e:
+                logger.error("沪深300ETF 日线获取失败: %s", e)
 
         # Step 4: 重仓股（全量并发下载）
         if 4 in steps:
             logger.info("=== Step 4: 重仓股数据获取 ===")
             asyncio.run(async_download_all_holdings())
-            # 持仓入库后立即更新行业映射，确保 Step 6 特征计算中 RBSA 可用
+            # 持仓入库后更新行业映射（内部 90 天增量跳过），确保 RBSA 可用
             logger.info("更新申万行业映射（持仓→行业）...")
-            total_mapped = update_industry_map(force=True)
+            total_mapped = update_industry_map()
             logger.info("行业映射完成: %d 条", total_mapped)
 
-        # Step 6: RBSA 行业暴露（行业映射已在 Step 5 完成，此处仅日志确认）
+        # Step 6: RBSA 行业暴露（行业映射在 Step 4 末尾已完成，此处仅日志确认）
         if 6 in steps:
             logger.info("=== Step 6: RBSA 行业暴露 ===")
             mapped = conn.execute(
@@ -1234,16 +1239,21 @@ def run_pipeline(steps: list[int] | None = None):
             logger.info("=== Step 7: 特征计算 ===")
             _features.calc_all_features()
 
-        # Step 8: 推荐引擎（需模型就绪）
+        # Step 8: 推荐引擎模型准备（不存在则自动训练，推荐由 wrapper 统一调度）
         if 8 in steps:
             logger.info("=== Step 8: 推荐引擎 ===")
-            # 检查模型是否存在，不存在则训练
             from pathlib import Path as _Path
             model_path = _Path("models/lgb_model.txt")
             if not model_path.exists():
-                logger.info("模型不存在，跳过推荐（需手动运行 python recommend.py --retrain）")
+                logger.info("模型不存在，自动训练中...")
+                from recommend import prepare_lgb_training_data, train_lgb_model
+                X_train, y_train, X_val, y_val = prepare_lgb_training_data()
+                if len(X_train) == 0:
+                    logger.error("训练样本为空，跳过模型训练")
+                else:
+                    train_lgb_model(X_train, y_train, X_val, y_val)
             else:
-                logger.info("模型已就绪，可运行推荐管线")
+                logger.info("模型已就绪")
 
     logger.info("数据基座流程完成")
 
