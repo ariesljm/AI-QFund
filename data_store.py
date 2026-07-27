@@ -47,7 +47,9 @@ def _load_settings():
     for env_key, (section, key) in _ENV_OVERRIDE_MAP.items():
         val = _os.environ.get(env_key)
         if val:
-            settings.setdefault(section, {})[key] = val
+            settings.setdefault(section, {})
+            if key not in settings[section]:
+                settings[section][key] = val
     try:
         conn = sqlite3.connect(str(DB_PATH))
         conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
