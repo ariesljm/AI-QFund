@@ -19,7 +19,7 @@ from fastapi.templating import Jinja2Templates
 import json
 
 from data_store import _get_db, _db_conn, SETTINGS_PATH, _save_settings, _load_settings
-from recommend import run_recommendation
+from pipeline import run as run_full_pipeline
 
 logger = logging.getLogger("web")
 
@@ -48,7 +48,6 @@ def _pipeline_log(msg: str) -> None:
     print(line, file=sys.stderr, flush=True)
 
 
-from data_foundation import run_pipeline as run_data_foundation
 
 def _run_pipeline_wrapper(force: bool = False):
     global _pipeline_status
@@ -62,10 +61,8 @@ def _run_pipeline_wrapper(force: bool = False):
     root.addHandler(handler)
 
     try:
-        _pipeline_log("[启动] 数据基座开始执行")
-        run_data_foundation()
-        _pipeline_log("[启动] 推荐引擎开始执行")
-        run_recommendation(force=force)
+        _pipeline_log("[启动] 全量管线开始执行")
+        run_full_pipeline(force=force)
         _pipeline_status = {"state": "done", "message": "管线执行完成"}
     except Exception as e:
         _pipeline_log(f"[错误] 管线执行失败: {e}")

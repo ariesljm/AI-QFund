@@ -19,7 +19,7 @@ COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/pytho
 
 COPY . .
 
-RUN cp data/schema.sql /app/schema.sql && mkdir -p data/logs config && \
+RUN cp data/schema.sql /app/schema.sql && mkdir -p data/logs config models && \
     find /usr/local/lib/python3.11/site-packages -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
 
 ENV PYTHONUNBUFFERED=1

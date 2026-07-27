@@ -12,7 +12,6 @@ venv/
 .idea
 .DS_Store
 Thumbs.db
-models/
 docs/
 *.md
 test_basic.py
