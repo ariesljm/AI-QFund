@@ -382,7 +382,7 @@ def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> list[dict]:
     with _db_conn() as conn:
         placeholders = ",".join("?" * len(sectors))
         rows = conn.execute(
-            f"SELECT ff.code, fb.name, ff.rbsa_industry_1, ff.regime, "
+            f"SELECT ff.code, fb.name, ff.rbsa_industry_1, ff.rbsa_weight_1, ff.regime, "
             f"{', '.join('ff.' + c for c in FEATURE_COLS)} "
             f"FROM fund_features ff "
             f"JOIN fund_basic fb ON fb.code = ff.code "
@@ -395,10 +395,19 @@ def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> list[dict]:
             logger.info("赛道内无匹配基金，降级为全市场 Top 10")
             return rank_funds(model)
 
-        cols = ["code", "name", "sector", "regime"] + FEATURE_COLS
+        cols = ["code", "name", "sector", "rbsa_weight", "regime"] + FEATURE_COLS
         df = pd.DataFrame(rows, columns=cols)
         df = df.dropna(subset=FEATURE_COLS)
         if df.empty:
+            return rank_funds(model)
+
+        # 过滤行业集中度过低的基金（宽基指数等），RBSA 权重 < 20% 说明非行业主题基金
+        before = len(df)
+        df = df[df["rbsa_weight"] >= 20]
+        if len(df) < before:
+            logger.info("过滤低行业集中度 %d 只（宽基指数等）", before - len(df))
+        if df.empty:
+            logger.info("过滤后无基金，降级为全市场 Top 10")
             return rank_funds(model)
 
     df = df[~df["sector"].isin(risk_sectors)]
