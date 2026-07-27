@@ -28,4 +28,3 @@ jobs:
           push: true
           tags: |
             ghcr.io/ariesljm/ai-qfund:latest
-            ghcr.io/ariesljm/ai-qfund:${{ github.sha }}
