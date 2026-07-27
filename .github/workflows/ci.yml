@@ -28,3 +28,11 @@ jobs:
           push: true
           tags: |
             ghcr.io/ariesljm/ai-qfund:latest
+            ghcr.io/ariesljm/ai-qfund:${{ github.sha }}
+
+      - name: 清理旧镜像（保留最新 5 个）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api /user/packages/container/ai-qfund/versions --jq '.[].id' | tail -n +6 | xargs -r -I{} \
+            gh api -X DELETE "/user/packages/container/ai-qfund/versions/{}" --silent || true
