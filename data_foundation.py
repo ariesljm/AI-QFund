@@ -539,25 +539,29 @@ async def async_update_nav_incremental(
 
     # 补查异步并发中失败的基金
     if all_failed:
-        logger.info("补查 %d 只净值增量拉取失败的基金...", len(all_failed))
-        for code in all_failed:
-            time.sleep(1)
-            try:
-                resp = requests.get(
-                    lsjz_url,
-                    params={"fundCode": code, "pageIndex": 1, "pageSize": 60,
-                            "startDate": "", "endDate": end_date},
-                    headers=_LSJZ_HEADERS, timeout=30,
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    lsjz_list = (data.get("Data") or {}).get("LSJZList") or []
-                    navs = _parse_lsjz_list(lsjz_list)
-                    if navs:
-                        with _db_conn() as conn:
-                            total_new += _save_nav_batch(conn, code, navs)
-            except Exception as e:
-                logger.debug("补查基金 %s 净值增量失败: %s", code, e)
+        fail_rate = len(all_failed) / len(tasks_meta)
+        if fail_rate > 0.5:
+            logger.warning("净值增量失败率 %.0f%% (%d/%d)，跳过补查",
+                           fail_rate * 100, len(all_failed), len(tasks_meta))
+        else:
+            logger.info("补查 %d 只净值增量拉取失败的基金...", len(all_failed))
+            for code in all_failed:
+                try:
+                    resp = requests.get(
+                        lsjz_url,
+                        params={"fundCode": code, "pageIndex": 1, "pageSize": 60,
+                                "startDate": "", "endDate": end_date},
+                        headers=_LSJZ_HEADERS, timeout=10,
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        lsjz_list = (data.get("Data") or {}).get("LSJZList") or []
+                        navs = _parse_lsjz_list(lsjz_list)
+                        if navs:
+                            with _db_conn() as conn:
+                                total_new += _save_nav_batch(conn, code, navs)
+                except Exception as e:
+                    logger.debug("补查基金 %s 净值增量失败: %s", code, e)
 
     elapsed = time.monotonic() - start_time
     logger.info("增量更新完成: %d 条净值, 耗时 %.1f 秒", total_new, elapsed)
@@ -645,21 +649,25 @@ async def async_download_all_nav(
 
     # 补查异步并发中失败的基金
     if all_failed:
-        logger.info("补查 %d 只净值拉取失败的基金...", len(all_failed))
-        for code in all_failed:
-            time.sleep(1)
-            try:
-                resp = requests.get(
-                    url_template.format(code=code),
-                    headers=_HEADERS_ASYNC, timeout=30,
-                )
-                if resp.status_code == 200:
-                    navs = _parse_nav_response(resp.text, code)
-                    if navs:
-                        with _db_conn() as conn:
-                            total_new += _save_nav_batch(conn, code, navs)
-            except Exception as e:
-                logger.debug("补查基金 %s 净值失败: %s", code, e)
+        fail_rate = len(all_failed) / len(all_codes)
+        if fail_rate > 0.5:
+            logger.warning("净值失败率 %.0f%% (%d/%d)，疑似服务异常，跳过补查",
+                           fail_rate * 100, len(all_failed), len(all_codes))
+        else:
+            logger.info("补查 %d 只净值拉取失败的基金...", len(all_failed))
+            for code in all_failed:
+                try:
+                    resp = requests.get(
+                        url_template.format(code=code),
+                        headers=_HEADERS_ASYNC, timeout=10,
+                    )
+                    if resp.status_code == 200:
+                        navs = _parse_nav_response(resp.text, code)
+                        if navs:
+                            with _db_conn() as conn:
+                                total_new += _save_nav_batch(conn, code, navs)
+                except Exception as e:
+                    logger.debug("补查基金 %s 净值失败: %s", code, e)
 
     elapsed = time.monotonic() - start_time
     logger.info("全量下载完成: %d 条净值, 耗时 %.1f 秒", total_new, elapsed)
@@ -905,32 +913,36 @@ async def async_download_all_holdings(
 
         # 补查异步并发中失败的基金
         if all_failed:
-            logger.info("补查 %d 只持仓拉取失败的基金...", len(all_failed))
-            for code in all_failed:
-                time.sleep(1)
-                try:
-                    resp = requests.get(
-                        holdings_url,
-                        params={"type": "jjcc", "code": code, "topline": "10", "year": "", "month": ""},
-                        headers=_HOLDINGS_HEADERS, timeout=30,
-                    )
-                    if resp.status_code == 200:
-                        text = resp.text
-                        report_date, holdings = _parse_holdings_html(text)
-                        if holdings and report_date and report_date != local_latest.get(code):
-                            conn.executemany(
-                                "INSERT OR REPLACE INTO fund_holdings "
-                                "(code, report_date, stock_code, stock_name, weight) "
-                                "VALUES (?, ?, ?, ?, ?)",
-                                [(code, report_date, h["stock_code"], h["stock_name"], h["weight"])
-                                 for h in holdings],
-                            )
-                            total_rows += len(holdings)
-                            funds_with_holdings += 1
-                            local_latest[code] = report_date
-                except Exception as e:
-                    logger.debug("补查基金 %s 持仓失败: %s", code, e)
-            conn.commit()
+            fail_rate = len(all_failed) / len(all_codes)
+            if fail_rate > 0.5:
+                logger.warning("持仓失败率 %.0f%% (%d/%d)，疑似无数据而非网络问题，跳过补查",
+                               fail_rate * 100, len(all_failed), len(all_codes))
+            else:
+                logger.info("补查 %d 只持仓拉取失败的基金...", len(all_failed))
+                for code in all_failed:
+                    try:
+                        resp = requests.get(
+                            holdings_url,
+                            params={"type": "jjcc", "code": code, "topline": "10", "year": "", "month": ""},
+                            headers=_HOLDINGS_HEADERS, timeout=10,
+                        )
+                        if resp.status_code == 200:
+                            text = resp.text
+                            report_date, holdings = _parse_holdings_html(text)
+                            if holdings and report_date and report_date != local_latest.get(code):
+                                conn.executemany(
+                                    "INSERT OR REPLACE INTO fund_holdings "
+                                    "(code, report_date, stock_code, stock_name, weight) "
+                                    "VALUES (?, ?, ?, ?, ?)",
+                                    [(code, report_date, h["stock_code"], h["stock_name"], h["weight"])
+                                     for h in holdings],
+                                )
+                                total_rows += len(holdings)
+                                funds_with_holdings += 1
+                                local_latest[code] = report_date
+                    except Exception:
+                        pass
+                conn.commit()
 
     elapsed = time.monotonic() - start_time
     logger.info(
@@ -1107,29 +1119,33 @@ def _fetch_industry_map() -> list[tuple[str, str, str]]:
     # 补查失败的股票（异步并发可能因限速/超时未命中）
     failed = [s for s in all_stocks if s not in results]
     if failed:
-        logger.info("开始补查 %d 只...", len(failed))
-        _headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://emweb.securities.eastmoney.com/"}
-        for sc in failed:
-            time.sleep(1)
-            for url, params in _build_candidates(sc):
-                try:
-                    resp = requests.get(url, params=params, headers=_headers, timeout=30)
-                    if resp.status_code != 200:
-                        continue
-                    data = resp.json()
-                    items = data.get("jbzl", [])
-                    if items:
-                        item = items[0]
-                        em2016 = item.get("EM2016", "")
-                        if em2016:
-                            parts = em2016.split("-")
-                            industry = parts[1] if len(parts) > 1 else parts[0]
-                            results[sc] = (em2016, industry)
-                            break
-                except Exception as e:
-                    logger.debug("补查股票 %s 失败: %s", sc, e)
-        recovered = len([s for s in failed if s in results])
-        logger.info("补查完成: 恢复 %d 只", recovered)
+        fail_rate = len(failed) / len(all_stocks)
+        if fail_rate > 0.5:
+            logger.warning("行业映射失败率 %.0f%% (%d/%d)，跳过补查",
+                           fail_rate * 100, len(failed), len(all_stocks))
+        else:
+            logger.info("开始补查 %d 只...", len(failed))
+            _headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://emweb.securities.eastmoney.com/"}
+            for sc in failed:
+                for url, params in _build_candidates(sc):
+                    try:
+                        resp = requests.get(url, params=params, headers=_headers, timeout=10)
+                        if resp.status_code != 200:
+                            continue
+                        data = resp.json()
+                        items = data.get("jbzl", [])
+                        if items:
+                            item = items[0]
+                            em2016 = item.get("EM2016", "")
+                            if em2016:
+                                parts = em2016.split("-")
+                                industry = parts[1] if len(parts) > 1 else parts[0]
+                                results[sc] = (em2016, industry)
+                                break
+                    except Exception as e:
+                        logger.debug("补查股票 %s 失败: %s", sc, e)
+            recovered = len([s for s in failed if s in results])
+            logger.info("补查完成: 恢复 %d 只", recovered)
 
     # 港股（5位代码）emweb F10 接口已废弃（404），改用 push2 实时行情接口回退
     _hk_unmapped = [s for s in all_stocks if len(s) == 5 and s not in results]
