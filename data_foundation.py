@@ -139,6 +139,9 @@ def fetch_fund_list(settings: dict | None = None) -> list[dict]:
                 name = fields[1].strip()
                 if code.startswith(_EXCLUDE_CODE_PREFIXES):
                     continue
+                # 养老金 Y 类份额（名称以 Y 结尾）
+                if name.endswith("Y"):
+                    continue
                 if any(kw in name for kw in _EXCLUDE_KEYWORDS):
                     continue
                 all_funds.append({
@@ -175,6 +178,8 @@ def fetch_fund_list(settings: dict | None = None) -> list[dict]:
                         code = fields[0].strip()
                         name = fields[1].strip()
                         if code.startswith(_EXCLUDE_CODE_PREFIXES):
+                            continue
+                        if name.endswith("Y"):
                             continue
                         if any(kw in name for kw in _EXCLUDE_KEYWORDS):
                             continue
