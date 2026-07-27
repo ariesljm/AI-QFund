@@ -250,67 +250,9 @@ def _batch_llm_analyze(successes: list, failures: list, neutrals: list | None = 
     return []
 
 
-def _calc_loss(code: str, reco_date: str, exit_date: str) -> float | None:
-    with _db_conn() as conn:
-        nav_reco = conn.execute(
-            "SELECT cum_nav FROM fund_nav WHERE code = ? AND date = ?", (code, reco_date)
-        ).fetchone()
-        nav_exit = conn.execute(
-            "SELECT cum_nav FROM fund_nav WHERE code = ? AND date = ?", (code, exit_date)
-        ).fetchone()
-    if not nav_reco or not nav_exit or not nav_reco[0] or not nav_exit[0]:
-        return None
-    return nav_exit[0] / nav_reco[0] - 1.0
-
-
 def _keywords(text: str) -> set:
     text = re.sub(r"[^\w\u4e00-\u9fff]", " ", text)
     return set(t for t in text.split() if len(t) >= 2)
-
-
-def _extract_rule(content: str) -> str:
-    if not content:
-        return ""
-    try:
-        result = json.loads(content)
-        if isinstance(result, dict) and (result.get("rule") or "").strip():
-            return result["rule"].strip()
-    except (json.JSONDecodeError, ValueError):
-        pass
-    m = re.search(r'"?rule"?\s*[:：]\s*"?([^"\n}]+?)"?\s*[}\n]', content, re.IGNORECASE)
-    if m:
-        return m.group(1).strip().strip('"').strip()
-    return ""
-
-
-def _extract_rationale(content: str) -> str:
-    try:
-        result = json.loads(content)
-        if isinstance(result, dict):
-            return (result.get("rationale") or "").strip()
-    except (json.JSONDecodeError, ValueError):
-        pass
-    m = re.search(r'"?rationale"?\s*[:：]\s*"?([^"\n}]+?)"?\s*[}\n]', content, re.IGNORECASE)
-    return m.group(1).strip().strip('"').strip() if m else ""
-
-
-def check_conflict(new_rule: str, existing_rules: list) -> bool:
-    new_kw = _keywords(new_rule)
-    if not new_kw:
-        return True
-    for er in existing_rules:
-        er_kw = _keywords(er)
-        if not er_kw:
-            continue
-        overlap = len(new_kw & er_kw) / len(new_kw | er_kw)
-        if overlap > 0.6:
-            logger.info("规则重叠度 %.2f: %s", overlap, er[:30])
-            return True
-    return False
-
-
-def _bigrams(text: str) -> set:
-    return {text[i:i+2] for i in range(len(text)-1)} if len(text) >= 2 else set(text)
 
 
 def _insight_conflicts(new_insight: str, existing: list) -> bool:
