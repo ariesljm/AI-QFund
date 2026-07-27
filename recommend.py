@@ -749,7 +749,8 @@ def _parse_llm_result(content: str, valid_codes: dict) -> dict | None:
 _LAST_RECO_PATH = Path("data/last_recommendation.txt")
 
 
-def _dump_recommendation(date_str, code, name, rank, score, regime, candidates, vetoed):
+def _dump_recommendation(date_str, code, name, rank, score, regime, candidates, vetoed,
+                        clear: bool = False):
     lines = [
         f"推荐日期: {date_str}", f"选定代码: {code}", f"选定名称: {name}",
         f"排名: {rank}", f"评分: {score:.4f}", f"大盘环境: {regime}",
@@ -765,11 +766,17 @@ def _dump_recommendation(date_str, code, name, rank, score, regime, candidates, 
         for v in vetoed:
             lines.append(f"  - {v.get('code')} {v.get('name')}: {v.get('reason')}")
     _LAST_RECO_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _LAST_RECO_PATH.write_text("\n".join(lines), encoding="utf-8")
+    mode = "w" if clear else "a"
+    if mode == "a" and _LAST_RECO_PATH.exists():
+        lines.insert(0, "---")
+    with open(_LAST_RECO_PATH, mode, encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
 
 
 def _save_recommendation(date_str: str, selected: dict, candidates: list[dict],
-                          vetoed: list, regime: str, feature_snapshot: str = "") -> None:
+                           vetoed: list, regime: str, feature_snapshot: str = "",
+                           clear: bool = False) -> int:
+    """入库推荐记录，返回新插入行的 id。"""
     with _db_conn() as conn:
         rank = next(
             (i + 1 for i, c in enumerate(candidates) if c["code"] == selected["selected_code"]), 1)
@@ -791,29 +798,19 @@ def _save_recommendation(date_str: str, selected: dict, candidates: list[dict],
             (selected["selected_code"],),
         ).fetchone()
         entry_nav = entry_nav_row[0] if entry_nav_row else None
-        existing = conn.execute(
-            "SELECT id FROM recommend_log WHERE recommend_date = ? LIMIT 1", (date_str,)
-        ).fetchone()
-        if existing:
-            conn.execute(
-                "UPDATE recommend_log SET code=?, name=?, rank=?, score=?, combo=?, regime=?, "
-                "buy_reason=?, feature_snapshot=?, entry_nav=? WHERE id=?",
-                (selected["selected_code"], real_name, rank, score, combo, regime,
-                 reason, feature_snapshot, entry_nav, existing[0]),
-            )
-            logger.info("更新当日旧推荐")
-        else:
-            conn.execute(
-                "INSERT INTO recommend_log "
-                "(recommend_date, code, name, rank, score, combo, regime, buy_reason, status, feature_snapshot, entry_nav) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'HOLD', ?, ?)",
-                (date_str, selected["selected_code"], real_name,
-                 rank, score, combo, regime, reason, feature_snapshot, entry_nav),
-            )
-        logger.info("推荐入库: %s %s (排名%d, 分数%.4f)",
-                    selected["selected_code"], real_name, rank, score or 0.0)
+        conn.execute(
+            "INSERT INTO recommend_log "
+            "(recommend_date, code, name, rank, score, combo, regime, buy_reason, status, feature_snapshot, entry_nav) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'HOLD', ?, ?)",
+            (date_str, selected["selected_code"], real_name,
+             rank, score, combo, regime, reason, feature_snapshot, entry_nav),
+        )
+        new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        logger.info("推荐入库: %s %s (排名%d, 分数%.4f, id=%d)",
+                    selected["selected_code"], real_name, rank, score or 0.0, new_id)
     _dump_recommendation(date_str, selected["selected_code"], real_name, rank, score,
-                         regime, candidates, vetoed)
+                          regime, candidates, vetoed, clear=clear)
+    return new_id
 
 
 def run_recommendation(retrain: bool = False, force: bool = False) -> None:
@@ -843,6 +840,10 @@ def run_recommendation(retrain: bool = False, force: bool = False) -> None:
     logger.info("选定赛道: %s | 回避: %s | 大盘: %s",
                 ctx.recommended_sectors, ctx.risk_sectors, ctx.regime_label)
 
+    target_sectors = ctx.recommended_sectors[:2]
+    if not target_sectors:
+        logger.error("LLM 未推荐任何赛道，终止")
+        return
     logger.info("=== 赛道内相对化排序 ===")
     finalists = _rank_within_sectors(ctx, model)
     if not finalists:
@@ -853,74 +854,79 @@ def run_recommendation(retrain: bool = False, force: bool = False) -> None:
                 ", ".join(f"{f['code']}({f.get('sector','?')},combo={f['combo']:.3f})"
                           for f in finalists))
 
-    logger.info("=== LLM 最终定论（持仓+新闻交叉验证）===")
-    result = _llm_final_pick(finalists, ctx, insights)
+    count = 0
+    for idx, sector in enumerate(target_sectors):
+        sector_candidates = [
+            c for c in finalists
+            if c.get("sector") == sector or c.get("rbsa_industry_1") == sector
+        ]
+        if not sector_candidates:
+            logger.warning("赛道 [%s] 无可投基金，跳过", sector)
+            continue
 
-    selected = {
-        "selected_code": result["selected_code"],
-        "selected_name": result["selected_name"],
-        "reason": result.get("reason", ""),
-    }
-    vetoed = result.get("vetoed", [])
-    logger.info("LLM 选定: %s %s | 否决 %d 只",
-                selected["selected_code"], selected["selected_name"], len(vetoed))
+        logger.info("=== LLM 最终定论 [%d/2 %s] (%d 只候选) ===",
+                    idx + 1, sector, len(sector_candidates))
+        result = _llm_final_pick(sector_candidates, ctx, insights)
 
-    guard = _load_ranking_cfg()["momentum_guard_pct"]
-    sel_momentum = next(
-        (float(c.get("momentum_20d", 0)) for c in finalists
-         if c["code"] == selected["selected_code"]), None)
-    if sel_momentum is not None and sel_momentum < guard:
-        logger.warning("风控拦截: %s 近20日动量 %.1f%% 低于阈值 %.0f%%",
-                       selected["selected_code"], sel_momentum, guard)
+        selected = {
+            "selected_code": result["selected_code"],
+            "selected_name": result["selected_name"],
+            "reason": result.get("reason", ""),
+        }
+        vetoed = result.get("vetoed", [])
+        logger.info("LLM 选定 [%s]: %s %s | 否决 %d 只",
+                    sector, selected["selected_code"], selected["selected_name"], len(vetoed))
+
+        guard = _load_ranking_cfg()["momentum_guard_pct"]
+        sel_momentum = next(
+            (float(c.get("momentum_20d", 0)) for c in sector_candidates
+             if c["code"] == selected["selected_code"]), None)
+        if sel_momentum is not None and sel_momentum < guard:
+            logger.warning("风控拦截 [%s]: %s 近20日动量 %.1f%% 低于阈值 %.0f%%",
+                           sector, selected["selected_code"], sel_momentum, guard)
+            with _db_conn() as conn:
+                conn.execute(
+                    "INSERT INTO recommend_log "
+                    "(recommend_date, code, name, rank, score, combo, regime, buy_reason, status) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'REJECT')",
+                    (date_str, selected["selected_code"], selected["selected_name"],
+                     0, 0.0, 0.0, llm_regime,
+                     f"风控拦截: 20日动量{sel_momentum:.1f}% 低于阈值{guard:.0f}%"),
+                )
+            logger.info("风控拦截已入库: %s", selected["selected_code"])
+            continue
+
+        sel_features = next(
+            (c for c in sector_candidates if c["code"] == selected["selected_code"]), {})
+        feature_snapshot = json.dumps({
+            "sector": sel_features.get("sector", ""),
+            "momentum_20d": sel_features.get("momentum_20d", 0),
+            "hurst_60d": sel_features.get("hurst_60d", 0),
+            "calmar": sel_features.get("calmar", 0),
+            "sector_rel_momentum": sel_features.get("sector_rel_momentum", 0),
+            "sector_rel_calmar": sel_features.get("sector_rel_calmar", 0),
+        }, ensure_ascii=False)
+
         with _db_conn() as conn:
-            conn.execute(
-                "INSERT INTO recommend_log "
-                "(recommend_date, code, name, rank, score, combo, regime, buy_reason, status) "
-                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'REJECT')",
-                 (date_str, selected["selected_code"], selected["selected_name"],
-                  0, 0.0, 0.0, llm_regime,
-                 f"风控拦截: 20日动量{sel_momentum:.1f}% 低于阈值{guard:.0f}%"),
-            )
-        logger.info("风控拦截已入库: %s", selected["selected_code"])
-        return
+            new_rows = fetch_fund_nav_incremental(selected["selected_code"], conn)
+            if new_rows:
+                conn.commit()
+                logger.info("净值同步: %s 新增 %d 条", selected["selected_code"], new_rows)
 
-    # 特征快照（演化回看用）
-    sel_features = next(
-        (c for c in finalists if c["code"] == selected["selected_code"]), {})
-    feature_snapshot = json.dumps({
-        "sector": sel_features.get("sector", ""),
-        "momentum_20d": sel_features.get("momentum_20d", 0),
-        "hurst_60d": sel_features.get("hurst_60d", 0),
-        "calmar": sel_features.get("calmar", 0),
-        "sector_rel_momentum": sel_features.get("sector_rel_momentum", 0),
-        "sector_rel_calmar": sel_features.get("sector_rel_calmar", 0),
-    }, ensure_ascii=False)
+        saved_id = _save_recommendation(
+            date_str, selected, sector_candidates, vetoed, llm_regime, feature_snapshot,
+            clear=(idx == 0),
+        )
+        _write_sector_selection(date_str, ctx, saved_id)
+        count += 1
 
-    # 同步选中基金的净值（确保 entry_nav 能取到当日盘后数据）
-    with _db_conn() as conn:
-        new_rows = fetch_fund_nav_incremental(selected["selected_code"], conn)
-        if new_rows:
-            conn.commit()
-            logger.info("净值同步: %s 新增 %d 条", selected["selected_code"], new_rows)
-
-    _save_recommendation(date_str, selected, finalists, vetoed, llm_regime, feature_snapshot)
-
-    # 记录赛道选择（关联推荐日志，供进化闭环分析）
-    _write_sector_selection(date_str, ctx, json.loads(feature_snapshot))
-
-    logger.info("推荐流程完成")
+    logger.info("推荐流程完成: 赛道 %d 个 → 入库 %d 条",
+                len(target_sectors), count)
 
 
 def _write_sector_selection(date_str: str, ctx: MacroContext,
-                            sel_features: dict) -> None:
+                            log_id: int, sector_name: str | None = None) -> None:
     with _db_conn() as conn:
-        log_id = conn.execute(
-            "SELECT id FROM recommend_log WHERE recommend_date = ? ORDER BY id DESC LIMIT 1",
-            (date_str,),
-        ).fetchone()
-        log_id = log_id[0] if log_id else None
-        # ponytail: 每天只保留一条赛道选择，先清旧再写入避免重复累积
-        conn.execute("DELETE FROM sector_selections WHERE date = ?", (date_str,))
         conn.execute(
             "INSERT INTO sector_selections (date, recommend_log_id, recommended_sectors, "
             "risk_sectors, sector_reasoning, regime_label) VALUES (?, ?, ?, ?, ?, ?)",

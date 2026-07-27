@@ -240,25 +240,30 @@ async def index(request: Request):
     today = datetime.now().strftime("%Y-%m-%d")
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    # 今日推荐（最新一条 recommend_log）
-    rec = _q1(
+    # 今日推荐（最新 2 条 recommend_log）
+    recs = _qall(
         "SELECT r.id, r.code, fb.name, r.score, r.combo, r.regime, r.buy_reason, r.status, "
         "r.recommend_date, r.return_rate, fb.type "
         "FROM recommend_log r LEFT JOIN fund_basic fb ON fb.code = r.code "
-        "ORDER BY r.id DESC LIMIT 1"
+        "ORDER BY r.id DESC LIMIT 2"
     )
 
     latest = None
     latest_rec_id = None
-    if rec:
-        latest_rec_id = rec[0]
+    latest_list: list[dict] = []
+    for rec in recs:
+        if latest_rec_id is None:
+            latest_rec_id = rec[0]
         raw_reason = (rec[6] or "").split(" | 否决记录:")[0].strip()
-        latest = {
+        entry = {
             "code": rec[1], "name": rec[2], "score": _display_score(rec[4], rec[3]),
             "regime": rec[5] or "NEUTRAL", "reason": raw_reason,
             "status": rec[7], "date": rec[8] or today, "return": rec[9],
             "type": rec[10] or "",
         }
+        latest_list.append(entry)
+        if latest is None:
+            latest = entry
 
     # 宏观摘要（从 macro_news 取管线已入库的快讯，与 LLM 分析数据源一致）
     news_items = ["暂无快讯"]
@@ -572,6 +577,7 @@ async def index(request: Request):
     max_outflow = max((abs(s.get("flow", 0) or 0) for s in flow_outflows), default=0)
     return templates.TemplateResponse(request, "index.html", {
         "latest": latest,
+        "latest_list": latest_list,
         "latest_rec_id": latest_rec_id or 0,
         "macro": macro_data,
         "candidates": candidate_list,
@@ -605,30 +611,6 @@ async def index(request: Request):
         "max_inflow": max_inflow,
         "max_outflow": max_outflow,
     })
-
-
-@app.get("/api/realtime-news")
-async def realtime_news():
-    from fetch import fetch as _fetch
-    import time as _time, hashlib as _hashlib
-    _CLS_API = "https://www.cls.cn/v1/roll/get_roll_list"
-    def _sign(p):
-        s = "&".join(f"{k}={p[k]}" for k in sorted(p.keys()))
-        return _hashlib.md5(_hashlib.sha1(s.encode()).hexdigest().encode()).hexdigest()
-    try:
-        ts = int(_time.time())
-        params = {
-            "app": "CailianpressWeb", "os": "web", "sv": "8.4.6",
-            "refresh_type": "1", "rn": "20", "last_time": str(ts), "category": "",
-        }
-        params["sign"] = _sign(params)
-        url = f"{_CLS_API}?{'&'.join(f'{k}={params[k]}' for k in params)}"
-        data = _fetch(url).json()
-        items = data.get("data", {}).get("roll_data", [])
-        return items
-    except Exception as e:
-        logger.warning("实时快讯接口拉取失败: %s", e)
-        return {"error": "fetch failed"}
 
 
 @app.get("/api/logs")
