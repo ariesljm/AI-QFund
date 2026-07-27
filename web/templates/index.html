@@ -585,6 +585,7 @@ LIVE LOG STREAM / 系统实时日志
 function _esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 var logInterval = null;
 var _logCount = 0;
+var _fetching = false;
 var FUND_SKEL = '<div class="space-y-md"><div class="skel h-6 w-3/4"></div><div class="skel h-4 w-1/2"></div><div class="skel h-4 w-full"></div><div class="skel h-4 w-5/6"></div><div class="skel h-20 w-full"></div><div class="skel h-40 w-full"></div></div>';
 
 function _level(str) {
@@ -617,6 +618,7 @@ function clearLogs() {
 function openModal(id) {
     document.getElementById(id).classList.remove('hidden');
     if (id === 'systemLogModal') {
+        if (logInterval) { clearInterval(logInterval); logInterval = null; }
         _logCount = 0;
         document.getElementById('logLines').innerHTML = '';
         fetchLogs();
@@ -761,14 +763,16 @@ window.onclick = function(event) {
 }
 
 async function fetchLogs() {
+    if (_fetching) return;
+    _fetching = true;
     var container = document.getElementById('logContainer');
     var linesEl = document.getElementById('logLines');
-    if (!container || !linesEl) return;
+    if (!container || !linesEl) { _fetching = false; return; }
     var atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
     try {
         var r = await fetch('/api/logs?lines=200&start=' + _logCount);
         var data = await r.json();
-        if (!data.lines || !data.lines.length) return;
+        if (!data.lines || !data.lines.length) { _fetching = false; return; }
         for (var i = 0; i < data.lines.length; i++) {
             var l = data.lines[i];
             var lvl = _level(l);
@@ -800,6 +804,7 @@ async function fetchLogs() {
     } catch(e) {
         console.error('日志加载失败:', e);
     }
+    _fetching = false;
 }
 
 function val(id) { return document.getElementById(id).value; }
