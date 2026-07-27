@@ -1,6 +1,5 @@
 """管线编排模块：数据基座 → 推荐 → 监控 → 进化(每月1号)"""
 
-import logging
 import time
 import uuid
 from datetime import datetime

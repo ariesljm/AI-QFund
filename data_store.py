@@ -1,6 +1,5 @@
 """数据库持久化层：连接管理、迁移、数据写入。"""
 
-import logging
 from log_utils import get_logger
 import sqlite3
 from contextlib import contextmanager
@@ -8,8 +7,6 @@ from contextlib import contextmanager
 _schema_warned = False
 from datetime import datetime
 from pathlib import Path
-
-import log_utils  # noqa: F401
 
 logger = get_logger("data_store")
 

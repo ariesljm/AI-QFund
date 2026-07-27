@@ -7,12 +7,13 @@
 使用 push2ex 替代方案获取行业板块涨跌幅数据。
 """
 
-import json, os
+import os
+import urllib3
 import urllib3
 urllib3.disable_warnings()
 
 import requests
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from log_utils import get_logger
 
 logger = get_logger(__name__)

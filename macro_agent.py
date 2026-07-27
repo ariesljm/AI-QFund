@@ -234,9 +234,12 @@ def _fetch_news(date_str: str) -> dict:
     with _db_conn() as conn:
         if top_gainers or top_losers:
             conn.execute(
-                "INSERT OR REPLACE INTO macro_news "
+                "INSERT INTO macro_news "
                 "(date, news_summary, top_gainers, top_losers, etf_net_flow) "
-                "VALUES (?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(date) DO UPDATE SET "
+                "news_summary=excluded.news_summary, top_gainers=excluded.top_gainers, "
+                "top_losers=excluded.top_losers, etf_net_flow=excluded.etf_net_flow",
                 (date_str, news, top_gainers, top_losers, etf_net_flow),
             )
     logger.info("快讯入库: 领涨[%s] 领跌[%s] 新闻%d字 cls=%d条",
@@ -279,8 +282,9 @@ def _fetch_flow(date_str: str) -> dict:
         ]
         with _db_conn() as conn:
             conn.execute(
-                "UPDATE macro_news SET flow_json = ? WHERE date = ?",
-                (json.dumps(result, ensure_ascii=False), date_str),
+                "INSERT INTO macro_news (date, flow_json) VALUES (?, ?) "
+                "ON CONFLICT(date) DO UPDATE SET flow_json = excluded.flow_json",
+                (date_str, json.dumps(result, ensure_ascii=False)),
             )
         logger.info("资金流已获取: API返回%d条, 筛选后申万行业%d个", len(allbk), len(sectors))
     except Exception as e:

@@ -487,10 +487,6 @@ def rank_funds(model: lgb.Booster) -> list[dict]:
     guard = cfg["momentum_guard_pct"]
     with _db_conn() as conn:
         rows = conn.execute(
-            "SELECT ff.code, fb.name, ff.regime, "
-            f"{', '.join('ff.' + c for c in FEATURE_COLS)} "
-            "FROM fund_features ff "
-            "JOIN fund_basic fb ON fb.code = ff.code "
             "SELECT ff.code, fb.name, ff.regime, ff.rbsa_industry_1, ff.rbsa_weight_1, "
             f"{', '.join('ff.' + c for c in FEATURE_COLS)} "
             "FROM fund_features ff "
@@ -843,7 +839,7 @@ def run_recommendation(retrain: bool = False, force: bool = False) -> None:
     logger.info("=== LLM 宏观分析 + 选赛道 ===")
     ctx = build_macro_context(date_str, force=force)
     llm_regime = ctx.regime_label.upper()
-    llm_regime = llm_regime if llm_regime in ("BULL", "BEAR") else "NEUTRAL"
+    llm_regime = "BULL" if llm_regime.startswith("BULL") else "BEAR" if llm_regime.startswith("BEAR") else "NEUTRAL"
     logger.info("选定赛道: %s | 回避: %s | 大盘: %s",
                 ctx.recommended_sectors, ctx.risk_sectors, ctx.regime_label)
 

@@ -14,7 +14,7 @@ import lightgbm as lgb
 from data_store import _db_conn
 from recommend import (
     _features_from_window, FEATURE_COLS, _FORWARD_WINDOW,
-    _load_ranking_cfg, _get_market_regime, _regime_combo_weights,
+    _load_ranking_cfg, _regime_combo_weights,
 )
 
 logger = logging.getLogger("backtest")

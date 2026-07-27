@@ -1,10 +1,8 @@
 """特征计算模块：Hurst、动量、卡玛、RBSA、大盘状态机。"""
 
-import logging
 from log_utils import get_logger
 import sqlite3
 import time
-from datetime import datetime
 
 import numpy as np
 
