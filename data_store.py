@@ -203,6 +203,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 def _save_settings(settings: dict) -> bool:
     import re
+    toml_ok = False
     try:
         text = SETTINGS_PATH.read_text(encoding="utf-8")
         for section, values in settings.items():
@@ -217,8 +218,23 @@ def _save_settings(settings: dict) -> bool:
                     line = f'{key} = "{value}"'
                 text = re.sub(rf'^{re.escape(key)}\s*=.*$', line, text, flags=re.MULTILINE)
         SETTINGS_PATH.write_text(text, encoding="utf-8")
+        toml_ok = True
     except OSError:
-        db_path = Path("data/qfund.db")
+        pass
+
+    db_path = Path("data/qfund.db")
+    if toml_ok:
+        # TOML 写入成功，清除 meta 表中旧的覆盖项，防止 shadow TOML 新值
+        if db_path.exists():
+            try:
+                conn = sqlite3.connect(str(db_path))
+                conn.execute("DELETE FROM meta WHERE key LIKE 'settings:%'")
+                conn.commit()
+                conn.close()
+            except Exception:
+                pass
+    else:
+        # TOML 不可写，回退写入 DB meta 表
         if not db_path.exists():
             raise
         conn = sqlite3.connect(str(db_path))
