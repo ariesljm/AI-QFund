@@ -771,6 +771,24 @@ async function fetchFundDetail(code) {
             '<h3 class="font-label-sm text-[14px] uppercase tracking-widest font-black mb-xs">' + _esc(f.name) + '</h3>' +
             '<p class="text-[12px] text-on-surface-variant">' + _esc(f.type || '--') + ' | ' + _esc(f.first_date || '--') + ' | 状态: <span class="font-black">' + _esc(f.status) + '</span></p>' +
             '</div>' +
+            (d.current_signal ? (
+                '<div class="border-b border-outline-variant pb-md">' +
+                '<h4 class="font-label-sm text-[13px] uppercase tracking-widest font-black mb-sm border-b border-primary pb-1">当前信号 / SIGNAL</h4>' +
+                '<div class="flex items-center gap-sm mb-xs">' +
+                '<span class="px-2 py-0.5 text-[11px] font-black uppercase border-2 ' + (
+                    d.current_signal.signal === 'HOLD' ? 'border-up text-up' :
+                    d.current_signal.signal === 'WARNING' ? 'border-down text-down' :
+                    d.current_signal.signal === 'BUY_MORE' ? 'border-up text-up' :
+                    'border-outline text-on-surface-variant'
+                ) + '">' + _esc(d.current_signal.signal) + '</span>' +
+                '<span class="text-[12px] text-on-surface-variant font-bold">' + _esc(d.current_signal.logic_verdict) + '</span>' +
+                '<span class="text-[11px] text-on-surface-variant">' + _esc(d.current_signal.date) + '</span>' +
+                '</div>' +
+                '<p class="text-[13px] font-bold leading-relaxed">' + _esc(d.current_signal.reason || '无详细原因') + '</p>' +
+                (d.current_signal.sector_risk ? '<p class="text-[12px] text-down mt-1">⚠ 赛道风险</p>' : '') +
+                (d.current_signal.holding_risk ? '<p class="text-[12px] text-down mt-1">⚠ 持仓风险</p>' : '') +
+                '</div>'
+            ) : '' ) +
             '<div>' +
             '<h4 class="font-label-sm text-[13px] uppercase tracking-widest font-black mb-sm border-b border-primary pb-1">推荐理由</h4>' +
             '<p class="text-[13px] font-bold leading-relaxed whitespace-pre-wrap">' + _esc(f.buy_reason || '暂无推荐理由') + '</p>' +

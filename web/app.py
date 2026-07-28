@@ -741,10 +741,34 @@ async def get_fund_detail(code: str):
         {"date": r[0], "nav": round(r[1], 4) if r[1] else None} for r in nav_rows
     ]
 
+    signal = _q1(
+        "SELECT signal, logic_verdict, sector_risk, holding_risk, detail, date "
+        "FROM monitor_events WHERE code=? ORDER BY date DESC LIMIT 1",
+        (code,),
+    )
+    current_signal = None
+    if signal:
+        detail = signal[4] or ""
+        try:
+            import json
+            detail_obj = json.loads(detail)
+            reason = detail_obj.get("reason", detail)
+        except Exception:
+            reason = detail
+        current_signal = {
+            "signal": signal[0],
+            "logic_verdict": signal[1] or "",
+            "sector_risk": bool(signal[2]),
+            "holding_risk": bool(signal[3]),
+            "reason": reason,
+            "date": signal[5] or "",
+        }
+
     return {
         "fund": fund_info,
         "top_holdings": top_holdings,
         "nav_data": nav_data,
+        "current_signal": current_signal,
     }
 
 
