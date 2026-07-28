@@ -241,7 +241,7 @@ async def index(request: Request):
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     # 今日推荐（最新 2 条 recommend_log）
-    recs = _qall(
+    recs = _q(
         "SELECT r.id, r.code, fb.name, r.score, r.combo, r.regime, r.buy_reason, r.status, "
         "r.recommend_date, r.return_rate, fb.type "
         "FROM recommend_log r LEFT JOIN fund_basic fb ON fb.code = r.code "
