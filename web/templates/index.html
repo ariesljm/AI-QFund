@@ -445,9 +445,9 @@ FLASH / 实时快讯
 <td class="px-sm md:px-lg py-3 md:py-5 whitespace-nowrap">
 {% if c.status == 'HOLD' or c.status == 'PASS' %}
 <span class="border-2 border-up text-up px-2 md:px-3 py-0.5 md:py-1 text-[11px] md:text-[14px] font-black uppercase">持有</span>
-{% elif c.status == 'ADD' %}
+{% elif c.status == 'ADD' or c.status == 'BUY_MORE' %}
 <span class="border-2 border-primary text-primary px-2 md:px-3 py-0.5 md:py-1 text-[11px] md:text-[14px] font-black uppercase">加仓</span>
-{% elif c.status == 'CAUTION' %}
+{% elif c.status == 'CAUTION' or c.status == 'WARNING' %}
 <span class="border-2 border-tertiary text-tertiary px-2 md:px-3 py-0.5 md:py-1 text-[11px] md:text-[14px] font-black uppercase">警惕</span>
 {% elif c.status == 'EXIT' or c.status == 'REJECT' %}
 <span class="border-2 border-down text-down px-2 md:px-3 py-0.5 md:py-1 text-[11px] md:text-[14px] font-black uppercase">离场</span>
@@ -777,10 +777,16 @@ async function fetchFundDetail(code) {
                 '<div class="flex items-center gap-sm mb-xs">' +
                 '<span class="px-2 py-0.5 text-[11px] font-black uppercase border-2 ' + (
                     d.current_signal.signal === 'HOLD' ? 'border-up text-up' :
-                    d.current_signal.signal === 'WARNING' ? 'border-down text-down' :
+                    d.current_signal.signal === 'WARNING' ? 'border-tertiary text-tertiary' :
                     d.current_signal.signal === 'BUY_MORE' ? 'border-up text-up' :
                     'border-outline text-on-surface-variant'
-                ) + '">' + _esc(d.current_signal.signal) + '</span>' +
+                ) + '">' + (
+                    d.current_signal.signal === 'HOLD' ? '持有' :
+                    d.current_signal.signal === 'WARNING' ? '警惕' :
+                    d.current_signal.signal === 'BUY_MORE' ? '加仓' :
+                    d.current_signal.signal === 'EXIT' ? '离场' :
+                    _esc(d.current_signal.signal)
+                ) + '</span>' +
                 '<span class="text-[12px] text-on-surface-variant font-bold">' + _esc(d.current_signal.logic_verdict) + '</span>' +
                 '<span class="text-[11px] text-on-surface-variant">' + _esc(d.current_signal.date) + '</span>' +
                 '</div>' +

@@ -53,14 +53,16 @@ def build_macro_context(date_str: str | None = None, force: bool = False) -> Mac
     _ensure_column()
     date_str = date_str or datetime.now().strftime("%Y-%m-%d")
 
-    flow = _fetch_flow(date_str)  # 资金流高频数据，始终刷新
+    sectors = _load_board_sectors()
+
+    flow = _fetch_flow(date_str, sectors)
 
     if not force:
         cached = _load_cache(date_str)
         if cached is not None:
             return cached
 
-    news = _fetch_news(date_str)
+    news = _fetch_news(date_str, sectors)
 
     ctx = _suggest_sectors(date_str, news, flow)
     _save_cache(ctx)
