@@ -620,7 +620,7 @@ def _llm_final_pick(candidates: list[dict], ctx: MacroContext, insights: list) -
     prompt = final_pick_prompt(candidates, ctx, insights)
     system_prompt = final_pick_system_prompt()
 
-    content = _call_llm(prompt, system_prompt=system_prompt, max_tokens=4096)
+    content = call_llm(prompt, system_prompt=system_prompt, max_tokens=4096)
 
     if content is None:
         raise RuntimeError("LLM最终定论调用失败，无法完成基金推荐")

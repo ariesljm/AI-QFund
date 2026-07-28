@@ -101,11 +101,13 @@ _console = logging.StreamHandler()
 _console.setFormatter(ContextFormatter())
 _console.setLevel(_console_level)
 
+logging.basicConfig(
+    handlers=[_console],
+    level=min(_file_level, _console_level),
+    force=True,
+)
 root = logging.getLogger()
-root.handlers.clear()
 root.addHandler(_json_handler)
-root.addHandler(_console)
-root.setLevel(min(_file_level, _console_level))
 
 
 def get_logger(name: str) -> StructLogger:
