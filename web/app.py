@@ -463,7 +463,7 @@ async def index(request: Request):
     if latest:
         feat = _q1(
             "SELECT hurst_60d, momentum_20d, calmar, downside_vol, capture_up, capture_down, "
-            "bias_60d, rbsa_industry_1, rbsa_weight_1, etf_flow_slope_5d "
+            "bias_60d, rbsa_industry_1, rbsa_weight_1 "
             "FROM fund_features WHERE code=? ORDER BY date DESC LIMIT 1",
             (latest["code"],),
         )
@@ -477,7 +477,6 @@ async def index(request: Request):
                 "bias": round(feat[6] or 0, 2) if feat[6] is not None else None,
                 "top_industry": feat[7] or "",
                 "top_industry_weight": round(feat[8] or 0, 1),
-                "etf_flow_slope": round(feat[9] or 0, 4) if feat[9] is not None else None,
             }
 
     # 持仓透视
