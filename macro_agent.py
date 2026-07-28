@@ -12,7 +12,8 @@ import time as _time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 
-from data_foundation import _call_llm
+from llm import call_llm
+from prompts import sector_selection_prompt, sector_selection_system_prompt
 from data_store import _db_conn
 from fetch import fetch as _fetch
 from sector_api import is_industry_code, is_industry_name
@@ -20,7 +21,6 @@ from sector_api import is_industry_code, is_industry_name
 logger = get_logger("macro_agent")
 
 _BOARD_URL = "https://push2ex.eastmoney.com/getAllBKChanges?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wzchanges&pageindex=0&pagesize=500"
-_FLOW_URL = "https://push2ex.eastmoney.com/getAllBKChanges?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wzchanges&pageindex=0&pagesize=500"
 _KUAXUN_URL = ("https://search-api-web.eastmoney.com/search/jsonp?cb=jQuery"
                "&param=%7B%22uid%22%3A%22%22%2C%22keyword%22%3A%22%E5%9F%BA%E9%87%91%22"
                "%2C%22type%22%3A%5B%22cmsArticleWebOld%22%5D%2C%22client%22%3A%22web%22"
@@ -172,7 +172,7 @@ def _fetch_cls() -> tuple[str, list[dict]]:
 _PSEUDO_PREFIXES = ("昨日", "当日", "今日")
 
 
-def _fake_sector(name: str) -> bool:
+def _is_pseudo_sector(name: str) -> bool:
     """排除伪板块：含下划线的系统分类，或以 昨日/当日/今日 开头的技术形态分类"""
     if not name:
         return True
@@ -181,17 +181,25 @@ def _fake_sector(name: str) -> bool:
     return name.startswith(_PSEUDO_PREFIXES)
 
 
+def _load_board_sectors() -> list[dict]:
+    """加载东方财富板块行情数据，返回过滤后的有效行业板块列表。"""
+    txt = _http_get(_BOARD_URL)
+    data = json.loads(txt)
+    allbk = (data.get("data") or {}).get("allbk", [])
+    return [
+        b for b in allbk
+        if not _is_pseudo_sector(b.get('n', '') or '')
+        and is_industry_code(b.get('c', '') or '')
+        and is_industry_name(b.get('n', '') or '')
+    ]
+
+
 def _fetch_news(date_str: str) -> dict:
     """抓取行业涨跌排行 + 东财快讯 + 财联社电报，写入 macro_news 原始字段。"""
     top_gainers = top_losers = etf_net_flow = ""
     try:
-        txt = _http_get(_BOARD_URL)
-        data = json.loads(txt)
-        allbk = (data.get("data") or {}).get("allbk", [])
-        if allbk:
-            sectors = [b for b in allbk if not _fake_sector(b.get('n', '') or '')
-                       and is_industry_code(b.get('c', '') or '')
-                       and is_industry_name(b.get('n', '') or '')]
+        sectors = _load_board_sectors()
+        if sectors:
             sorted_by_chg = sorted(sectors, key=lambda x: float(x.get("u", 0) or 0), reverse=True)
             gainers = sorted_by_chg[:9]
             losers = sorted_by_chg[-5:][::-1]
@@ -255,15 +263,9 @@ def _fetch_flow(date_str: str) -> dict:
     """抓取行业板块资金流排名（主力净流入/涨跌）。"""
     result = {"summary": ""}
     try:
-        txt = _http_get(_FLOW_URL)
-        data = json.loads(txt)
-        allbk = (data.get("data") or {}).get("allbk", [])
-        if not allbk:
+        sectors = _load_board_sectors()
+        if not sectors:
             return result
-
-        sectors = [b for b in allbk if not _fake_sector(b.get('n', '') or '')
-                   and is_industry_code(b.get('c', '') or '')
-                   and is_industry_name(b.get('n', '') or '')]
         sorted_by_flow = sorted(sectors, key=lambda x: float(x.get("zjl", 0) or 0), reverse=True)
         lines = []
         for d in sorted_by_flow[:10]:
@@ -286,7 +288,7 @@ def _fetch_flow(date_str: str) -> dict:
                 "ON CONFLICT(date) DO UPDATE SET flow_json = excluded.flow_json",
                 (date_str, json.dumps(result, ensure_ascii=False)),
             )
-        logger.info("资金流已获取: API返回%d条, 筛选后申万行业%d个", len(allbk), len(sectors))
+        logger.info("资金流已获取: 筛选后申万行业%d个", len(sectors))
     except Exception as e:
         logger.warning("资金流抓取失败: %s", str(e)[:120], exc_info=True)
     return result
@@ -324,48 +326,22 @@ def _load_available_sectors() -> list[str]:
 def _build_sector_prompt(date_str: str, news: dict, flow: dict) -> str:
     lessons = _load_sector_insights()
     available = _load_available_sectors()
-    lines = [
-        f"你是专业的宏观分析师。基于 {date_str} 的多源数据，"
-        "从【可选赛道清单】中挑选未来短期最值得关注的3-5个赛道，以及需要回避的赛道。",
-        "注意：你只能从【可选赛道清单】中选择行业，不要选清单之外的行业名。",
-        "",
-        f"【可选赛道清单】（共{len(available)}个，只有这些行业有可投基金）：",
-        "、".join(sorted(available)),
-        "",
-        "【行业板块排行】",
-        f"领涨行业: {news.get('top_gainers', '无数据')}",
-        f"领跌行业: {news.get('top_losers', '无数据')}",
-        f"主力资金净流入: {news.get('etf_net_flow', '无数据')}",
-        "",
-        "【财经新闻】",
-        news.get("summary", "无数据"),
-    ]
-    if flow:
-        lines += ["", "【资金流向】", flow.get("summary", "无数据")]
-    if lessons:
-        lines += [
-            "",
-            "【历史教训：过去类似的赛道选择失败案例，请参考以下模式避免重蹈覆辙】",
-            lessons,
-            "请在选择赛道时避开出现过以下模式问题的行业类型：",
-        ]
-    lines += [
-        "",
-        "输出以下 JSON（纯 JSON，勿用 markdown 代码块）：",
-        "{",
-        '  "recommended_sectors": ["行业1", "行业2", ...],',
-        '  "risk_sectors": ["回避行业1", ...],',
-        '  "regime_label": "bullish/bearish/neutral",',
-        '  "reasoning": "为什么选这些赛道，基于新闻中的产业动态/政策风向/资金流向"',
-        "}",
-    ]
-    return "\n".join(lines)
+    return sector_selection_prompt(
+        date_str=date_str,
+        available=available,
+        top_gainers=news.get("top_gainers", ""),
+        top_losers=news.get("top_losers", ""),
+        etf_net_flow=news.get("etf_net_flow", ""),
+        news_summary=news.get("summary", ""),
+        flow_summary=flow.get("summary"),
+        lessons=lessons or None,
+    )
 
 
 def _suggest_sectors(date_str: str, news: dict, flow: dict) -> MacroContext:
     prompt = _build_sector_prompt(date_str, news, flow)
-    system_prompt = "你是量化宏观分析师。只输出纯 JSON 对象，禁止 markdown。"
-    content = _call_llm(prompt, system_prompt=system_prompt, max_tokens=2048)
+    system_prompt = sector_selection_system_prompt()
+    content = call_llm(prompt, system_prompt=system_prompt, max_tokens=2048)
 
     cls_stocks = news.get("cls_stocks", [])
 

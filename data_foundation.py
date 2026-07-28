@@ -21,9 +21,11 @@ import numpy as np
 import requests
 
 import features as _features
-from data_store import _db_conn, _get_db, _load_settings, _meta_get, _meta_set, _save_nav_batch, save_fund_list, save_index_daily, save_holdings
+from data_store import _db_conn, _get_db, _load_settings, _meta_get, _meta_set, _save_nav_batch, save_fund_list, save_index_daily, save_holdings, _backfill_guard
 from fetch import fetch_async
 from fetch import fetch as _push2_fetch
+from fetchers.nav import async_update_nav_incremental, async_download_all_nav
+from fetchers.nav import async_update_nav_incremental, async_download_all_nav
 
 try:
     import aiohttp
@@ -289,301 +291,7 @@ def _parse_fhsp_dividend(fhsp: str | None) -> float | None:
         return None
 
 
-def _parse_lsjz_list(lsjz_list: list[dict]) -> list[dict]:
-    """解析 lsjz 接口返回的净值列表为标准格式（含分红）。"""
-    nav_list = []
-    for x in lsjz_list:
-        cum = x.get("LJJZ")
-        date = x.get("FSRQ")
-        if not date or cum in (None, ""):
-            continue
-        try:
-            cum_nav = float(cum)
-        except (ValueError, TypeError):
-            continue
-        nav_list.append({
-            "date": date,
-            "cum_nav": cum_nav,
-            "dividend": _parse_fhsp_dividend(x.get("FHSP")),
-        })
-    return nav_list
 
-
-async def _async_fetch_lsjz(
-    session: "aiohttp.ClientSession",
-    code: str,
-    lsjz_url: str,
-    start_date: str,
-    end_date: str,
-    semaphore: asyncio.Semaphore,
-) -> tuple[str, list[dict]]:
-    """异步拉取单只基金指定日期范围的净值（lsjz 接口）。
-
-    - start_date 非空：增量模式，仅取该日期之后的新数据，单页即可。
-    - start_date 为空：兜底全量模式，自动翻页拉完整历史（新基金/漏拉基金）。
-    """
-    page_size = 60
-    all_navs: list[dict] = []
-    page = 1
-    first_failed = False
-    async with semaphore:
-        while True:
-            params = {
-                "fundCode": code,
-                "pageIndex": page,
-                "pageSize": page_size,
-                "startDate": start_date,
-                "endDate": end_date,
-            }
-            try:
-                resp = await fetch_async(
-                    session, lsjz_url, params=params, timeout=15,
-                    headers=_LSJZ_HEADERS,
-                )
-                data = await resp.json(content_type=None)
-                lsjz_list = (data.get("Data") or {}).get("LSJZList") or []
-                total = data.get("TotalCount") or 0
-            except Exception as e:
-                logger.debug("基金 %s lsjz 拉取失败(第%d页): %s", code, page, str(e)[:120], exc_info=True)
-                if page == 1:
-                    first_failed = True
-                break
-
-            all_navs.extend(_parse_lsjz_list(lsjz_list))
-
-            # 增量模式（start_date 非空）：单页即够，不翻页
-            if start_date:
-                break
-            # 全量模式：翻到取完为止
-            if page * page_size >= total or not lsjz_list:
-                break
-            page += 1
-
-    return code, all_navs, first_failed
-
-
-async def async_update_nav_incremental(
-    concurrency: int = 20,
-    batch_size: int = 200,
-) -> int:
-    """真·增量更新：每只基金仅拉取本地最新日期之后的净值。
-
-    基于 lsjz 分页接口的日期范围过滤，每天运行仅下载缺失的 1-2 天，
-    相比 pingzhongdata 全量重拉，网络传输量降低两个数量级。
-
-    Returns:
-        总新增条数
-    """
-    if not HAS_AIOHTTP:
-        raise RuntimeError("需要安装 aiohttp: uv add aiohttp")
-
-    lsjz_url = _API_LSJZ_URL
-    end_date = datetime.now().strftime("%Y-%m-%d")
-
-    with _db_conn() as conn:
-        all_codes = [
-            r[0] for r in conn.execute("SELECT code FROM fund_basic WHERE is_buyable = 1").fetchall()
-        ]
-        local_max = dict(
-            conn.execute("SELECT code, MAX(date) FROM fund_nav GROUP BY code").fetchall()
-        )
-
-        # 以全局最新日期作为最新交易日基准，跳过已最新的基金
-        global_latest = conn.execute("SELECT MAX(date) FROM fund_nav").fetchone()[0]
-
-    # 构造待更新任务：(code, start_date)
-    # - 有本地数据 → start_date=本地最新，走单页增量
-    # - 无本地数据 → start_date=""，走翻页全量兜底（新基金/首次漏拉）
-    tasks_meta: list[tuple[str, str]] = []
-    incr_cnt = 0
-    full_cnt = 0
-    for code in all_codes:
-        lm = local_max.get(code)
-        if lm == global_latest:
-            continue  # 已最新，跳过
-        if lm:
-            tasks_meta.append((code, lm))  # 增量
-            incr_cnt += 1
-        else:
-            tasks_meta.append((code, ""))  # 全量兜底
-            full_cnt += 1
-
-    logger.info(
-        "真·增量：跳过已最新 %d 只，增量 %d 只，全量兜底 %d 只(无本地数据)",
-        len(all_codes) - len(tasks_meta), incr_cnt, full_cnt,
-    )
-
-    if not tasks_meta:
-        logger.info("无需增量更新")
-        return 0
-
-    semaphore = asyncio.Semaphore(concurrency)
-    connector = aiohttp.TCPConnector(limit=concurrency, ttl_dns_cache=300, enable_cleanup_closed=True)
-    total_new = 0
-    total_done = 0
-    all_failed: set[str] = set()
-    start_time = time.monotonic()
-
-    async with aiohttp.ClientSession(headers=_LSJZ_HEADERS, connector=connector) as session:
-        for i in range(0, len(tasks_meta), batch_size):
-            batch = tasks_meta[i : i + batch_size]
-            coros = [
-                _async_fetch_lsjz(session, code, lsjz_url, start, end_date, semaphore)
-                for code, start in batch
-            ]
-            results = await asyncio.gather(*coros)
-
-            batch_new = 0
-            with _db_conn() as conn:
-                for code, navs, failed in results:
-                    batch_new += _save_nav_batch(conn, code, navs)
-                    total_done += 1
-                    if failed:
-                        all_failed.add(code)
-            total_new += batch_new
-
-            elapsed = time.monotonic() - start_time
-            speed = total_done / elapsed if elapsed > 0 else 0
-            logger.info(
-                "进度 %d/%d (+%d), 速度 %.1f/s",
-                total_done, len(tasks_meta), batch_new, speed,
-            )
-
-    # 补查异步并发中失败的基金
-    if all_failed:
-        fail_rate = len(all_failed) / len(tasks_meta)
-        if fail_rate > 0.5:
-            logger.warning("净值增量失败率 %.0f%% (%d/%d)，跳过补查",
-                           fail_rate * 100, len(all_failed), len(tasks_meta))
-        else:
-            logger.info("补查 %d 只净值增量拉取失败的基金...", len(all_failed))
-            for code in all_failed:
-                try:
-                    resp = requests.get(
-                        lsjz_url,
-                        params={"fundCode": code, "pageIndex": 1, "pageSize": 60,
-                                "startDate": "", "endDate": end_date},
-                        headers=_LSJZ_HEADERS, timeout=10,
-                    )
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        lsjz_list = (data.get("Data") or {}).get("LSJZList") or []
-                        navs = _parse_lsjz_list(lsjz_list)
-                        if navs:
-                            with _db_conn() as conn:
-                                total_new += _save_nav_batch(conn, code, navs)
-                except Exception as e:
-                    logger.debug("补查基金 %s 净值增量失败: %s", code, str(e)[:120], exc_info=True)
-
-    elapsed = time.monotonic() - start_time
-    logger.info("增量更新完成: %d 条净值, 耗时 %.1f 秒", total_new, elapsed)
-    return total_new
-
-
-async def async_download_all_nav(
-    concurrency: int = 20,
-    batch_size: int = 200,
-    force_full: bool = False,
-) -> int:
-    """异步并发全量下载所有基金净值。
-
-    增量对齐策略：pingzhongdata 只能返回完整历史，无法请求增量。
-    因此优化点在于「跳过已最新的基金」——若某基金本地最新日期已达到
-    全局最新交易日，则完全跳过下载（不发起网络请求）。
-
-    Args:
-        concurrency: 并发数（建议 10-30）
-        batch_size: 每批请求数（控制内存）
-        force_full: 强制全量下载，忽略跳过逻辑（首次或数据修复时用）
-
-    Returns:
-        总新增条数
-    """
-    if not HAS_AIOHTTP:
-        raise RuntimeError("需要安装 aiohttp: uv add aiohttp")
-
-    url_template = _API_PINGZHONGDATA_URL
-
-    with _db_conn() as conn:
-        cur = conn.execute("SELECT code FROM fund_basic WHERE is_buyable = 1")
-        all_codes = [r[0] for r in cur.fetchall()]
-
-        # 增量对齐：跳过本地已是最新交易日的基金
-        if not force_full:
-            # 以全局最新净值日期作为「最新交易日」基准
-            row = conn.execute("SELECT MAX(date) FROM fund_nav").fetchone()
-            global_latest = row[0] if row and row[0] else None
-            if global_latest:
-                local_max = dict(
-                    conn.execute(
-                        "SELECT code, MAX(date) FROM fund_nav GROUP BY code"
-                    ).fetchall()
-                )
-                skipped = [c for c in all_codes if local_max.get(c) == global_latest]
-                all_codes = [c for c in all_codes if local_max.get(c) != global_latest]
-                logger.info(
-                    "增量模式：跳过 %d 只已最新(%s)，待下载 %d 只",
-                    len(skipped), global_latest, len(all_codes),
-                )
-
-    logger.info("待下载基金: %d 只, 并发数: %d", len(all_codes), concurrency)
-
-    if not all_codes:
-        logger.info("所有基金均已最新，无需下载")
-        return 0
-
-    total_new = 0
-    total_done = 0
-    all_failed: set[str] = set()
-    start_time = time.monotonic()
-
-    # 分批下载
-    for i in range(0, len(all_codes), batch_size):
-        batch = all_codes[i : i + batch_size]
-        results, failed = await _async_batch_fetch(batch, url_template, concurrency)
-        all_failed |= failed
-
-        batch_new = 0
-        with _db_conn() as conn:
-            for code, navs in results.items():
-                n = _save_nav_batch(conn, code, navs)
-                batch_new += n
-                total_done += 1
-        total_new += batch_new
-
-        elapsed = time.monotonic() - start_time
-        speed = total_done / elapsed if elapsed > 0 else 0
-        eta = (len(all_codes) - total_done) / speed if speed > 0 else 0
-        logger.info(
-            "进度 %d/%d (+%d), 速度 %.1f/s, ETA %.0fs",
-            total_done, len(all_codes), batch_new, speed, eta,
-        )
-
-    # 补查异步并发中失败的基金
-    if all_failed:
-        fail_rate = len(all_failed) / len(all_codes)
-        if fail_rate > 0.5:
-            logger.warning("净值失败率 %.0f%% (%d/%d)，疑似服务异常，跳过补查",
-                           fail_rate * 100, len(all_failed), len(all_codes))
-        else:
-            logger.info("补查 %d 只净值拉取失败的基金...", len(all_failed))
-            for code in all_failed:
-                try:
-                    resp = requests.get(
-                        url_template.format(code=code),
-                        headers=_HEADERS_ASYNC, timeout=10,
-                    )
-                    if resp.status_code == 200:
-                        navs = _parse_nav_response(resp.text, code)
-                        if navs:
-                            with _db_conn() as conn:
-                                total_new += _save_nav_batch(conn, code, navs)
-                except Exception as e:
-                    logger.debug("补查基金 %s 净值失败: %s", code, str(e)[:120], exc_info=True)
-
-    elapsed = time.monotonic() - start_time
-    logger.info("全量下载完成: %d 条净值, 耗时 %.1f 秒", total_new, elapsed)
-    return total_new
 
 
 # ========== 1.3 宏观指数获取 ==========
@@ -725,7 +433,7 @@ async def _async_fetch_holdings_one(
             charset = resp.charset or "gbk"
             try:
                 text = raw.decode(charset)
-            except (UnicodeDecodeError, LookupError):
+            except UnicodeDecodeError:
                 text = raw.decode("gbk", errors="replace")
             report_date, holdings = _parse_holdings_html(text)
             return code, report_date, holdings, False
@@ -830,37 +538,31 @@ async def async_download_all_holdings(
                 )
 
         # 补查异步并发中失败的基金
-        if all_failed:
-            fail_rate = len(all_failed) / len(all_codes)
-            if fail_rate > 0.5:
-                logger.warning("持仓失败率 %.0f%% (%d/%d)，疑似无数据而非网络问题，跳过补查",
-                               fail_rate * 100, len(all_failed), len(all_codes))
-            else:
-                logger.info("补查 %d 只持仓拉取失败的基金...", len(all_failed))
-                for code in all_failed:
-                    try:
-                        resp = requests.get(
-                            holdings_url,
-                            params={"type": "jjcc", "code": code, "topline": "10", "year": "", "month": ""},
-                            headers=_HOLDINGS_HEADERS, timeout=10,
-                        )
-                        if resp.status_code == 200:
-                            text = resp.text
-                            report_date, holdings = _parse_holdings_html(text)
-                            if holdings and report_date and report_date != local_latest.get(code):
-                                conn.executemany(
-                                    "INSERT OR REPLACE INTO fund_holdings "
-                                    "(code, report_date, stock_code, stock_name, weight) "
-                                    "VALUES (?, ?, ?, ?, ?)",
-                                    [(code, report_date, h["stock_code"], h["stock_name"], h["weight"])
-                                     for h in holdings],
-                                )
-                                total_rows += len(holdings)
-                                funds_with_holdings += 1
-                                local_latest[code] = report_date
-                    except Exception as e:
-                        logger.debug("补查基金 %s 失败: %s", code, str(e)[:120], exc_info=True)
-                conn.commit()
+        if _backfill_guard(all_failed, len(all_codes), "持仓拉取"):
+            for code in all_failed:
+                try:
+                    resp = requests.get(
+                        holdings_url,
+                        params={"type": "jjcc", "code": code, "topline": "10", "year": "", "month": ""},
+                        headers=_HOLDINGS_HEADERS, timeout=10,
+                    )
+                    if resp.status_code == 200:
+                        text = resp.text
+                        report_date, holdings = _parse_holdings_html(text)
+                        if holdings and report_date and report_date != local_latest.get(code):
+                            conn.executemany(
+                                "INSERT OR REPLACE INTO fund_holdings "
+                                "(code, report_date, stock_code, stock_name, weight) "
+                                "VALUES (?, ?, ?, ?, ?)",
+                                [(code, report_date, h["stock_code"], h["stock_name"], h["weight"])
+                                 for h in holdings],
+                            )
+                            total_rows += len(holdings)
+                            funds_with_holdings += 1
+                            local_latest[code] = report_date
+                except Exception as e:
+                    logger.debug("补查基金 %s 失败: %s", code, str(e)[:120], exc_info=True)
+            conn.commit()
 
     elapsed = time.monotonic() - start_time
     logger.info(
@@ -1036,13 +738,7 @@ def _fetch_industry_map() -> list[tuple[str, str, str]]:
 
     # 补查失败的股票（异步并发可能因限速/超时未命中）
     failed = [s for s in all_stocks if s not in results]
-    if failed:
-        fail_rate = len(failed) / len(all_stocks)
-        if fail_rate > 0.5:
-            logger.warning("行业映射失败率 %.0f%% (%d/%d)，跳过补查",
-                           fail_rate * 100, len(failed), len(all_stocks))
-        else:
-            logger.info("开始补查 %d 只...", len(failed))
+    if _backfill_guard(failed, len(all_stocks), "行业映射"):
             _headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://emweb.securities.eastmoney.com/"}
             for sc in failed:
                 for url, params in _build_candidates(sc):

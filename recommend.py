@@ -22,6 +22,8 @@ from features import calc_hurst
 from macro_agent import build_macro_context, MacroContext
 from data_store import _db_conn, _get_db
 from data_foundation import fetch_fund_nav_incremental
+from llm import call_llm
+from prompts import final_pick_prompt, final_pick_system_prompt
 
 logger = get_logger("recommend")
 
@@ -547,101 +549,9 @@ def _load_insights(conn: sqlite3.Connection) -> list[str]:
     return [r[0] for r in rows]
 
 
-def _build_final_prompt(candidates: list[dict], ctx: MacroContext, insights: list) -> str:
-    lines = [
-        "【赛道推论】",
-        ctx.sector_reasoning or "无",
-        f"推荐赛道: {', '.join(ctx.recommended_sectors) or '全市场'}",
-        f"回避赛道: {', '.join(ctx.risk_sectors) or '无'}",
-    ]
-    if insights:
-        lines += ["", "【历史教训参考（请参考以下经验避免同类失误）】"]
-        lines += [f"  - {r}" for r in insights]
-    lines += [
-        "",
-        "【宏观判定】",
-        f"大盘判定: {ctx.regime_label}",
-        "",
-        "【候选基金（赛道内排序，含重仓股与新闻匹配）】",
-    ]
-    for i, c in enumerate(candidates, 1):
-        sector = c.get("sector") or c.get("rbsa_industry_1", "")
-        lines.append(
-            f"第{i}名: {c['code']} {c['name']} | 赛道: {sector} | "
-            f"卡玛: {c['calmar']:.2f} | "
-            f"Hurst: {c['hurst_60d']:.2f} | 组合分: {c['combo']:.3f}"
-        )
-        ind_parts = []
-        for j in range(1, 4):
-            ind = c.get(f"rbsa_industry_{j}", "")
-            w = c.get(f"rbsa_weight_{j}", 0)
-            if ind and w:
-                ind_parts.append(f"{ind}({w:.1f}%)")
-        if ind_parts:
-            lines.append(f"  行业分布: {', '.join(ind_parts)}")
-        holdings = c.get("holdings", [])
-        if holdings:
-            hds = [f"{h['stock_name']}({h['industry']},权重{h['weight']:.1f}%)" for h in holdings]
-            lines.append(f"  重仓股: {', '.join(hds)}")
-        matched = c.get("matched_news", [])
-        if matched:
-            for m in matched:
-                lines.append(
-                    f"  ⚡ 新闻匹配: 持仓股 {m['stock_name']} 出现在今日新闻 "
-                    f"[等级={m['level']}] \"{m['title'][:50]}\""
-                )
-        rd = c.get("report_date")
-        months = c.get("holdings_months")
-        smm = c.get("sector_median_mom")
-        gap = c.get("mom_gap")
-        if rd and months is not None:
-            parts = [f"  持仓时效: {rd} (距今{months}个月)"]
-            fund_mom = c.get("momentum_20d", 0) or 0
-            parts.append(f"基金20日涨幅{fund_mom:+.1f}%")
-            if smm is not None and gap is not None:
-                parts.append(f"赛道同行中位数{smm:+.1f}%")
-                parts.append(f"偏离{gap:+.1f}%")
-                if abs(gap) > 5:
-                    parts.append("(走势异常)")
-            lines.append(" | ".join(parts))
-    lines += [
-        "",
-        "【任务指令】",
-        "基于以上所有信息（赛道推论、重仓股、新闻匹配、进化规则），",
-        "从候选中选出最有潜力的一只基金。重点考虑：",
-        "1. 基金重仓股与今日新闻的匹配程度（利好>利空）",
-        "2. 基金所在赛道是否被宏观定论认可",
-        "3. 赛道内相对强弱和量化指标",
-        "4. 是否重复历史教训中提到的失败模式",
-        "",
-        "【严格要求】选定理由必须：",
-        "1. 用普通投资者能看懂的中文，禁止使用任何英文术语、缩写、专业词汇",
-        "2. 禁止出现：RBSA、Hurst、Calmar、回撤、波动率、动量、Beta、Alpha等术语",
-        "3. 禁止出现类似 'RBSA行业::64.93' 这种格式",
-        "4. 必须包含：今天宏观分析的结论（大盘走势、资金流向、板块轮动）",
-        "5. 必须包含：这只基金重仓的行业和股票，以及为什么这些持仓是好的",
-        "6. 必须包含：最近有什么利好消息或政策支持这个行业",
-        "",
-        "输出要求（务必严格遵守）：",
-        "1. 只输出一个纯 JSON 对象，不要使用 markdown 代码块（禁止 ```json）。",
-        "2. 所有指标数值必须严格使用上方候选名单中提供的真实数据。",
-        "3. selected_code 必须是候选列表中真实存在的代码字符串：",
-        '{',
-        '  "selected_code": "选中的基金代码",',
-        '  "selected_name": "选中的基金名称",',
-        '  "reason": "用大白话说明推荐理由，包含今天分析结论，禁止专业术语",',
-        '  "vetoed": [',
-        '    {"code": "被否决代码", "name": "被否决名称", "reason": "否决理由"}',
-        '  ]',
-        '}',
-    ]
-    return "\n".join(lines)
-
 
 def _llm_final_pick(candidates: list[dict], ctx: MacroContext, insights: list) -> dict:
     """LLM 基于重仓股+CLS新闻匹配+持仓时效性做最终选择，返回选定基金和否决记录。"""
-    from data_foundation import _call_llm
-
     with _db_conn() as conn:
         latest_feature_date = conn.execute(
             "SELECT MAX(date) FROM fund_features"
@@ -707,8 +617,8 @@ def _llm_final_pick(candidates: list[dict], ctx: MacroContext, insights: list) -
                 c["sector_median_mom"] = None
                 c["mom_gap"] = None
 
-    prompt = _build_final_prompt(candidates, ctx, insights)
-    system_prompt = "你是量化基金推荐决策助手。必须只输出一个纯JSON对象，禁止使用markdown代码块，禁止任何前后说明文字。"
+    prompt = final_pick_prompt(candidates, ctx, insights)
+    system_prompt = final_pick_system_prompt()
 
     content = _call_llm(prompt, system_prompt=system_prompt, max_tokens=4096)
 

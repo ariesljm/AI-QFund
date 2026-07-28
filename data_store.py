@@ -4,13 +4,10 @@ from log_utils import get_logger
 import sqlite3
 from contextlib import contextmanager
 
-_schema_warned = False
 from datetime import datetime
 from pathlib import Path
 
 logger = get_logger("data_store")
-
-_MIGRATION_DONE = False
 
 DB_PATH = Path("data/qfund.db")
 SETTINGS_PATH = Path("config/settings.toml")
@@ -30,13 +27,10 @@ _ENV_OVERRIDE_MAP = {
 
 import tomllib as _tomllib
 
-_SETTINGS_CACHE: dict | None = None
-
-
 def _load_settings():
-    global _SETTINGS_CACHE
-    if _SETTINGS_CACHE is not None:
-        return _SETTINGS_CACHE
+    cached = getattr(_load_settings, '_cached', None)
+    if cached is not None:
+        return cached
     try:
         with open(SETTINGS_PATH, "rb") as f:
             settings = _tomllib.load(f)
@@ -61,7 +55,7 @@ def _load_settings():
                 settings.setdefault(section, {})[name] = json.loads(value)
     except Exception:
         pass
-    _SETTINGS_CACHE = settings
+    _load_settings._cached = settings
     return settings
 
 
@@ -79,9 +73,8 @@ def _init_schema(conn: sqlite3.Connection) -> None:
     if not schema.exists():
         schema = Path(__file__).parent / "schema.sql"
     if not schema.exists():
-        global _schema_warned
-        if not _schema_warned:
-            _schema_warned = True
+        if not getattr(_init_schema, '_warned', False):
+            _init_schema._warned = True
             logger.warning("schema.sql 未找到，跳过初始化")
         return
     conn.executescript(schema.read_text(encoding="utf-8"))
@@ -102,8 +95,7 @@ def _db_conn():
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
-    global _MIGRATION_DONE
-    if _MIGRATION_DONE:
+    if getattr(_migrate, '_done', False):
         return
 
     # recommend_log 扩展列
@@ -207,7 +199,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 conn.execute(f"ALTER TABLE fund_features ADD COLUMN {col} {typ}")
                 conn.commit()
 
-    _MIGRATION_DONE = True
+    _migrate._done = True
 
 
 def _save_settings(settings: dict) -> bool:
@@ -375,3 +367,15 @@ def save_holdings(code: str, holdings: list[dict], report_date: str) -> int:
             [(code, report_date, h["stock_code"], h["stock_name"], h["weight"]) for h in holdings],
         )
         return len(holdings)
+
+
+def _backfill_guard(failed, total, label, threshold=0.5):
+    """补查前置守卫：若失败率超阈值则跳过，否则返回 True。"""
+    if not failed:
+        return False
+    fail_rate = len(failed) / total
+    if fail_rate > threshold:
+        logger.warning("%s 补查失败率 %.0f%% (%d/%d), 跳过", label, fail_rate * 100, len(failed), total)
+        return False
+    logger.info("开始补查 %d 只%s", len(failed), label)
+    return True

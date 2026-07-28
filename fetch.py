@@ -9,7 +9,6 @@
 
 import asyncio
 import logging
-import random
 import re
 import subprocess
 import time
@@ -26,50 +25,8 @@ _PUSH2_RE = re.compile(r"(?:^|\.)push2(?:his)?\.eastmoney\.com$", re.IGNORECASE)
 
 
 def _is_push2(url: str) -> bool:
-    """判断 URL 是否属于 push2 域名族。"""
     host = urlparse(url).hostname or ""
     return bool(_PUSH2_RE.search(host))
-
-
-# ========== push2 多 host 池（请求分布 + 故障切换）==========
-
-# 东方财富存在多个 push2/push2his 解析 IP，单 host 被频控时可切备用
-_PUSH2_HOSTS = [
-    "push2.eastmoney.com",
-    "17.push2.eastmoney.com",
-    "29.push2.eastmoney.com",
-    "79.push2.eastmoney.com",
-    "91.push2.eastmoney.com",
-]
-
-_PUSH2HIS_HOSTS = [
-    "push2his.eastmoney.com",
-    "7.push2his.eastmoney.com",
-    "17.push2his.eastmoney.com",
-    "33.push2his.eastmoney.com",
-    "63.push2his.eastmoney.com",
-    "91.push2his.eastmoney.com",
-]
-
-
-def _resolve_push2_urls(url: str) -> list[str]:
-    """返回待尝试的 host URL 列表（原始 host 优先，其余打乱顺序）。"""
-    parsed = urlparse(url)
-    original_host = parsed.hostname or ""
-
-    pool = (
-        _PUSH2HIS_HOSTS if "push2his" in original_host
-        else _PUSH2_HOSTS
-    )
-    # 原始 host 优先，其余打乱做 fallback
-    others = [h for h in pool if h != original_host]
-    random.shuffle(others)
-    ordered = [original_host] + others if original_host in pool else [original_host] + pool
-
-    return [
-        url.replace(original_host, host, 1)
-        for host in ordered
-    ]
 
 
 # ========== 错误分类与重试 ==========
@@ -77,6 +34,10 @@ def _resolve_push2_urls(url: str) -> list[str]:
 _RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504}
 _MAX_RETRIES = 2
 _BASE_DELAY = 1.0
+
+
+def _retry_delay(attempt: int) -> float:
+    return _BASE_DELAY * (2 ** attempt)
 
 
 def _is_retryable(e: Exception) -> bool:
@@ -224,30 +185,9 @@ def _try_tls_paths(url: str, params: dict | None, timeout: float) -> requests.Re
 
 
 def _fetch_push2(url: str, params: dict | None = None, timeout: float = 15) -> requests.Response:
-    """push2 域名专用：速率限制 + 多 host 容错 + TLS 三级降级。
-
-    先试原始 host（三级降级），全失败则依次尝试其他 push2 host（仅 tls-client），
-    应对单 host 被频控或临时不可用场景。
-    """
+    """push2 域名专用：速率限制 + TLS 三级降级。"""
     _push2_limiter.wait_if_needed()
-    candidates = _resolve_push2_urls(url)
-
-    host_errors: list[str] = []
-    for i, host_url in enumerate(candidates):
-        try:
-            if i == 0:
-                # 原始 host：完整三级降级
-                return _try_tls_paths(host_url, params, timeout)
-            # 备用 host：仅 tls-client（降级路径大概率同因失败，不浪费时间）
-            return _fetch_tls_client(host_url, params, timeout)
-        except Exception as e:
-            host = urlparse(host_url).hostname
-            host_errors.append(f"{host}: {e}")
-            logger.debug("push2 host %s 失败: %s", host, e)
-
-    raise ConnectionError(
-        f"push2 所有 host 均失败: {'; '.join(host_errors)}"
-    )
+    return _try_tls_paths(url, params, timeout)
 
 
 def fetch(url: str, params: dict | None = None, timeout: float = 15) -> requests.Response:
@@ -267,11 +207,10 @@ def fetch(url: str, params: dict | None = None, timeout: float = 15) -> requests
             last_error = e
             if not _is_retryable(e) or attempt == _MAX_RETRIES:
                 raise
-            delay = _BASE_DELAY * (2 ** attempt)
+            delay = _retry_delay(attempt)
             logger.warning("请求失败(第%d次重试), %.1f秒后重试: %s", attempt + 1, delay, str(e)[:120], exc_info=True)
             time.sleep(delay)
 
-    # 不应到达此处，但保持类型安全
     raise RuntimeError("unreachable") from last_error
 
 
@@ -310,12 +249,12 @@ async def fetch_async(
             last_error = e
             if attempt == _MAX_RETRIES:
                 raise
-            delay = _BASE_DELAY * (2 ** attempt)
+            delay = _retry_delay(attempt)
             logger.warning("异步请求失败(第%d次重试), %.1f秒后重试: %s", attempt + 1, delay, str(e)[:120], exc_info=True)
             await asyncio.sleep(delay)
         except aiohttp.ClientResponseError as e:
             if e.status in _RETRYABLE_HTTP_CODES and attempt < _MAX_RETRIES:
-                delay = _BASE_DELAY * (2 ** attempt)
+                delay = _retry_delay(attempt)
                 logger.warning("异步请求 HTTP %d(第%d次重试), %.1f秒后重试", e.status, attempt + 1, delay)
                 await asyncio.sleep(delay)
                 continue

@@ -14,9 +14,10 @@ data/*.db-shm
 data/last_*.txt
 data/logs/
 
-# 生成文档
-docs/*.html
-docs/*.png
+# 文档 / 说明（非运行必需）
+docs/
+README.md
+AGENTS.md
 
 # 环境与密钥
 .env
@@ -31,11 +32,14 @@ config/settings.toml
 .DS_Store
 Thumbs.db
 
+# CI / CD（非运行必需）
+.github/
+
 # opencode（agent skills 与配置，非运行时）
 .opencode/
 
 # 测试
 test_basic.py
 
-# 模型文件
+# 模型文件（运行时生成）
 models/

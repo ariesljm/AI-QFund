@@ -173,7 +173,7 @@ def calc_all_features(batch_commit: int = 500) -> int:
             regime = "BULL" if idx_row[0] > idx_row[1] else "BEAR"
         logger.info("大盘状态机: %s (close=%s, ma60=%s)", regime,
                      idx_row[0] if idx_row else None, idx_row[1] if idx_row else None)
-        local_feat = dict(
+        feature_dates = dict(
             conn.execute("SELECT code, date FROM fund_features").fetchall()
         )
         nav_latest = dict(
@@ -191,7 +191,7 @@ def calc_all_features(batch_commit: int = 500) -> int:
                 holdings_need_rbsa.add(c)
         skip_codes = {
             c for c in all_codes
-            if c in local_feat and c in nav_latest and local_feat[c] >= nav_latest[c]
+            if c in feature_dates and c in nav_latest and feature_dates[c] >= nav_latest[c]
             and c not in holdings_need_rbsa
         }
         logger.info(

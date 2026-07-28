@@ -195,47 +195,11 @@ def _collect_cases(month: str) -> tuple[list[dict], list[dict], list[dict]]:
 
 
 def _batch_llm_analyze(successes: list, failures: list, neutrals: list | None = None) -> list[dict]:
-    """LLM 对比成功/失败/中性案例，提取系统性洞察。"""
-    from data_foundation import _call_llm
-
     if neutrals is None:
         neutrals = []
+    prompt = evolution_analysis_prompt(successes, failures, neutrals)
 
-    prompt = "你是基金投资策略的系统优化架构师。\n\n"
-    prompt += "成功案例:\n"
-    for i, s in enumerate(successes, 1):
-        sig = s.get("signal", "")
-        trig = s.get("signal_triggers", {})
-        logic = s.get("logic", {})
-        prompt += (f"  {i}. 赛道:{s['sectors']} | 基金:{s['fund']} | "
-                   f"大盘:{s['regime']} | 结果:{s['outcome']} 说明:{s['note']}\n"
-                   f"  推理:{s['reasoning']} | 信号:{sig} | 触发:{trig} | 逻辑:{logic}\n")
-    prompt += "\n失败案例:\n"
-    for i, f in enumerate(failures, 1):
-        sig = f.get("signal", "")
-        trig = f.get("signal_triggers", {})
-        logic = f.get("logic", {})
-        prompt += (f"  {i}. 赛道:{f['sectors']} | 基金:{f['fund']} | "
-                   f"大盘:{f['regime']} | 结果:{f['outcome']} 说明:{f['note']}\n"
-                   f"  推理:{f['reasoning']} | 信号:{sig} | 触发:{trig} | 逻辑:{logic}\n")
-    if neutrals:
-        prompt += "\n中性案例（微利/微亏，信号不明朗）:\n"
-        for i, n in enumerate(neutrals, 1):
-            sig = n.get("signal", "")
-            trig = n.get("signal_triggers", {})
-            logic = n.get("logic", {})
-            prompt += (f"  {i}. 赛道:{n['sectors']} | 基金:{n['fund']} | "
-                       f"大盘:{n['regime']} | 结果:{n['outcome']} 说明:{n['note']}\n"
-                       f"  推理:{n['reasoning']} | 信号:{sig} | 触发:{trig} | 逻辑:{logic}\n")
-    prompt += (
-        "\n对比成功和失败案例，提取 3-5 条可操作的洞察。每条洞察应："
-        "\n1. 具体到量化条件或模式特征"
-        "\n2. 可被推荐/监控模块执行"
-        "\n3. 标注洞察类型: sector(赛道选择)/position(基金选择)/timing(时机)/macro(宏观)"
-        "\n输出 JSON 数组: [{\"insight\": \"...\", \"type\": \"sector/position/timing/macro\"}]"
-    )
-
-    content = _call_llm(prompt, temperature=0.3, max_tokens=1536)
+    content = call_llm(prompt, temperature=0.3, max_tokens=1536)
     if content is None:
         logger.warning("LLM 不可用，跳过大分析")
         return []

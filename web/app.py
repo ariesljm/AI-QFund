@@ -25,34 +25,35 @@ logger = logging.getLogger("web")
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
-_last_run_date: str | None = None
-_pipeline_status: dict = {"state": "idle", "message": ""}
-_pipeline_logs: collections.deque = collections.deque(maxlen=200)
+class _PipelineState:
+    """管线运行时状态封装，避免模块级可变全局变量。"""
+
+    def __init__(self):
+        self.status: dict = {"state": "idle", "message": ""}
+        self.logs: collections.deque = collections.deque(maxlen=200)
+        self.last_run_date: str | None = None
+
+    def add_log(self, msg: str) -> None:
+        now = datetime.now().strftime("%H:%M:%S")
+        line = f"{now} [pipeline] {msg}"
+        self.logs.append(line)
+        print(line, file=__import__("sys").stderr, flush=True)
+
+
+_pipeline = _PipelineState()
 
 
 class _PipelineLogHandler(logging.Handler):
-    """将管线执行期间的日志捕获到内存缓冲区。"""
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            _pipeline_logs.append(self.format(record))
+            _pipeline.logs.append(self.format(record))
         except Exception:
             pass
 
 
-def _pipeline_log(msg: str) -> None:
-    """写入管线日志到内存缓冲区 + stderr。"""
-    import sys
-    now = datetime.now().strftime("%H:%M:%S")
-    line = f"{now} [pipeline] {msg}"
-    _pipeline_logs.append(line)
-    print(line, file=sys.stderr, flush=True)
-
-
-
 def _run_pipeline_wrapper(force: bool = False):
-    global _pipeline_status
-    _pipeline_logs.clear()
-    _pipeline_status = {"state": "running", "message": "管线启动..."}
+    _pipeline.logs.clear()
+    _pipeline.status = {"state": "running", "message": "管线启动..."}
 
     handler = _PipelineLogHandler()
     handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)-7s] %(name)s: %(message)s", datefmt="%H:%M:%S"))
@@ -61,18 +62,17 @@ def _run_pipeline_wrapper(force: bool = False):
     root.addHandler(handler)
 
     try:
-        _pipeline_log("[启动] 全量管线开始执行")
+        _pipeline.add_log("[启动] 全量管线开始执行")
         run_full_pipeline(force=force)
-        _pipeline_status = {"state": "done", "message": "管线执行完成"}
+        _pipeline.status = {"state": "done", "message": "管线执行完成"}
     except Exception as e:
-        _pipeline_log(f"[错误] 管线执行失败: {e}")
-        _pipeline_status = {"state": "error", "message": f"管线执行失败: {e}"}
+        _pipeline.add_log(f"[错误] 管线执行失败: {e}")
+        _pipeline.status = {"state": "error", "message": f"管线执行失败: {e}"}
     finally:
         root.removeHandler(handler)
 
 
 def _scheduler_loop():
-    global _last_run_date
     _sched_logger = logging.getLogger("scheduler")
 
     import os as _os
@@ -91,9 +91,9 @@ def _scheduler_loop():
             if h != "" and m != "":
                 today = datetime.now().strftime("%Y-%m-%d")
                 now = datetime.now()
-                if now.hour == int(h) and now.minute == int(m) and _last_run_date != today:
+                if now.hour == int(h) and now.minute == int(m) and _pipeline.last_run_date != today:
                     _sched_logger.info("定时触发: %s %02d:%02d", today, int(h), int(m))
-                    _last_run_date = today
+                    _pipeline.last_run_date = today
                     _run_pipeline_wrapper()
             else:
                 _sched_logger.debug("调度器已禁用（hour 为空）")
@@ -670,7 +670,7 @@ async def run_pipeline():
 
 @app.get("/api/pipeline-status")
 async def get_pipeline_status():
-    return _pipeline_status
+    return _pipeline.status
 
 
 @app.get("/api/recommendation-status")
@@ -685,7 +685,7 @@ async def recommendation_status():
 @app.get("/api/pipeline-log")
 async def get_pipeline_log(since: int = 0):
     """返回管线日志，since 为上次读取的行数。"""
-    items = list(_pipeline_logs)
+    items = list(_pipeline.logs)
     return {"lines": items[since:], "total": len(items)}
 
 
