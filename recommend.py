@@ -220,88 +220,45 @@ def train_lgb_model(X_train: pd.DataFrame, y_train: pd.Series,
 
 # ========== 赛道内排序 ==========
 
-def _bigrams(s: str) -> set:
-    return {s[i:i+2] for i in range(len(s)-1)} if len(s) >= 2 else {s}
-
-
-# ponytail: LLM行业名 → RBSA行业名 同义映射，加当新LLM输出未能匹配时
+# LLM行业名 → RBSA行业名 精简映射（仅保留高频命名差异，LLM已通过prompt自行翻译）
 _SECTOR_ALIASES: dict[str, str] = {
     "风电设备": "电源设备",
-    "光伏设备": "电源设备",
     "光伏": "电源设备",
-    "水电": "电力",
-    "水利发电": "电力",
-    "油气开采": "石油天然气",
+    "光伏设备": "电源设备",
+    "军工": "航空航天装备",
+    "军工装备": "航空航天装备",
+    "军工电子": "航空航天装备",
+    "白酒": "饮料",
+    "证券": "非银行金融",
+    "券商": "非银行金融",
     "油气": "石油天然气",
-    "航空运输": "航空机场",
-    "航空航天": "航空航天装备",
-    "电网设备": "输变电设备",
-    "配电设备": "输变电设备",
-    "特高压": "输变电设备",
-    "能源金属": "稀有金属",
-    "电池化学品": "化学制品",
-    "数字芯片设计": "半导体",
-    "模拟芯片设计": "半导体",
-    "线缆部件及其他": "其他",
+    "工业金属": "基本金属",
+    "电力设备": "输变电设备",
+    "芯片": "半导体",
     "芯片设计": "半导体",
     "存储芯片": "半导体",
     "半导体设备": "半导体",
     "半导体材料": "半导体",
-    "输变电": "输变电设备",
-    "电力设备": "输变电设备",
-    "电气设备": "输变电设备",
-    "集成电路封测": "半导体",
-    "集成电路封装": "半导体",
-    "先进封装": "半导体",
-    "高带宽内存": "半导体",
-    "AI芯片": "半导体",
-    "证券": "非银行金融",
-    "券商": "非银行金融",
-    "综合金融服务": "非银行金融",
-    "工业金属": "基本金属",
-    "白酒": "饮料",
-    "军工": "航空航天装备",
-    "军工电子": "航空航天装备",
-    "军工装备": "航空航天装备",
 }
 
 
 def _match_one_sector(ideal: str, candidates: list[str]) -> str | None:
-    """把 LLM 选的行业名模糊匹配到 RBSA 行业名。"""
+    """把 LLM 选的行业名匹配到 RBSA 行业名（精确匹配 + 别名 + 子串，不模糊匹配）。"""
     normalized = _SECTOR_ALIASES.get(ideal, ideal)
     ideal_lower = normalized.lower()
+    # 1. 精确匹配
     for c in candidates:
-        if not c:
-            continue
-        c_lower = c.lower()
-        if c_lower == ideal_lower:
+        if c and c.lower() == ideal_lower:
             return c
+    # 2. candidate 包含 ideal（如 ideal="食品" candidate="食品饮料"）
     for c in candidates:
-        if not c:
-            continue
-        c_lower = c.lower()
-        if c_lower in ideal_lower:
+        if c and ideal_lower in c.lower():
             return c
+    # 3. ideal 包含 candidate（如 ideal="石油天然气" candidate="天然气"）
     for c in candidates:
-        if not c:
-            continue
-        c_lower = c.lower()
-        if ideal_lower in c_lower:
+        if c and c.lower() in ideal_lower:
             return c
-    # 4. bigram Jaccard（中文语义匹配）
-    ideal_grams = _bigrams(ideal_lower)
-    best, best_score = None, 0.0
-    for c in candidates:
-        if not c:
-            continue
-        c_grams = _bigrams(c.lower())
-        if not c_grams or not ideal_grams:
-            continue
-        score = len(ideal_grams & c_grams) / len(ideal_grams | c_grams)
-        if score > best_score:
-            best_score = score
-            best = c
-    return best if best_score >= 0.25 else None
+    return None
 
 
 def _resolve_sectors(sectors: list[str]) -> list[str]:

@@ -274,28 +274,37 @@ async def index(request: Request):
         )
         if row and row[0]:
             text = row[0]
+            lines = text.replace("；", "\n").split("\n")
+            seen = set()
             items = []
-            for seg in text.replace("；", "\n").replace("。", "\n").replace("；", "\n").split("\n"):
-                seg = seg.strip().strip("【东方财富快讯】").strip("【财联社电报】").strip()
-                if seg and len(seg) > 4 and not seg.startswith(("http", "www")):
-                    items.append(seg)
+            for seg in lines:
+                seg = seg.strip()
+                if not seg or len(seg) < 6 or seg.startswith(("http", "www")):
+                    continue
+                dedup = seg[:60]
+                if dedup in seen:
+                    continue
+                seen.add(dedup)
+                items.append(seg)
             if items:
                 news_items = items
         top_gainers = row[1] if row and row[1] else ""
         top_losers = row[2] if row and row[2] else ""
         etf_net_flow = row[3] if row and row[3] else ""
+        gainer_seen = set()
         if top_gainers:
             for g in top_gainers.replace("、", "\n").split("\n"):
                 g = g.strip()
-                if g:
-                    news_items.insert(0, "↑ " + g)
+                if g and g not in gainer_seen:
+                    gainer_seen.add(g)
+                    news_items.append("\u2191 " + g)
         if top_losers:
             for l in top_losers.replace("、", "\n").split("\n"):
                 l = l.strip()
                 if l:
-                    news_items.append("↓ " + l)
+                    news_items.append("\u2193 " + l)
         if etf_net_flow:
-            news_items.insert(0, "资金流向: " + etf_net_flow)
+            news_items.insert(0, "\u8d44\u91d1\u6d41\u5411: " + etf_net_flow)
     except Exception as e:
         logger.warning("快讯加载失败: %s", e)
     macro_data = {
@@ -496,6 +505,23 @@ async def index(request: Request):
             for h in holdings
         ]
 
+    top_holdings2 = []
+    if len(latest_list) > 1:
+        code2 = latest_list[1]["code"]
+        holdings2 = _q(
+            "SELECT h.stock_code, h.stock_name, h.weight, i.industry_name "
+            "FROM fund_holdings h "
+            "LEFT JOIN stock_industry_map i ON h.stock_code = i.stock_code "
+            "WHERE h.code=? AND h.report_date = ("
+            "  SELECT MAX(report_date) FROM fund_holdings WHERE code=?) "
+            "ORDER BY h.weight DESC LIMIT 10",
+            (code2, code2),
+        )
+        top_holdings2 = [
+            {"code": h[0], "name": h[1], "weight": h[2], "industry": h[3] or ""}
+            for h in holdings2
+        ]
+
     # 运行天数
     uptime = _q1("SELECT value FROM meta WHERE key='uptime_start'")
     if uptime:
@@ -596,6 +622,7 @@ async def index(request: Request):
         "period_ret": period_ret,
         "fund_features": fund_features,
         "top_holdings": top_holdings,
+        "top_holdings2": top_holdings2,
         "sector_gainers": sector_gainers,
         "sector_losers": sector_losers,
         "uptime_days": uptime_days,

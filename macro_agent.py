@@ -21,13 +21,6 @@ from sector_api import is_industry_code, is_industry_name
 logger = get_logger("macro_agent")
 
 _BOARD_URL = "https://push2ex.eastmoney.com/getAllBKChanges?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wzchanges&pageindex=0&pagesize=500"
-_KUAXUN_URL = ("https://search-api-web.eastmoney.com/search/jsonp?cb=jQuery"
-               "&param=%7B%22uid%22%3A%22%22%2C%22keyword%22%3A%22%E5%9F%BA%E9%87%91%22"
-               "%2C%22type%22%3A%5B%22cmsArticleWebOld%22%5D%2C%22client%22%3A%22web%22"
-               "%2C%22clientType%22%3A%22web%22%2C%22clientVersion%22%3A%22curr%22"
-               "%2C%22param%22%3A%7B%22cmsArticleWebOld%22%3A%7B%22searchScope%22%3A%22default%22"
-               "%2C%22sort%22%3A%22default%22%2C%22pageIndex%22%3A1%2C%22pageSize%22%3A20"
-               "%2C%22preTag%22%3A%22%20%22%2C%22postTag%22%3A%22%20%22%7D%7D%7D")
 _CLS_API = "https://www.cls.cn/v1/roll/get_roll_list"
 
 
@@ -114,61 +107,70 @@ def _cls_sign(params: dict) -> str:
     return hashlib.md5(hashlib.sha1(s.encode()).hexdigest().encode()).hexdigest()
 
 
-def _fetch_cls() -> tuple[str, list[dict]]:
-    """抓取财联社电报，返回 (格式化文本, 关联股票列表)。
+def _fetch_cls() -> tuple[list[dict], list[dict]]:
+    """抓取财联社电报，返回 (条目列表, 关联股票列表)。
 
-    关联股票: [{"name": "阳光电源", "code": "300274", "level": "A", "title": "..."}]
+    条目: [{"level": "A", "text": "...", "stocks": [...]}]
+    关联股票: [{"name": "...", "code": "...", "level": "A", "title": "..."}]
     """
     try:
         ts = int(_time.time())
         params = {
             "app": "CailianpressWeb", "os": "web", "sv": "8.4.6",
-            "refresh_type": "1", "rn": "20", "last_time": str(ts), "category": "",
+            "refresh_type": "1", "rn": "60", "last_time": str(ts), "category": "",
         }
         params["sign"] = _cls_sign(params)
         txt = _http_get(f"{_CLS_API}?{'&'.join(f'{k}={params[k]}' for k in params)}")
         data = json.loads(txt)
         items = data.get("data", {}).get("roll_data", [])
         if not items:
-            return "", []
+            return [], []
 
-        text_lines = []
+        entries = []
         stocks = []
+        seen_texts = set()
         for it in items:
             title = (it.get("title") or "").strip()
             content = (it.get("content") or "").strip()
             level = it.get("level", "C")
-            prefix = "【加红】" if level == "A" else "【重要】" if level == "B" else ""
-            line = title or content
-            if prefix:
-                line = f"{prefix} {line}"
-            if content and content != title:
-                line = f"{line}。{content}"
+
+            body = content or title
+            if not body:
+                continue
+
+            dedup_key = body[:120]
+            if dedup_key in seen_texts:
+                continue
+            seen_texts.add(dedup_key)
+
+            text = body
+            if title and title != content:
+                text = f"{title}。{body}"
+
             sl = it.get("stock_list", [])
-            if sl:
-                names = [s.get("name", "") for s in sl if s.get("name")]
-                if names:
-                    line += f" [关联: {'/'.join(names)}]"
+            stock_names = []
+            for s in sl:
+                sid = s.get("StockID", "")
+                name = s.get("name", "")
+                if name:
+                    stock_names.append(name)
+                if name or sid:
+                    stocks.append({"name": name, "code": sid, "level": level, "title": title})
+            if stock_names:
+                text += f" [关联: {'/'.join(stock_names)}]"
+
             subs = it.get("subjects", [])
             if subs:
                 tags = [s.get("subject_name", "") for s in subs if s.get("subject_name")]
                 if tags:
-                    line += f" ({'、'.join(tags)})"
-            text_lines.append(line)
+                    text += f" ({'、'.join(tags)})"
 
-            for s in sl:
-                sid = s.get("StockID", "")
-                name = s.get("name", "")
-                if name or sid:
-                    stocks.append({
-                        "name": name, "code": sid, "level": level,
-                        "title": title,
-                    })
+            entries.append({"level": level, "text": text, "stocks": stock_names})
 
-        return "\n".join(text_lines), stocks
+        return entries, stocks
     except Exception as e:
         logger.warning("财联社电报抓取失败: %s", str(e)[:120], exc_info=True)
-        return "", []
+        return [], []
 
 
 _PSEUDO_PREFIXES = ("昨日", "当日", "今日")
@@ -196,8 +198,8 @@ def _load_board_sectors() -> list[dict]:
     ]
 
 
-def _fetch_news(date_str: str) -> dict:
-    """抓取行业涨跌排行 + 东财快讯 + 财联社电报，写入 macro_news 原始字段。"""
+def _fetch_news(date_str: str, sectors: list | None = None) -> dict:
+    """抓取板块排行 + 财联社电报，写入 macro_news。"""
     top_gainers = top_losers = etf_net_flow = ""
     try:
         sectors = _load_board_sectors()
@@ -212,37 +214,18 @@ def _fetch_news(date_str: str) -> dict:
     except Exception as e:
         logger.warning("板块排行抓取失败: %s", str(e)[:120], exc_info=True)
 
-    kx_news = ""
-    try:
-        txt = _http_get(_KUAXUN_URL)
-        txt = txt.strip()
-        if txt.startswith("jQuery("):
-            txt = txt[7:-1]
-        data = json.loads(txt)
-        items = data.get("result", {}).get("cmsArticleWebOld", [])
-        headlines = []
-        for it in items:
-            title = (it.get("title") or "").strip()
-            if title:
-                title = title.replace("  ", " ")
-                headlines.append(title.strip())
-                if len(headlines) >= 20:
-                    break
-        kx_news = "；".join(headlines)
-    except Exception as e:
-        logger.warning("基金快讯抓取失败: %s", str(e)[:120], exc_info=True)
+    cls_entries, cls_stocks = _fetch_cls()
 
-    cls_text, cls_stocks = _fetch_cls()
-
-    summary_parts = []
-    if kx_news:
-        summary_parts.append(f"【东方财富快讯】\n{kx_news}")
-    if cls_text:
-        summary_parts.append(f"【财联社电报】\n{cls_text}")
-    news = "\n\n".join(summary_parts)
+    news = ""
+    if cls_entries:
+        lines = []
+        for e in cls_entries:
+            prefix = "\u203c\ufe0f " if e["level"] == "A" else "\u26a0\ufe0f " if e["level"] == "B" else ""
+            lines.append(f"{prefix}{e['text']}")
+        news = "\n".join(lines)
 
     with _db_conn() as conn:
-        if top_gainers or top_losers:
+        if top_gainers or top_losers or cls_entries:
             conn.execute(
                 "INSERT INTO macro_news "
                 "(date, news_summary, top_gainers, top_losers, etf_net_flow) "
@@ -252,23 +235,27 @@ def _fetch_news(date_str: str) -> dict:
                 "top_losers=excluded.top_losers, etf_net_flow=excluded.etf_net_flow",
                 (date_str, news, top_gainers, top_losers, etf_net_flow),
             )
-    logger.info("快讯入库: 领涨[%s] 领跌[%s] 新闻%d字 cls=%d条",
-                top_gainers[:40], top_losers[:40], len(news), len(cls_stocks))
+    logger.info("快讯入库: 领涨[%s] 领跌[%s] cls=%d条(去重后) 关联股票%d只",
+                top_gainers[:40], top_losers[:40], len(cls_entries), len(cls_stocks))
     return {
         "summary": news, "top_gainers": top_gainers,
         "top_losers": top_losers, "etf_net_flow": etf_net_flow,
         "cls_stocks": cls_stocks,
+        "cls_entries": cls_entries,
     }
 
 
-def _fetch_flow(date_str: str) -> dict:
-    """抓取行业板块资金流排名（主力净流入/涨跌）。"""
+def _fetch_flow(date_str: str, sectors: list | None = None) -> dict:
+    """抓取行业板块资金流排名（主力净流入/涨跌），排除概念/风格板块。"""
     result = {"summary": ""}
     try:
         sectors = _load_board_sectors()
         if not sectors:
             return result
-        sorted_by_flow = sorted(sectors, key=lambda x: float(x.get("zjl", 0) or 0), reverse=True)
+        real_sectors = [s for s in sectors if not _is_concept_name(s.get("n", "") or "", s.get("c", "") or "")]
+        if not real_sectors:
+            real_sectors = sectors
+        sorted_by_flow = sorted(real_sectors, key=lambda x: float(x.get("zjl", 0) or 0), reverse=True)
         lines = []
         for d in sorted_by_flow[:10]:
             name = d.get("n", "")
@@ -298,7 +285,26 @@ def _fetch_flow(date_str: str) -> dict:
 
 # ── LLM 选赛道 ──
 
-def _load_sector_insights() -> str:
+_CONCEPT_CODES = frozenset({
+    "BK0490", "BK0492", "BK0493", "BK0494",
+    "BK0498", "BK0499", "BK0501", "BK0505", "BK0506",
+    "BK0509", "BK0511", "BK0514", "BK0519", "BK0523",
+    "BK0525", "BK0528", "BK0534", "BK0535", "BK0536",
+    "BK0548", "BK0549", "BK0552", "BK0554",
+    "BK0728", "BK0742", "BK0743",
+    "BK1022", "BK1023", "BK1024", "BK1025",
+    "BK1047", "BK1048",
+    "BK1204",
+})
+
+
+def _is_concept_name(name: str, code: str = "") -> bool:
+    """判断板块是否为概念/风格/指数类（精确BK代码列表）。"""
+    if code and code in _CONCEPT_CODES:
+        return True
+    if not name:
+        return True
+    return False
     with _db_conn() as conn:
         rows = conn.execute(
             "SELECT insight FROM evolution_insights "
@@ -355,10 +361,26 @@ def _suggest_sectors(date_str: str, news: dict, flow: dict) -> MacroContext:
     cleaned = _re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip(), flags=_re.IGNORECASE)
     try:
         parsed = json.loads(cleaned)
-        return MacroContext(
+        available = _load_available_sectors()
+        avail_set = set(available)
+
+        rec_raw = parsed.get("recommended_sectors", [])
+        risk_raw = parsed.get("risk_sectors", [])
+
+        rec_valid = [s for s in rec_raw if s in avail_set]
+        risk_valid = [s for s in risk_raw if s in avail_set]
+
+        if len(rec_valid) < len(rec_raw):
+            dropped = set(rec_raw) - set(rec_valid)
+            logger.warning("LLM推荐了不可投赛道，已过滤: %s", dropped)
+        if len(risk_valid) < len(risk_raw):
+            dropped = set(risk_raw) - set(risk_valid)
+            logger.warning("LLM回避了不可投赛道，已过滤: %s", dropped)
+
+        ctx = MacroContext(
             news_summary=news.get("summary", ""),
-            recommended_sectors=parsed.get("recommended_sectors", []),
-            risk_sectors=parsed.get("risk_sectors", []),
+            recommended_sectors=rec_valid,
+            risk_sectors=risk_valid,
             sector_reasoning=parsed.get("reasoning", ""),
             regime_label=parsed.get("regime_label", "neutral"),
             cls_stock_mentions=cls_stocks,
@@ -366,5 +388,6 @@ def _suggest_sectors(date_str: str, news: dict, flow: dict) -> MacroContext:
             top_flows=flow_top,
             top_outflows=flow_out,
         )
+        return ctx
     except Exception as e:
         raise RuntimeError(f"LLM赛道选择返回无法解析: {e}") from e

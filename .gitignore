@@ -37,6 +37,7 @@ Thumbs.db
 
 # opencode（agent skills 与配置，非运行时）
 .opencode/
+.scratch/
 
 # 测试
 test_basic.py

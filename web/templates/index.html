@@ -78,7 +78,8 @@ body::before { content: ''; position: fixed; inset: 0; pointer-events: none; z-i
 .editorial-card:hover { box-shadow: 4px 4px 0px rgba(0,0,0,0.08); }
 .editorial-card:active { transform: scale(0.998); }
 .marquee-vertical-container { height: 84px; overflow: hidden; position: relative; }
-.marquee-vertical-content { display: flex; flex-direction: column; animation: marquee-vertical-continuous 80s linear infinite; }
+.marquee-vertical-content { display: flex; flex-direction: column; animation: marquee-vertical-continuous 200s linear infinite; }
+.marquee-vertical-container:hover .marquee-vertical-content { animation-play-state: paused; }
 @keyframes marquee-vertical-continuous { 0% { transform: translateY(0); } 100% { transform: translateY(-50%); } }
 .pulse-dot { animation: pulse 2s infinite; }
 @keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(1.2); } 100% { opacity: 1; transform: scale(1); } }
@@ -278,138 +279,121 @@ FLASH / 实时快讯
 </div>
 </div>
 
-<!-- Main Recommendation Row -->
-<section class="editorial-card overflow-hidden relative">
-<div class="absolute inset-0 pointer-events-none opacity-[0.03]"
-     style="background-image:url('https://picsum.photos/seed/alpharecommend/1920/600');background-size:cover;background-position:center 20%;"></div>
-<div class="relative grid grid-cols-1 lg:grid-cols-12">
-<div class="lg:col-span-8 px-md md:px-xl py-md md:py-lg flex flex-col justify-between border-b lg:border-b-0 lg:border-r border-outline-variant">
-<div>
-<div class="mb-sm md:mb-lg">
-<span class="bg-primary text-white px-3 py-1 font-black text-[11px] md:text-[13px] uppercase tracking-widest">本期主推 / EDITOR'S CHOICE</span>
-</div>
-<div class="mb-sm md:mb-lg flex flex-wrap items-baseline gap-x-sm gap-y-0">
-<span class="font-display-data text-on-surface-variant text-[20px] md:text-[24px] font-bold">{{ latest.code if latest else '--' }}</span>
-<h2 class="font-headline-xl text-primary font-black text-[24px] md:text-[28px] leading-tight">{{ latest.name if latest else '暂无推荐数据' }}</h2>
-{% if latest and latest.type %}
-<span class="text-[13px] md:text-[14px] text-on-surface-variant font-bold">{{ latest.type }}</span>
-{% endif %}
-</div>
-<div class="mt-md">
-{% if sector_reasoning %}
-<div class="mb-sm">
-<h3 class="text-[14px] font-black uppercase mb-xs text-on-surface-variant">今日分析 / TODAY'S ANALYSIS</h3>
-<p class="text-on-surface text-[13px] leading-snug">{{ sector_reasoning }}</p>
-</div>
-{% endif %}
-<h3 class="text-[14px] font-black uppercase mb-xs text-on-surface-variant">推荐理由 / REASON</h3>
-<p class="text-on-surface text-[13px] leading-snug">
-{{ latest.reason if latest else '暂无推荐，请先运行推荐引擎。' }}
-</p>
-</div>
-{% if top_holdings %}
-<div class="mt-lg pt-md border-t border-outline-variant">
-<h3 class="text-[14px] font-black uppercase mb-xs text-on-surface-variant">前十大持仓 / TOP HOLDINGS</h3>
-<div class="grid grid-cols-1 md:grid-cols-2 gap-x-lg gap-y-1">
-{% for h in top_holdings %}
-<div class="flex items-center gap-xs text-[14px]">
-<span class="font-bold w-[5.5em] truncate text-on-surface" title="{{ h.name }}">{{ h.name }}</span>
-<div class="flex-1 h-2 bg-surface-container relative">
-<div class="absolute inset-y-0 left-0 bg-primary/50" style="width: {{ h.weight * 3 }}%;"></div>
-</div>
-<span class="font-black w-[3em] text-right text-on-surface-variant">{{ "%.1f"|format(h.weight) }}%</span>
-{% if h.industry %}
-<span class="text-[13px] text-on-surface-variant ml-xs uppercase">{{ h.industry[:4] }}</span>
-{% endif %}
-</div>
-{% endfor %}
-</div>
-</div>
-{% endif %}
-</div>
-</div>
-<div class="lg:col-span-4 px-md md:px-xl py-md md:py-lg bg-surface-container-low">
-<div class="flex justify-between items-end mb-sm border-b border-primary pb-xs">
-<div>
-<h4 class="font-headline-lg text-[16px] font-black uppercase tracking-tight">基金走势 / FUND TREND</h4>
-<span class="text-[12px] text-on-surface-variant font-bold">近3个月涨跌幅对比</span>
-</div>
-<div class="flex gap-sm font-black text-[11px] uppercase">
-<div class="flex items-center gap-xs"><div class="w-4 h-0.5 bg-primary"></div><span>本基金</span></div>
-<div class="flex items-center gap-xs"><div class="w-4 h-0.5 bg-outline"></div><span>沪深300</span></div>
-</div>
-</div>
-<div class="h-[160px] md:h-[220px] relative mt-sm">
-{% if fund_svg %}
-<svg class="absolute inset-0 w-full h-full" viewBox="0 0 200 100" preserveAspectRatio="none">
-<line x1="0" y1="{{ baseline_y|round(1) }}" x2="200" y2="{{ baseline_y|round(1) }}" stroke="currentColor" stroke-width="0.5" stroke-dasharray="2" class="text-outline" vector-effect="non-scaling-stroke"/>
-<path d="{{ fund_svg }}" fill="none" stroke="currentColor" stroke-width="2" class="text-primary" vector-effect="non-scaling-stroke"/>
-<path d="{{ hs_svg }}" fill="none" stroke="currentColor" stroke-width="1.5" class="text-outline" vector-effect="non-scaling-stroke"/>
-</svg>
-{% else %}
-<div class="skel-chart absolute inset-0 bg-surface-container-low rounded-[2px] flex items-center justify-center">
-<svg class="w-3/4 h-1/2" viewBox="0 0 200 80" preserveAspectRatio="none">
-<path d="M0,60 L20,55 L40,65 L60,40 L80,45 L100,30 L120,35 L140,20 L160,25 L180,15 L200,20" fill="none" stroke="currentColor" stroke-width="1.5" class="text-outline-variant" stroke-dasharray="3 3"/>
-<path d="M0,70 L20,68 L40,72 L60,65 L80,67 L100,62 L120,64 L140,58 L160,60 L180,55 L200,58" fill="none" stroke="currentColor" stroke-width="1" class="text-outline-variant" stroke-dasharray="2 4"/>
-</svg>
-</div>
-{% endif %}
-</div>
-<div class="flex justify-between text-[9px] leading-none font-bold text-on-surface-variant uppercase">
-{% if nav_dates %}
-{% for d in nav_dates %}
-{% if loop.index0 % 20 == 0 or loop.last %}
-<span>{{ d[-5:] }}</span>
-{% endif %}
-{% endfor %}
-{% else %}
-<span>--</span>
-{% endif %}
-</div>
-<div class="mt-5 flex gap-xs flex-wrap">
-{% for label in ['月', '季', '半年'] %}
-{% set ret = period_ret.get(label) %}
-{% set hs_ret = period_ret.get(label + '_hs') %}
-<div class="flex-1 min-w-[100px] bg-surface-container-high rounded-[2px] px-3 py-2">
-<div class="text-[11px] font-bold text-on-surface-variant uppercase tracking-wider">{{ label }}涨跌幅</div>
-<div class="font-display-data text-[16px] font-black {% if ret is not none and ret >= 0 %}text-up{% elif ret is not none %}text-down{% endif %}">
-{% if ret is not none %}{{ "%+.2f"|format(ret) }}%{% else %}--{% endif %}
-</div>
-{% if hs_ret is not none %}
-<div class="text-[10px] font-bold text-on-surface-variant mt-0.5">沪深300 {{ "%+.2f"|format(hs_ret) }}%</div>
-{% endif %}
-</div>
-{% endfor %}
-</div>
-</div>
-</div>
+<!-- 推荐基金并列显示 start -->
+<section class="grid grid-cols-1 lg:grid-cols-2 gap-gutter">
+  <section class="editorial-card overflow-hidden relative">
+    <div class="absolute inset-0 pointer-events-none opacity-[0.03]"
+         style="background-image:url('https://picsum.photos/seed/alpharecommend/1920/600');background-size:cover;background-position:center 20%;"></div>
+    <div class="relative flex flex-col h-full">
+      <div class="px-md md:px-xl py-md md:py-lg flex flex-col justify-between flex-1">
+        <div>
+          <div class="mb-sm md:mb-lg">
+            <span class="bg-primary text-white px-3 py-1 font-black text-[11px] md:text-[13px] uppercase tracking-widest">本期主推 / EDITOR'S CHOICE</span>
+          </div>
+          <div class="mb-sm md:mb-lg flex flex-wrap items-baseline gap-x-sm gap-y-0">
+            <span class="font-display-data text-on-surface-variant text-[20px] md:text-[24px] font-bold">{{ latest.code if latest else '--' }}</span>
+            <h2 class="font-headline-xl text-primary font-black text-[24px] md:text-[28px] leading-tight">{{ latest.name if latest else '暂无推荐数据' }}</h2>
+            {% if latest and latest.type %}
+            <span class="text-[13px] md:text-[14px] text-on-surface-variant font-bold">{{ latest.type }}</span>
+            {% endif %}
+          </div>
+          {% if latest and latest.regime_text %}
+          <div class="mt-sm mb-sm">
+            <span class="inline-block bg-surface-container-high text-on-surface px-2 py-0.5 font-black text-[11px] uppercase tracking-wider">{{ latest.regime_text }}</span>
+          </div>
+          {% endif %}
+        </div>
+        {% if latest %}
+        <div class="mt-md">
+          {% if sector_reasoning %}
+          <div class="mb-sm">
+            <h3 class="text-[14px] font-black uppercase mb-xs text-on-surface-variant">今日分析 / TODAY'S ANALYSIS</h3>
+            <p class="text-on-surface text-[13px] leading-snug">{{ sector_reasoning }}</p>
+          </div>
+          {% endif %}
+          <h3 class="text-[14px] font-black uppercase mb-xs text-on-surface-variant">推荐理由 / REASON</h3>
+          <p class="text-on-surface text-[13px] leading-snug">
+            {{ latest.reason if latest else '暂无推荐，请先运行推荐引擎。' }}
+          </p>
+        </div>
+        {% endif %}
+      </div>
+      {% if top_holdings %}
+      <div class="px-md md:px-xl pb-md md:pb-lg border-t border-outline-variant pt-md">
+        <h3 class="text-[14px] font-black uppercase mb-xs text-on-surface-variant">前十大持仓 / TOP HOLDINGS</h3>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-x-lg gap-y-1">
+          {% for h in top_holdings %}
+          <div class="flex items-center gap-xs text-[14px]">
+            <span class="font-bold w-[5.5em] truncate text-on-surface" title="{{ h.name }}">{{ h.name }}</span>
+            <div class="flex-1 h-2 bg-surface-container relative">
+              <div class="absolute inset-y-0 left-0 bg-primary/50" style="width: {{ h.weight * 3 }}%;"></div>
+            </div>
+            <span class="font-black w-[3em] text-right text-on-surface-variant">{{ "%.1f"|format(h.weight) }}%</span>
+            {% if h.industry %}
+            <span class="text-[13px] text-on-surface-variant ml-xs uppercase">{{ h.industry[:4] }}</span>
+            {% endif %}
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+    </div>
+  </section>
+  <section class="editorial-card overflow-hidden relative">
+    <div class="relative flex flex-col h-full">
+      <div class="px-md md:px-xl py-md md:py-lg flex flex-col justify-between flex-1">
+        {% if latest_list|length > 1 %}
+        {% set rec2 = latest_list[1] %}
+        <div>
+          <div class="mb-sm md:mb-lg">
+            <span class="bg-surface-container-high text-on-surface px-3 py-1 font-black text-[11px] md:text-[13px] uppercase tracking-widest">次选 / SECOND PICK</span>
+          </div>
+          <div class="mb-sm md:mb-lg flex flex-wrap items-baseline gap-x-sm gap-y-0">
+            <span class="font-display-data text-on-surface-variant text-[20px] md:text-[24px] font-bold">{{ rec2.code }}</span>
+            <h2 class="font-headline-xl text-on-surface font-black text-[24px] md:text-[28px] leading-tight">{{ rec2.name }}</h2>
+            {% if rec2.type %}
+            <span class="text-[13px] md:text-[14px] text-on-surface-variant font-bold">{{ rec2.type }}</span>
+            {% endif %}
+          </div>
+        </div>
+        <div class="mt-md">
+          {% if sector_reasoning %}
+          <div class="mb-sm">
+            <h3 class="text-[14px] font-black uppercase mb-xs text-on-surface-variant">今日分析 / TODAY'S ANALYSIS</h3>
+            <p class="text-on-surface text-[13px] leading-snug">{{ sector_reasoning }}</p>
+          </div>
+          {% endif %}
+          <h3 class="text-[14px] font-black uppercase mb-xs text-on-surface-variant">推荐理由 / REASON</h3>
+          <p class="text-on-surface text-[13px] leading-snug">{{ rec2.reason }}</p>
+        </div>
+        {% if top_holdings2 %}
+        <div class="border-t border-outline-variant pt-md mt-md">
+          <h3 class="text-[14px] font-black uppercase mb-xs text-on-surface-variant">前十大持仓 / TOP HOLDINGS</h3>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-x-lg gap-y-1">
+            {% for h in top_holdings2 %}
+            <div class="flex items-center gap-xs text-[14px]">
+              <span class="font-bold w-[5.5em] truncate text-on-surface" title="{{ h.name }}">{{ h.name }}</span>
+              <div class="flex-1 h-2 bg-surface-container relative">
+                <div class="absolute inset-y-0 left-0 bg-primary/50" style="width: {{ h.weight * 3 }}%;"></div>
+              </div>
+              <span class="font-black w-[3em] text-right text-on-surface-variant">{{ "%.1f"|format(h.weight) }}%</span>
+              {% if h.industry %}
+              <span class="text-[13px] text-on-surface-variant ml-xs uppercase">{{ h.industry[:4] }}</span>
+              {% endif %}
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
+        {% else %}
+        <div class="flex items-center justify-center flex-1">
+          <p class="text-on-surface-variant text-[13px] font-bold">暂无次选推荐</p>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </section>
 </section>
-
-{% if latest_list|length > 1 %}
-{% set rec2 = latest_list[1] %}
-<!-- Second Recommendation Card -->
-<section class="editorial-card overflow-hidden">
-<div class="px-md md:px-xl py-md md:py-lg grid grid-cols-1 lg:grid-cols-12">
-<div class="lg:col-span-8 flex flex-col justify-between border-b lg:border-b-0 lg:border-r border-outline-variant">
-<div>
-<div class="mb-sm md:mb-lg">
-<span class="bg-surface-container-high text-on-surface px-3 py-1 font-black text-[11px] md:text-[13px] uppercase tracking-widest">次选 / SECOND PICK</span>
-</div>
-<div class="mb-sm md:mb-lg flex flex-wrap items-baseline gap-x-sm gap-y-0">
-<span class="font-display-data text-on-surface-variant text-[20px] md:text-[24px] font-bold">{{ rec2.code }}</span>
-<h2 class="font-headline-xl text-on-surface font-black text-[24px] md:text-[28px] leading-tight">{{ rec2.name }}</h2>
-{% if rec2.type %}
-<span class="text-[13px] md:text-[14px] text-on-surface-variant font-bold">{{ rec2.type }}</span>
-{% endif %}
-</div>
-<h3 class="text-[14px] font-black uppercase mb-xs text-on-surface-variant">推荐理由 / REASON</h3>
-<p class="text-on-surface text-[13px] leading-snug">{{ rec2.reason }}</p>
-</div>
-</div>
-</div>
-</section>
-{% endif %}
-
 <!-- Signal Table -->
 <section class="editorial-card" id="trackingSection">
 <div class="p-lg border-b border-primary flex items-baseline gap-md">
@@ -518,8 +502,6 @@ LIVE LOG STREAM / 系统实时日志
 </button>
 <div id="logLines"></div>
 </div>
-<p id="pipelineStatus" class="text-[12px] font-bold text-on-surface-variant px-md hidden"></p>
-<pre id="pipelineLog" class="text-[11px] font-mono text-on-surface bg-surface-container px-md py-1 mx-md mb-md max-h-[200px] overflow-y-auto hidden whitespace-pre-wrap visible-scrollbar"></pre>
 </div>
 </div>
 
@@ -613,27 +595,18 @@ var _logCount = 0;
 var _fetching = false;
 var FUND_SKEL = '<div class="space-y-md"><div class="skel h-6 w-3/4"></div><div class="skel h-4 w-1/2"></div><div class="skel h-4 w-full"></div><div class="skel h-4 w-5/6"></div><div class="skel h-20 w-full"></div><div class="skel h-40 w-full"></div></div>';
 
-function _level(str) {
-    var s = str.indexOf('[');
-    if (s < 0) return '';
-    var e = str.indexOf(']', s);
-    if (e < 0) return '';
-    var inner = str.substring(s + 1, e).trim();
-    if (inner === 'ERROR' || inner === 'WARNING' || inner === 'INFO' || inner === 'DEBUG') return inner;
-    return '';
-}
-
-function _timestamp(str) {
-    var s = str.indexOf('[');
-    return s > 0 ? str.substring(0, s - 1).trim() : str.substring(0, 19).trim();
-}
-
-function _message(str) {
-    var e = str.indexOf(']');
-    if (e < 0) return str.substring(19).trim();
-    var tail = str.substring(e + 1).trim();
-    var colon = tail.indexOf(':');
-    return colon > 0 ? tail.substring(colon + 1).trim() : tail;
+function _parseLogLine(str) {
+    try { var j = JSON.parse(str); return { level: j.level || 'INFO', ts: (j.timestamp || '').substring(0, 19), msg: j.message || j.event || '' }; }
+    catch(e) {
+        var s = str.indexOf('['), e2 = str.indexOf(']', s);
+        var level = (s >= 0 && e2 > s) ? str.substring(s + 1, e2).trim() : 'INFO';
+        if (['ERROR','WARNING','INFO','DEBUG'].indexOf(level) < 0) level = 'INFO';
+        var ts = s > 0 ? str.substring(0, s - 1).trim() : str.substring(0, 19).trim();
+        var tail = e2 >= 0 ? str.substring(e2 + 1).trim() : str.substring(19).trim();
+        var colon = tail.indexOf(':');
+        var msg = colon > 0 ? tail.substring(colon + 1).trim() : tail;
+        return { level: level, ts: ts, msg: msg };
+    }
 }
 
 function applyLogFilter() {
@@ -835,22 +808,21 @@ async function fetchLogs() {
         var data = await r.json();
         if (!data.lines || !data.lines.length) { _fetching = false; return; }
         for (var i = 0; i < data.lines.length; i++) {
-            var l = data.lines[i];
-            var lvl = _level(l);
-            var ts = _timestamp(l);
-            var msg = _message(l);
+            var p = _parseLogLine(data.lines[i]);
             var row = document.createElement('div');
             row.className = 'log-row flex items-start gap-1 px-md py-[3px] hover:bg-surface-container transition-colors';
-            row.setAttribute('data-level', lvl || 'INFO');
-            if (lvl === 'ERROR') {
+            row.setAttribute('data-level', p.level);
+            var ts = _esc(p.ts);
+            var msg = _esc(p.msg);
+            if (p.level === 'ERROR') {
                 row.style.background = '#FFF0F0';
-                row.innerHTML = '<span class="shrink-0 w-[52px] text-[11px] font-black text-error uppercase">ERROR</span><span class="shrink-0 text-[11px] opacity-50 w-[130px]">' + _esc(ts) + '</span><span class="break-all text-error font-medium">' + _esc(msg) + '</span>';
-            } else if (lvl === 'WARNING') {
-                row.innerHTML = '<span class="shrink-0 w-[52px] text-[11px] font-black text-tertiary uppercase">WARN</span><span class="shrink-0 text-[11px] opacity-50 w-[130px]">' + _esc(ts) + '</span><span class="break-all text-primary">' + _esc(msg) + '</span>';
-            } else if (lvl === 'DEBUG') {
-                row.innerHTML = '<span class="shrink-0 w-[52px] text-[11px] font-black opacity-40 uppercase">DEBUG</span><span class="shrink-0 text-[11px] opacity-30 w-[130px]">' + _esc(ts) + '</span><span class="break-all opacity-50">' + _esc(msg) + '</span>';
+                row.innerHTML = '<span class="shrink-0 w-[52px] text-[11px] font-black text-error uppercase">ERROR</span><span class="shrink-0 text-[11px] opacity-50 w-[130px]">' + ts + '</span><span class="break-all text-error font-medium">' + msg + '</span>';
+            } else if (p.level === 'WARNING') {
+                row.innerHTML = '<span class="shrink-0 w-[52px] text-[11px] font-black text-tertiary uppercase">WARN</span><span class="shrink-0 text-[11px] opacity-50 w-[130px]">' + ts + '</span><span class="break-all text-primary">' + msg + '</span>';
+            } else if (p.level === 'DEBUG') {
+                row.innerHTML = '<span class="shrink-0 w-[52px] text-[11px] font-black opacity-40 uppercase">DEBUG</span><span class="shrink-0 text-[11px] opacity-30 w-[130px]">' + ts + '</span><span class="break-all opacity-50">' + msg + '</span>';
             } else {
-                row.innerHTML = '<span class="shrink-0 w-[52px] text-[11px] font-black opacity-60 uppercase">INFO</span><span class="shrink-0 text-[11px] opacity-50 w-[130px]">' + _esc(ts) + '</span><span class="break-all">' + _esc(msg) + '</span>';
+                row.innerHTML = '<span class="shrink-0 w-[52px] text-[11px] font-black opacity-60 uppercase">INFO</span><span class="shrink-0 text-[11px] opacity-50 w-[130px]">' + ts + '</span><span class="break-all">' + msg + '</span>';
             }
             linesEl.appendChild(row);
         }
@@ -928,55 +900,16 @@ async function saveSettings() {
 }
 
 async function triggerPipeline() {
-    var statusEl = document.getElementById('pipelineStatus');
-    var logEl = document.getElementById('pipelineLog');
-    statusEl.className = 'text-[12px] font-bold text-on-surface-variant mt-2 px-md';
-    statusEl.textContent = '管线启动中...';
-    statusEl.classList.remove('hidden');
-    logEl.classList.add('hidden');
-    logEl.textContent = '';
     try {
         var r = await fetch('/api/run-pipeline', { method: 'POST' });
         var d = await r.json();
-        if (d.status !== 'started') {
-            statusEl.textContent = '✘ 启动失败';
-            statusEl.className = 'text-[12px] font-bold text-down mt-2 px-md';
-            return;
+        if (d.status === 'started') {
+            openModal('systemLogModal');
+        } else {
+            alert('管线启动失败');
         }
-        statusEl.textContent = '管线运行中...';
-        var seen = 0;
-        logEl.classList.remove('hidden');
-        for (var i = 0; i < 60; i++) {
-            await new Promise(r => setTimeout(r, 2000));
-            var [sr, lr] = await Promise.all([
-                fetch('/api/pipeline-status'),
-                fetch('/api/pipeline-log?since=' + seen)
-            ]);
-            var sd = await sr.json();
-            var ld = await lr.json();
-            if (ld.lines && ld.lines.length > 0) {
-                var atBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 80;
-                for (var j = 0; j < ld.lines.length; j++) {
-                    logEl.textContent += ld.lines[j] + '\n';
-                }
-                if (atBottom) logEl.scrollTop = logEl.scrollHeight;
-                seen += ld.lines.length;
-            }
-            if (sd.state === 'done') {
-                statusEl.textContent = '✔ 管线执行完成';
-                statusEl.className = 'text-[12px] font-bold text-up mt-2 px-md';
-                return;
-            } else if (sd.state === 'error') {
-                statusEl.textContent = '✘ ' + sd.message;
-                statusEl.className = 'text-[12px] font-bold text-down mt-2 px-md';
-                return;
-            }
-        }
-        statusEl.textContent = '⚠ 执行超时，请查看系统日志';
-        statusEl.className = 'text-[12px] font-bold text-on-surface-variant mt-2 px-md';
     } catch(e) {
-        statusEl.textContent = '✘ 请求失败: ' + e.message;
-        statusEl.className = 'text-[12px] font-bold text-down mt-2 px-md';
+        alert('请求失败: ' + e.message);
     }
 }
 </script>

@@ -3,7 +3,7 @@ import logging
 import threading
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime
 
 LOG_DIR = Path("data/logs")
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -23,7 +23,7 @@ def get_correlation_id() -> str:
 class JSONFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         obj = {
-            "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+            "timestamp": datetime.fromtimestamp(record.created).astimezone().isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "event": getattr(record, "event", record.msg.split(":")[0] if ": " in record.msg else record.msg),

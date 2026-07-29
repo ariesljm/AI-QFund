@@ -189,6 +189,16 @@ def calc_all_features(batch_commit: int = 500) -> int:
         for (c,) in cur_e.fetchall():
             if c in rbsa_data:
                 holdings_need_rbsa.add(c)
+        # 行业映射更新后，强制重算已过期RBSA
+        im_row = conn.execute("SELECT value FROM meta WHERE key = 'industry_map_updated'").fetchone()
+        industry_map_date = im_row[0] if im_row else None
+        if industry_map_date:
+            stale = conn.execute(
+                "SELECT code FROM fund_features WHERE date < ?", (industry_map_date,)
+            ).fetchall()
+            for (c,) in stale:
+                if c in rbsa_data and c not in holdings_need_rbsa:
+                    holdings_need_rbsa.add(c)
         skip_codes = {
             c for c in all_codes
             if c in feature_dates and c in nav_latest and feature_dates[c] >= nav_latest[c]
