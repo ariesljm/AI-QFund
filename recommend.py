@@ -693,7 +693,7 @@ def run_recommendation(retrain: bool = False, force: bool = False) -> None:
         logger.info("=== 准备训练数据并训练 LightGBM ===")
         X_train, y_train, X_val, y_val = prepare_lgb_training_data()
         if len(X_train) == 0:
-            logger.error("训练样本为空，终止推荐")
+            logger.warning("训练样本为空——NAV数据不足或数据基座未完成，跳过本次推荐")
             return
         model = train_lgb_model(X_train, y_train, X_val, y_val)
     else:

@@ -22,6 +22,5 @@ data/logs/
 data/last_*
 .opencode/
 .github/
-models/
 config/settings.toml
 .scratch/
