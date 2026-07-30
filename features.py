@@ -36,6 +36,8 @@ def calc_hurst(series: np.ndarray, max_lag: int = 20) -> float:
         return 0.5
     x = np.array([v[0] for v in rs_values])
     y = np.array([v[1] for v in rs_values])
+    if len(x) < 2 or np.any(~np.isfinite(y)):
+        return 0.5
     slope = np.polyfit(x, y, 1)[0]
     return float(np.clip(slope, 0, 1))
 

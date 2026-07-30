@@ -15,6 +15,7 @@ import logging
 from log_utils import get_logger
 import time
 from datetime import datetime
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -28,8 +29,77 @@ logger = get_logger("monitor")
 
 _DRIFT_THRESHOLD = 0.15
 _ATR_MULTIPLE = 2.0
-# 持有中的状态值
 _HOLD_STATES = ("HOLD", "BUY_MORE", "WARNING")
+
+
+# ───────────────────────────────────────────
+# 防线 Rule 类型：统一 interface
+# ───────────────────────────────────────────
+
+@dataclass
+class DefenseResult:
+    """防线检测结果。"""
+    signal: str = "HOLD"     # EXIT / WARNING / HOLD / BUY_MORE
+    reason: str = ""
+    trailing: bool = False
+    drift: bool = False
+    sector_adv: bool = False
+
+
+class DefenseRule:
+    """防线规则基类——每条防线独立判断，返回信号或 None 表示不触发。"""
+
+    def check(self, code: str, buy_reason: str, sector: str,
+              ctx, highest: float | None, navs: list[float],
+              atr: float, reco_date: str) -> DefenseResult | None:
+        raise NotImplementedError
+
+
+class TrailingStopRule(DefenseRule):
+    """防线1：追踪止损"""
+
+    def check(self, code, buy_reason, sector, ctx, highest, navs, atr, reco_date):
+        exit_triggered, reason = check_trailing_stop(code, highest, atr, navs)
+        return DefenseResult(signal="EXIT", reason=reason, trailing=True) if exit_triggered else None
+
+
+class StyleDriftRule(DefenseRule):
+    """防线2a：风格漂移"""
+
+    def check(self, code, buy_reason, sector, ctx, highest, navs, atr, reco_date):
+        exit_triggered, reason = check_style_drift(code)
+        return DefenseResult(signal="EXIT", reason=reason, drift=True) if exit_triggered else None
+
+
+class SectorAdvantageRule(DefenseRule):
+    """防线2b：赛道优势丧失——输出 WARNING 而非 EXIT"""
+
+    def check(self, code, buy_reason, sector, ctx, highest, navs, atr, reco_date):
+        lost, reason = check_sector_advantage(code, sector)
+        return DefenseResult(signal="WARNING", reason=reason, sector_adv=True) if lost else None
+
+
+class LogicVerificationRule(DefenseRule):
+    """防线3：LLM 逻辑证伪"""
+
+    def check(self, code, buy_reason, sector, ctx, highest, navs, atr, reco_date):
+        with _db_conn() as conn:
+            logic = _check_logic_enhanced(code, buy_reason or "", sector or "", ctx, conn)
+        if logic["logic_verdict"] == "断裂":
+            return DefenseResult(signal="EXIT", reason=f"LLM逻辑证伪: {logic['reason']}")
+        if logic["signal_hint"] == "BUY_MORE":
+            return DefenseResult(signal="BUY_MORE", reason=logic.get("reason", ""),
+                                 sector_adv=bool(logic.get("sector_risk")),
+                                 drift=bool(logic.get("holding_risk")))
+        if logic["signal_hint"] == "WARNING" or bool(logic.get("sector_risk")):
+            return DefenseResult(signal="WARNING", reason=logic.get("reason", ""),
+                                 sector_adv=bool(logic.get("sector_risk")))
+        return DefenseResult(signal="HOLD", reason=logic.get("reason", ""))
+
+
+# ───────────────────────────────────────────
+# 防线函数（纯函数，可独立测试）
+# ───────────────────────────────────────────
 
 
 def _nav_since(code: str, since_date: str) -> list[float]:
@@ -219,7 +289,7 @@ def _exit_position(code: str, sell_reason: str) -> None:
         entry = RecommendLogRepo.get_entry(code, _HOLD_STATES)
         return_rate = None
         if entry:
-            entry_nav = entry[1]
+            entry_nav = entry.get("entry_nav")
             latest_nav = NavRepo.get_latest_nav(code)
             if entry_nav and latest_nav:
                 return_rate = latest_nav / entry_nav - 1.0
@@ -237,6 +307,45 @@ def _update_signal(code: str, signal: str) -> None:
     RecommendLogRepo.update_status(code, signal, _HOLD_STATES)
 
 
+def _apply_defense_chain(code: str, buy_reason: str, sector: str,
+                         ctx, highest: float | None, navs: list[float],
+                         atr: float, reco_date: str) -> tuple[str, str, bool, bool, bool]:
+    """防线链：按优先级执行，一旦触发 EXIT 立即返回。"""
+    rules: list[DefenseRule] = [
+        TrailingStopRule(),
+        StyleDriftRule(),
+        SectorAdvantageRule(),
+        LogicVerificationRule(),
+    ]
+
+    final_signal = "HOLD"
+    reasons = []
+    trailing = drift = sector_adv = False
+
+    for rule in rules:
+        result = rule.check(code, buy_reason, sector, ctx, highest, navs, atr, reco_date)
+        if result is None:
+            continue
+        reasons.append(result.reason)
+        trailing = trailing or result.trailing
+        drift = drift or result.drift
+        sector_adv = sector_adv or result.sector_adv
+
+        if isinstance(rule, (TrailingStopRule, StyleDriftRule)):
+            if result.signal == "EXIT":
+                return ("EXIT", result.reason, trailing, drift, sector_adv)
+        elif isinstance(rule, LogicVerificationRule):
+            if result.signal == "EXIT":
+                return ("EXIT", result.reason, trailing, drift, sector_adv)
+            final_signal = result.signal if result.signal != "HOLD" else final_signal
+        elif isinstance(rule, SectorAdvantageRule):
+            if result.signal == "WARNING":
+                final_signal = "WARNING"
+
+    detail = "; ".join(filter(None, reasons))
+    return (final_signal, detail, trailing, drift, sector_adv)
+
+
 def run_monitor() -> None:
     rows = RecommendLogRepo.get_holding_codes(_HOLD_STATES)
     if not rows:
@@ -246,55 +355,32 @@ def run_monitor() -> None:
     date_str = datetime.now().strftime("%Y-%m-%d")
     ctx = build_macro_context(date_str)
 
-    for code, name, reco_date, buy_reason, sector in rows:
-        logger.info("=== 监控 %s %s [赛道:%s] ===", code, name, sector or "未知")
+    for code in rows:
+        code_str, name, reco_date, buy_reason, sector = code[0], code[1], code[2], code[3], code[4]
+        logger.info("=== 监控 %s %s [赛道:%s] ===", code_str, name, sector or "未知")
 
-        highest = update_highest_nav(code, reco_date)
+        highest = update_highest_nav(code_str, reco_date)
         if highest is not None:
-            RecommendLogRepo.update_highest_nav(code, highest, _HOLD_STATES)
-        navs = _nav_since(code, reco_date)
+            RecommendLogRepo.update_highest_nav(code_str, highest, _HOLD_STATES)
+        navs = _nav_since(code_str, reco_date)
         atr = calc_atr(navs)
 
-        exit_triggered, exit_reason = check_trailing_stop(code, highest, atr, navs)
-        trail_hit = exit_triggered
-        drift_hit = False
-        if not exit_triggered:
-            exit_triggered, exit_reason = check_style_drift(code)
-            drift_hit = exit_triggered
+        signal, detail, trailing, drift, sector_adv = _apply_defense_chain(
+            code_str, buy_reason or "", sector or "", ctx, highest, navs, atr, reco_date
+        )
 
-        advantage_lost, advantage_reason = check_sector_advantage(code, sector)
-
-        if exit_triggered:
-            _log_monitor_event(code, "EXIT",
+        if signal == "EXIT":
+            _log_monitor_event(code_str, "EXIT",
                 {"logic_verdict": "", "sector_risk": False, "holding_risk": False, "reason": ""},
-                trail_hit, drift_hit, advantage_lost, exit_reason)
-            _exit_position(code, exit_reason)
-            logger.info("  EXIT: %s", exit_reason)
-            continue
-
-        with _db_conn() as conn:
-            logic = _check_logic_enhanced(code, buy_reason or "", sector or "", ctx, conn)
-
-        if logic["logic_verdict"] == "断裂":
-            _log_monitor_event(code, "EXIT", logic, trail_hit, drift_hit,
-                               advantage_lost, f"LLM逻辑证伪: {logic['reason']}")
-            _exit_position(code, f"LLM逻辑证伪: {logic['reason']}")
-            logger.info("  EXIT: %s", logic['reason'])
-            continue
-
-        if logic["signal_hint"] == "BUY_MORE" and not advantage_lost:
-            signal = "BUY_MORE"
-        elif advantage_lost or logic["signal_hint"] == "WARNING":
-            signal = "WARNING"
+                trailing, drift, sector_adv, detail)
+            _exit_position(code_str, detail)
+            logger.info("  EXIT: %s", detail)
         else:
-            signal = "HOLD"
-
-        _update_signal(code, signal)
-        detail = "; ".join(filter(None, [advantage_reason, logic["reason"]]))
-        _log_monitor_event(code, signal, logic, trail_hit, drift_hit,
-                           advantage_lost, detail)
-        logger.info("  %s | 赛道风险=%s 持仓风险=%s | %s",
-                    signal, logic["sector_risk"], logic["holding_risk"], detail)
+            _update_signal(code_str, signal)
+            _log_monitor_event(code_str, signal,
+                {"logic_verdict": "维持", "sector_risk": sector_adv, "holding_risk": drift},
+                trailing, drift, sector_adv, detail)
+            logger.info("  %s | %s", signal, detail)
 
     logger.info("监控完成: 扫描 %d 只", len(rows))
 

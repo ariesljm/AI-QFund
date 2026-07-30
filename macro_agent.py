@@ -14,7 +14,8 @@ from datetime import datetime
 
 from llm import call_llm
 from prompts import sector_selection_prompt, sector_selection_system_prompt
-from data_store import _db_conn
+from data_store import _db_conn  # 保留用于 ensure_column/迁移
+import repo
 from fetch import fetch as _fetch
 from sector_api import is_industry_code, is_industry_name
 
@@ -73,14 +74,9 @@ def _ensure_column():
 
 
 def _load_cache(date_str: str) -> MacroContext | None:
-    with _db_conn() as conn:
-        row = conn.execute(
-            "SELECT context_json FROM macro_news WHERE date = ? AND context_json IS NOT NULL",
-            (date_str,),
-        ).fetchone()
-    if row:
+    d = repo.get_cached_context(date_str)
+    if d:
         try:
-            d = json.loads(row[0])
             return MacroContext(**{k: v for k, v in d.items() if k in MacroContext.__dataclass_fields__})
         except Exception as e:
             logger.warning("宏观缓存解析失败: %s", str(e)[:120], exc_info=True)
@@ -88,12 +84,7 @@ def _load_cache(date_str: str) -> MacroContext | None:
 
 
 def _save_cache(ctx: MacroContext) -> None:
-    with _db_conn() as conn:
-        conn.execute(
-            "INSERT INTO macro_news (date, context_json) VALUES (?, ?) "
-            "ON CONFLICT(date) DO UPDATE SET context_json = excluded.context_json",
-            (ctx.date, json.dumps(asdict(ctx), ensure_ascii=False)),
-        )
+    repo.save_context(ctx.date, asdict(ctx))
 
 
 # ── 数据源 ──
@@ -224,17 +215,8 @@ def _fetch_news(date_str: str, sectors: list | None = None) -> dict:
             lines.append(f"{prefix}{e['text']}")
         news = "\n".join(lines)
 
-    with _db_conn() as conn:
-        if top_gainers or top_losers or cls_entries:
-            conn.execute(
-                "INSERT INTO macro_news "
-                "(date, news_summary, top_gainers, top_losers, etf_net_flow) "
-                "VALUES (?, ?, ?, ?, ?) "
-                "ON CONFLICT(date) DO UPDATE SET "
-                "news_summary=excluded.news_summary, top_gainers=excluded.top_gainers, "
-                "top_losers=excluded.top_losers, etf_net_flow=excluded.etf_net_flow",
-                (date_str, news, top_gainers, top_losers, etf_net_flow),
-            )
+    if top_gainers or top_losers or cls_entries:
+        repo.save_macro_news(date_str, news, top_gainers, top_losers, etf_net_flow)
     logger.info("快讯入库: 领涨[%s] 领跌[%s] cls=%d条(去重后) 关联股票%d只",
                 top_gainers[:40], top_losers[:40], len(cls_entries), len(cls_stocks))
     return {
@@ -271,12 +253,7 @@ def _fetch_flow(date_str: str, sectors: list | None = None) -> dict:
             {"name": d.get("n", ""), "flow": float(d.get("zjl", 0) or 0), "pct": d.get("u", "")}
             for d in reversed(sorted_by_flow[-5:])
         ]
-        with _db_conn() as conn:
-            conn.execute(
-                "INSERT INTO macro_news (date, flow_json) VALUES (?, ?) "
-                "ON CONFLICT(date) DO UPDATE SET flow_json = excluded.flow_json",
-                (date_str, json.dumps(result, ensure_ascii=False)),
-            )
+        repo.save_flow_data(date_str, result)
         logger.info("资金流已获取: 筛选后申万行业%d个", len(sectors))
     except Exception as e:
         logger.warning("资金流抓取失败: %s", str(e)[:120], exc_info=True)
@@ -305,30 +282,14 @@ def _is_concept_name(name: str, code: str = "") -> bool:
     if not name:
         return True
     return False
-    with _db_conn() as conn:
-        rows = conn.execute(
-            "SELECT insight FROM evolution_insights "
-            "WHERE insight_type = 'sector' AND active = 1 AND confidence > 0.3 "
-            "ORDER BY created_date DESC LIMIT 5"
-        ).fetchall()
-    if not rows:
-        return ""
-    return "\n".join(f"  - {r[0]}" for r in rows)
+
+
+def _load_sector_insights() -> str:
+    return repo.get_sector_insights()
 
 
 def _load_available_sectors() -> list[str]:
-    with _db_conn() as conn:
-        rows = conn.execute(
-            "SELECT DISTINCT rbsa_industry_1 FROM fund_features "
-            "WHERE rbsa_industry_1 IS NOT NULL AND rbsa_industry_1 != '' "
-            "UNION "
-            "SELECT DISTINCT rbsa_industry_2 FROM fund_features "
-            "WHERE rbsa_industry_2 IS NOT NULL AND rbsa_industry_2 != '' "
-            "UNION "
-            "SELECT DISTINCT rbsa_industry_3 FROM fund_features "
-            "WHERE rbsa_industry_3 IS NOT NULL AND rbsa_industry_3 != ''"
-        ).fetchall()
-    return [r[0] for r in rows]
+    return repo.get_available_sectors()
 
 
 def _build_sector_prompt(date_str: str, news: dict, flow: dict) -> str:
