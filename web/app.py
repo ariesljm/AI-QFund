@@ -281,7 +281,7 @@ async def index(request: Request):
                 seg = seg.strip()
                 if not seg or len(seg) < 6 or seg.startswith(("http", "www")):
                     continue
-                dedup = seg[:60]
+                dedup = seg[:100] if len(seg) > 100 else seg
                 if dedup in seen:
                     continue
                 seen.add(dedup)
