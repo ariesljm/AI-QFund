@@ -32,8 +32,8 @@ config/settings.toml
 .DS_Store
 Thumbs.db
 
-# CI / CD（非运行必需）
-.github/
+# CI / CD（工作流必须推送！）
+
 
 # opencode（agent skills 与配置，非运行时）
 .opencode/
