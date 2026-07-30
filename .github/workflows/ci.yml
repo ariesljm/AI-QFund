@@ -30,6 +30,7 @@ jobs:
           tags: |
             ghcr.io/ariesljm/ai-qfund:latest
             ghcr.io/ariesljm/ai-qfund:${{ github.sha }}
+            ghcr.io/ariesljm/ai-qfund:build-${{ github.run_number }}
 
       - name: 清理旧镜像（保留最新 5 个）
         env:
