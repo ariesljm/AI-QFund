@@ -12,10 +12,11 @@ from pathlib import Path
 import lightgbm as lgb
 
 from app.database import db_conn as _db_conn
-from app.engine.recommend import (
-    _features_from_window, FEATURE_COLS, _FORWARD_WINDOW,
-    _load_ranking_cfg, _regime_combo_weights,
-)
+from app.features.calculator import compute_fund_features, combo_score, regime_combo_weights
+import app.repo as repo
+
+FEATURE_COLS = repo.FEATURE_COLS
+_FORWARD_WINDOW = repo.FORWARD_WINDOW
 
 logger = logging.getLogger("backtest")
 
@@ -23,7 +24,7 @@ _STEP_DAYS = 20
 _TOP_N = 5
 _BOTTOM_N = 5
 _MAX_BT_FUNDS = 2000
-"""ponytail: 全量12K基金回测太慢，随机采样2000只。"""
+# 全量12K基金回测太慢，随机采样2000只。
 
 
 def _regime_at_date(idx_df: pd.DataFrame, date: pd.Timestamp) -> str:
@@ -48,8 +49,8 @@ def _score_funds_at_date(nav_df: pd.DataFrame, idx_df: pd.DataFrame,
     idx_vols_w = idx_vol.iloc[idx_pos - 59: idx_pos + 1].to_numpy(dtype=float)
 
     regime = _regime_at_date(idx_df, bt_date)
-    cfg = _load_ranking_cfg()
-    w = _regime_combo_weights(regime, cfg)
+    cfg = repo.get_ranking_cfg()
+    w = regime_combo_weights(regime, cfg)
 
     idx_recent = idx_close.iloc[max(0, idx_pos - 20): idx_pos + 1]
     idx_mom = (idx_recent.iloc[-1] / idx_recent.iloc[0] - 1) * 100 if len(idx_recent) >= 21 else 0.0
@@ -60,7 +61,7 @@ def _score_funds_at_date(nav_df: pd.DataFrame, idx_df: pd.DataFrame,
         g_end = g.loc[:bt_date]
         if len(g_end) < 60:
             continue
-        feat = _features_from_window(g_end.to_numpy(dtype=float), idx_closes_w, idx_vols_w)
+        feat = compute_fund_features(g_end.to_numpy(dtype=float), idx_closes_w, idx_vols_w)
         if feat is None or any(pd.isna(v) for v in feat.values()):
             continue
         feat["code"] = code
@@ -88,11 +89,8 @@ def _score_funds_at_date(nav_df: pd.DataFrame, idx_df: pd.DataFrame,
     else:
         df["score_norm"] = 0.5
 
-    df["combo"] = (
-        df["score_norm"] * w["model"]
-        + df["rel_strength"] * w["rs"]
-        + calmar_clipped * w["cal"]
-        + (df["hurst_60d"] - 0.5) * 10 * w["hurst"]
+    df["combo"] = combo_score(
+        df["score_norm"], df["rel_strength"], calmar_clipped, df["hurst_60d"], w,
     )
     return df
 

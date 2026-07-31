@@ -14,7 +14,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates libgomp1 && \
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates libgomp1 tzdata && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
@@ -25,6 +25,7 @@ RUN cp data/schema.sql /app/schema.sql && mkdir -p data/logs config models && \
     find /usr/local/lib/python3.11/site-packages -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
 
 ENV PYTHONUNBUFFERED=1
+ENV TZ=Asia/Shanghai
 
 EXPOSE 9123
 

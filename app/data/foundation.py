@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 import requests
 
-from app.database import db_conn, meta_get, meta_set
+from app.database import db_conn, meta_get, meta_set, DB_PATH
 from app.data.fetchers import fetch as _push2_fetch, fetch_async
 from app.data.nav import async_update_nav_incremental, async_download_all_nav
 from app.data.store import save_fund_list, save_index_daily, backfill_guard
@@ -34,12 +34,12 @@ _API_HOLDINGS_URL = "https://fundf10.eastmoney.com/FundArchivesDatas.aspx"
 _API_INDEX_URL = "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData"
 _API_HS300_SYMBOL = "sh000300"
 
-_EXCLUDE_KEYWORDS = ["货币", "债券", "封闭", "偏债", "QDII", "FOF", "理财", "定开", "定期开放", "持有", "LOF"]
+_EXCLUDE_KEYWORDS = ["货币", "债券", "封闭", "偏债", "QDII", "FOF", "理财", "定开", "定期开放", "持有", "LOF", "后端"]
 _EXCLUDE_CODE_PREFIXES = ("15", "16", "18", "50", "51", "55", "56", "58", "59")
 
 
 def fetch_fund_list(settings: dict | None = None) -> list[dict]:
-    resp = requests.get(
+    resp = _push2_fetch(
         _API_FUND_LIST_URL,
         headers={"User-Agent": "Mozilla/5.0", "Referer": "https://fund.eastmoney.com/"},
         timeout=30,
@@ -98,7 +98,7 @@ def fetch_index_daily(settings: dict | None = None, datalen: int = 250) -> list[
         "ma": 60,
         "datalen": datalen,
     }
-    resp = requests.get(url, params=params, timeout=15)
+    resp = _push2_fetch(url, params=params, timeout=15)
     klines = resp.json()
     result = []
     for k in klines:
@@ -124,7 +124,7 @@ def fetch_etf_daily(datalen: int = 10) -> list[dict]:
         "ma": 60,
         "datalen": datalen,
     }
-    resp = requests.get(url, params=params, timeout=15)
+    resp = _push2_fetch(url, params=params, timeout=15)
     klines = resp.json()
     result = []
     for k in klines:
@@ -529,22 +529,14 @@ def run_pipeline(steps: list[int] | None = None):
 
         if 3 in steps:
             logger.info("=== Step 3: 宏观指数获取 ===")
-            has_index = conn.execute(
-                "SELECT 1 FROM index_daily WHERE code = 'sh000300' LIMIT 1"
-            ).fetchone()
-            datalen = 20 if has_index else 250
             try:
-                index_data = fetch_index_daily(datalen=datalen)
+                index_data = fetch_index_daily(datalen=250)
                 n = save_index_daily("sh000300", index_data)
                 logger.info("沪深300日线新增 %d 条", n)
             except Exception as e:
                 logger.error("沪深300 日线获取失败: %s", str(e)[:120], exc_info=True)
-            has_etf = conn.execute(
-                "SELECT 1 FROM index_daily WHERE code = 'sh510300' LIMIT 1"
-            ).fetchone()
-            etf_datalen = 20 if has_etf else 250
             try:
-                etf_data = fetch_etf_daily(datalen=etf_datalen)
+                etf_data = fetch_etf_daily(datalen=250)
                 n_etf = save_index_daily("sh510300", etf_data)
                 logger.info("沪深300ETF(510300)日线新增 %d 条", n_etf)
             except Exception as e:
@@ -604,5 +596,13 @@ if __name__ == "__main__":
         asyncio.run(async_download_all_holdings(concurrency=concurrency))
     elif len(sys.argv) > 1 and sys.argv[1] == "--features":
         _features.calc_all_features()
+    elif len(sys.argv) > 1 and sys.argv[1] == "--prune-nav":
+        from app.data.nav import prune_nav_history
+        n = prune_nav_history()
+        logger.info("净值历史修剪: 删除 %d 行", n)
+        conn = sqlite3.connect(str(DB_PATH))
+        conn.execute("VACUUM")
+        conn.close()
+        logger.info("VACUUM 完成")
     else:
         run_pipeline()

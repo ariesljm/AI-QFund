@@ -597,6 +597,7 @@ LIVE LOG STREAM / 系统实时日志
 function _esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 var logInterval = null;
 var _logCount = 0;
+var _lastId = 0;
 var _fetching = false;
 var FUND_SKEL = '<div class="space-y-md"><div class="skel h-6 w-3/4"></div><div class="skel h-4 w-1/2"></div><div class="skel h-4 w-full"></div><div class="skel h-4 w-5/6"></div><div class="skel h-20 w-full"></div><div class="skel h-40 w-full"></div></div>';
 
@@ -626,8 +627,15 @@ function applyLogFilter() {
     });
 }
 
+function resetLogFilter() {
+    document.querySelectorAll('.log-filter').forEach(function(b) { b.classList.remove('active'); b.style.background = ''; });
+    var allBtn = document.querySelector('.log-filter[data-level="all"]');
+    if (allBtn) { allBtn.classList.add('active'); allBtn.style.background = 'rgba(0,0,0,0.1)'; }
+}
+
 function clearLogs() {
     document.getElementById('logLines').innerHTML = '';
+    resetLogFilter();
 }
 
 function openModal(id) {
@@ -635,7 +643,9 @@ function openModal(id) {
     if (id === 'systemLogModal') {
         if (logInterval) { clearInterval(logInterval); logInterval = null; }
         _logCount = 0;
+        _lastId = 0;
         document.getElementById('logLines').innerHTML = '';
+        resetLogFilter();
         fetchLogs();
         logInterval = setInterval(fetchLogs, 5000);
         var container = document.getElementById('logContainer');
@@ -809,7 +819,7 @@ async function fetchLogs() {
     if (!container || !linesEl) { _fetching = false; return; }
     var atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
     try {
-        var r = await fetch('/api/logs?lines=200&start=' + _logCount);
+        var r = await fetch('/api/logs?lines=200&after=' + _lastId);
         var data = await r.json();
         if (!data.lines || !data.lines.length) { _fetching = false; return; }
         for (var i = 0; i < data.lines.length; i++) {
@@ -831,6 +841,7 @@ async function fetchLogs() {
             }
             linesEl.appendChild(row);
         }
+        _lastId = data.last_id;
         _logCount = data.total;
         document.getElementById('logCount').textContent = _logCount + ' 条';
         if (atBottom) container.scrollTop = container.scrollHeight;

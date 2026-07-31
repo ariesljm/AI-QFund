@@ -5,6 +5,13 @@ from app.utils.log import get_logger
 
 logger = get_logger("data_store")
 
+NAV_RETENTION_DAYS = 250
+"""净值保留窗口（交易日）：每只基金仅保留最近 N 条。
+
+覆盖特征计算(60天)、web 展示(250天)、模型训练(80天起步)的全部需求，
+避免全量历史无限累积导致数据库膨胀。旧数据在每次写入时自动修剪。
+"""
+
 
 def save_fund_list(funds: list[dict]) -> int:
     with db_conn() as conn:
@@ -33,17 +40,13 @@ def save_nav_batch(conn, code: str, navs: list[dict]) -> int:
         "INSERT OR IGNORE INTO fund_nav (code, date, cum_nav) VALUES (?, ?, ?)",
         [(code, n["date"], n["cum_nav"]) for n in navs],
     )
-    dividends = [
-        (code, n["date"], n["dividend"])
-        for n in navs
-        if n.get("dividend") is not None
-    ]
-    if dividends:
-        conn.executemany(
-            "INSERT OR IGNORE INTO fund_dividend (code, date, dividend_per_unit) "
-            "VALUES (?, ?, ?)",
-            dividends,
-        )
+    # 修剪：仅保留最近 NAV_RETENTION_DAYS 条，防止历史净值无限累积（特征60/展示250/训练80均满足）
+    conn.execute(
+        "DELETE FROM fund_nav WHERE code = ? AND date < ("
+        "  SELECT date FROM fund_nav WHERE code = ? "
+        "  ORDER BY date DESC LIMIT 1 OFFSET ?)",
+        (code, code, NAV_RETENTION_DAYS - 1),
+    )
     return len(navs)
 
 
@@ -98,16 +101,6 @@ def save_index_daily(index_code: str, data: list[dict]) -> int:
             written += 1
 
         return written
-
-
-def save_holdings(code: str, holdings: list[dict], report_date: str) -> int:
-    with db_conn() as conn:
-        conn.executemany(
-            "INSERT OR REPLACE INTO fund_holdings (code, report_date, stock_code, stock_name, weight) "
-            "VALUES (?, ?, ?, ?, ?)",
-            [(code, report_date, h["stock_code"], h["stock_name"], h["weight"]) for h in holdings],
-        )
-        return len(holdings)
 
 
 def backfill_guard(failed, total, label, threshold=0.5):

@@ -11,18 +11,18 @@
 """
 
 import json
-import logging
 from app.utils.log import get_logger
 import time
 from datetime import datetime
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
-from app.database import db_conn
 from app.repo import (get_nav_since, get_latest_nav, get_latest_features,
                       get_momentum_in_sector, get_reco_date_of, get_entry,
-                      get_holding_codes, update_status, update_highest_nav)
+                      get_holding_codes, update_status, update_highest_nav,
+                      get_holdings, get_rbsa_weight_at_date,
+                      get_holding_log_id, insert_monitor_event, exit_position)
 from app.llm.macro_agent import build_macro_context
 from app.llm.client import call_llm
 from app.llm.prompts import monitor_logic_prompt
@@ -48,45 +48,78 @@ class DefenseResult:
     sector_adv: bool = False
 
 
-class DefenseRule:
-    """防线规则基类——每条防线独立判断，返回信号或 None 表示不触发。"""
+class DefenseContext:
+    """防线检测上下文：收纳规则所需的全部输入，替代 8 参宽接口。"""
 
-    def check(self, code: str, buy_reason: str, sector: str,
-              ctx, highest: float | None, navs: list[float],
-              atr: float, reco_date: str) -> DefenseResult | None:
+    def __init__(self, code: str, buy_reason: str = "", sector: str = "",
+                 ctx=None, highest: float | None = None,
+                 navs: list[float] | None = None, atr: float = 0.0,
+                 reco_date: str = ""):
+        self.code = code
+        self.buy_reason = buy_reason
+        self.sector = sector
+        self.ctx = ctx  # MacroContext
+        self.highest = highest
+        self.navs = navs or []
+        self.atr = atr
+        self.reco_date = reco_date
+
+
+class DefenseRule:
+    """防线规则基类——每条规则声明优先级（severity）与是否短路，返回信号或 None 表示不触发。
+
+    链按 severity 升序执行；short_circuit=True 的规则触发 EXIT 时立即中止。
+    新增防线只需实现 check 并声明两个类属性，无需改动链本身。
+    """
+
+    severity: int = 0
+    short_circuit: bool = False
+
+    def check(self, ctx: DefenseContext) -> DefenseResult | None:
         raise NotImplementedError
 
 
 class TrailingStopRule(DefenseRule):
     """防线1：追踪止损"""
 
-    def check(self, code, buy_reason, sector, ctx, highest, navs, atr, reco_date):
-        exit_triggered, reason = check_trailing_stop(code, highest, atr, navs)
+    severity = 10
+    short_circuit = True
+
+    def check(self, ctx: DefenseContext):
+        exit_triggered, reason = check_trailing_stop(ctx.code, ctx.highest, ctx.atr, ctx.navs)
         return DefenseResult(signal="EXIT", reason=reason, trailing=True) if exit_triggered else None
 
 
 class StyleDriftRule(DefenseRule):
     """防线2a：风格漂移"""
 
-    def check(self, code, buy_reason, sector, ctx, highest, navs, atr, reco_date):
-        exit_triggered, reason = check_style_drift(code)
+    severity = 20
+    short_circuit = True
+
+    def check(self, ctx: DefenseContext):
+        exit_triggered, reason = check_style_drift(ctx.code)
         return DefenseResult(signal="EXIT", reason=reason, drift=True) if exit_triggered else None
 
 
 class SectorAdvantageRule(DefenseRule):
     """防线2b：赛道优势丧失——输出 WARNING 而非 EXIT"""
 
-    def check(self, code, buy_reason, sector, ctx, highest, navs, atr, reco_date):
-        lost, reason = check_sector_advantage(code, sector)
+    severity = 30
+    short_circuit = False
+
+    def check(self, ctx: DefenseContext):
+        lost, reason = check_sector_advantage(ctx.code, ctx.sector)
         return DefenseResult(signal="WARNING", reason=reason, sector_adv=True) if lost else None
 
 
 class LogicVerificationRule(DefenseRule):
     """防线3：LLM 逻辑证伪"""
 
-    def check(self, code, buy_reason, sector, ctx, highest, navs, atr, reco_date):
-        with db_conn() as conn:
-            logic = _check_logic_enhanced(code, buy_reason or "", sector or "", ctx, conn)
+    severity = 40
+    short_circuit = False
+
+    def check(self, ctx: DefenseContext):
+        logic = _check_logic_enhanced(ctx.code, ctx.buy_reason or "", ctx.sector or "", ctx.ctx)
         if logic["logic_verdict"] == "断裂":
             return DefenseResult(signal="EXIT", reason=f"LLM逻辑证伪: {logic['reason']}")
         if logic["signal_hint"] == "BUY_MORE":
@@ -108,7 +141,7 @@ def _nav_since(code: str, since_date: str) -> list[float]:
     return get_nav_since(code, since_date)
 
 
-def update_highest_nav(code: str, since_date: str) -> float | None:
+def _calc_highest_nav(code: str, since_date: str) -> float | None:
     navs = _nav_since(code, since_date)
     return float(max(navs)) if navs else None
 
@@ -146,19 +179,13 @@ def _reco_date_of(code: str) -> str:
 
 def check_style_drift(code: str) -> tuple[bool, str]:
     reco_date = _reco_date_of(code)
-    init_feat = get_latest_features(code) if not reco_date else None
     cur_feat = get_latest_features(code)
 
-    # fallback: roc_date 对应的 rbsa_weight_1 需要单独查
     init_w = None
     if reco_date:
-        with db_conn() as conn:
-            row = conn.execute(
-                "SELECT rbsa_weight_1 FROM fund_features WHERE code = ? AND date = ?",
-                (code, reco_date),
-            ).fetchone()
-            if row:
-                init_w = float(row[0])
+        raw = get_rbsa_weight_at_date(code, reco_date)
+        if raw is not None:
+            init_w = float(raw)
     if init_w is None:
         return False, ""
     if not cur_feat:
@@ -202,23 +229,15 @@ def check_sector_advantage(code: str, sector: str) -> tuple[bool, str]:
 
 
 def _check_logic_enhanced(code: str, buy_reason: str, sector: str,
-                          ctx, conn) -> dict:
-    hold_rows = conn.execute(
-        "SELECT h.stock_name, h.weight, COALESCE(s.industry_name, '其他') "
-        "FROM fund_holdings h "
-        "LEFT JOIN stock_industry_map s ON h.stock_code = s.stock_code "
-        "WHERE h.code = ? "
-        "AND h.report_date = (SELECT MAX(report_date) FROM fund_holdings WHERE code = ?) "
-        "ORDER BY h.weight DESC LIMIT 5",
-        (code, code),
-    ).fetchall()
+                          ctx) -> dict:
+    hold_rows = get_holdings(code, 5)
     holdings_text = "；".join(
-        f"{r[0]}({r[2]},{r[1]:.1f}%)" for r in hold_rows
+        f"{h['stock_name']}({h['industry'] or '其他'},{h['weight']:.1f}%)" for h in hold_rows
     ) if hold_rows else "无持仓数据"
 
     matched_lines = []
-    for r in hold_rows:
-        stock_name = r[0]
+    for h in hold_rows:
+        stock_name = h["stock_name"]
         for s in ctx.cls_stock_mentions:
             if s["name"] == stock_name:
                 matched_lines.append(
@@ -266,41 +285,25 @@ def _check_logic_enhanced(code: str, buy_reason: str, sector: str,
 def _log_monitor_event(code: str, signal: str, logic: dict,
                        trailing: bool, drift: bool, sector_adv: bool,
                        detail: str) -> None:
-    with db_conn() as conn:
-        log_id = conn.execute(
-            f"SELECT id FROM recommend_log WHERE code = ? AND status IN "
-            f"({','.join('?'*len(_HOLD_STATES))}) ORDER BY id DESC LIMIT 1",
-            (code, *_HOLD_STATES),
-        ).fetchone()
-        conn.execute(
-            "INSERT INTO monitor_events "
-            "(code, date, signal, trigger_trailing, trigger_drift, trigger_sector_adv, "
-            "logic_verdict, sector_risk, holding_risk, detail, recommend_log_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (code, datetime.now().strftime("%Y-%m-%d"), signal,
-             trailing, drift, sector_adv,
-             logic.get("logic_verdict", ""), logic.get("sector_risk", False),
-             logic.get("holding_risk", False), detail,
-             log_id[0] if log_id else None),
-        )
+    log_id = get_holding_log_id(code, _HOLD_STATES)
+    insert_monitor_event(
+        code, datetime.now().strftime("%Y-%m-%d"), signal,
+        trailing, drift, sector_adv,
+        logic.get("logic_verdict", ""), logic.get("sector_risk", False),
+        logic.get("holding_risk", False), detail, log_id,
+    )
 
 
 def _exit_position(code: str, sell_reason: str) -> None:
-    with db_conn() as conn:
-        today = datetime.now().strftime("%Y-%m-%d")
-        entry = get_entry(code, _HOLD_STATES)
-        return_rate = None
-        if entry:
-            entry_nav = entry.get("entry_nav")
-            latest_nav = get_latest_nav(code)
-            if entry_nav and latest_nav:
-                return_rate = latest_nav / entry_nav - 1.0
-        placeholders = ",".join("?" * len(_HOLD_STATES))
-        conn.execute(
-            "UPDATE recommend_log SET status='EXIT', sell_reason=?, exit_date=?, return_rate=? "
-            f"WHERE code=? AND status IN ({placeholders})",
-            (sell_reason, today, return_rate, code, *_HOLD_STATES),
-        )
+    today = datetime.now().strftime("%Y-%m-%d")
+    entry = get_entry(code, _HOLD_STATES)
+    return_rate = None
+    if entry:
+        entry_nav = entry.get("entry_nav")
+        latest_nav = get_latest_nav(code)
+        if entry_nav and latest_nav:
+            return_rate = latest_nav / entry_nav - 1.0
+    exit_position(code, sell_reason, return_rate, _HOLD_STATES, today)
     logger.info("平仓 EXIT: %s | %s | 收益: %s", code, sell_reason,
                 f"{return_rate*100:+.2f}%" if return_rate is not None else "未知")
 
@@ -309,23 +312,27 @@ def _update_signal(code: str, signal: str) -> None:
     update_status(code, signal, _HOLD_STATES)
 
 
-def _apply_defense_chain(code: str, buy_reason: str, sector: str,
-                         ctx, highest: float | None, navs: list[float],
-                         atr: float, reco_date: str) -> tuple[str, str, bool, bool, bool]:
-    """防线链：按优先级执行，一旦触发 EXIT 立即返回。"""
-    rules: list[DefenseRule] = [
-        TrailingStopRule(),
-        StyleDriftRule(),
-        SectorAdvantageRule(),
-        LogicVerificationRule(),
-    ]
+def _apply_defense_chain(ctx: DefenseContext,
+                         rules: list[DefenseRule] | None = None) -> tuple[str, str, bool, bool, bool]:
+    """防线链：按规则声明的 severity 升序执行，short_circuit 规则触发 EXIT 立即返回。
+
+    rules 可注入（测试用），默认使用四条生产防线。
+    """
+    if rules is None:
+        rules = [
+            TrailingStopRule(),
+            StyleDriftRule(),
+            SectorAdvantageRule(),
+            LogicVerificationRule(),
+        ]
+    rules = sorted(rules, key=lambda r: r.severity)
 
     final_signal = "HOLD"
     reasons = []
     trailing = drift = sector_adv = False
 
     for rule in rules:
-        result = rule.check(code, buy_reason, sector, ctx, highest, navs, atr, reco_date)
+        result = rule.check(ctx)
         if result is None:
             continue
         reasons.append(result.reason)
@@ -333,16 +340,10 @@ def _apply_defense_chain(code: str, buy_reason: str, sector: str,
         drift = drift or result.drift
         sector_adv = sector_adv or result.sector_adv
 
-        if isinstance(rule, (TrailingStopRule, StyleDriftRule)):
-            if result.signal == "EXIT":
-                return ("EXIT", result.reason, trailing, drift, sector_adv)
-        elif isinstance(rule, LogicVerificationRule):
-            if result.signal == "EXIT":
-                return ("EXIT", result.reason, trailing, drift, sector_adv)
-            final_signal = result.signal if result.signal != "HOLD" else final_signal
-        elif isinstance(rule, SectorAdvantageRule):
-            if result.signal == "WARNING":
-                final_signal = "WARNING"
+        if rule.short_circuit and result.signal == "EXIT":
+            return ("EXIT", result.reason, trailing, drift, sector_adv)
+        if result.signal != "HOLD":
+            final_signal = result.signal
 
     detail = "; ".join(filter(None, reasons))
     return (final_signal, detail, trailing, drift, sector_adv)
@@ -361,14 +362,17 @@ def run_monitor() -> None:
         code_str, name, reco_date, buy_reason, sector = code[0], code[1], code[2], code[3], code[4]
         logger.info("=== 监控 %s %s [赛道:%s] ===", code_str, name, sector or "未知")
 
-        highest = update_highest_nav(code_str, reco_date)
+        highest = _calc_highest_nav(code_str, reco_date)
         if highest is not None:
             update_highest_nav(code_str, highest, _HOLD_STATES)
         navs = _nav_since(code_str, reco_date)
         atr = calc_atr(navs)
 
         signal, detail, trailing, drift, sector_adv = _apply_defense_chain(
-            code_str, buy_reason or "", sector or "", ctx, highest, navs, atr, reco_date
+            DefenseContext(
+                code=code_str, buy_reason=buy_reason or "", sector=sector or "",
+                ctx=ctx, highest=highest, navs=navs, atr=atr, reco_date=reco_date,
+            )
         )
 
         if signal == "EXIT":

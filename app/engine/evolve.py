@@ -8,7 +8,6 @@
 """
 
 import json
-import logging
 import re
 import time
 from datetime import datetime
@@ -17,10 +16,10 @@ from pathlib import Path
 import numpy as np
 
 from app.utils.log import get_logger
-from app.database import get_db as _get_db, db_conn
-from app.config import load_settings
+from app.database import db_conn
 from app.llm.client import call_llm
 from app.llm.prompts import evolution_analysis_prompt
+import app.repo as repo
 
 logger = get_logger("evolve")
 
@@ -33,11 +32,7 @@ _OUTCOME_DAYS_THRESHOLD = 20
 def _apply_ranking_weights(weights: dict) -> bool:
     """将排序权重写入 meta 表，供 recommend._load_ranking_cfg 读取。"""
     try:
-        with db_conn() as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO meta (key, value) VALUES ('ranking_cfg', ?)",
-                (json.dumps(weights),),
-            )
+        repo.save_ranking_cfg(weights)
         return True
     except Exception as e:
         logger.warning("写入排序权重失败: %s", str(e)[:120], exc_info=True)
@@ -67,19 +62,14 @@ def _review_ranking_all() -> list[str]:
     if corr_cm < 0:
         fixes.append(f"calmar与动量负相关({corr_cm:+.3f})，回撤质量信号失效")
 
-    with db_conn() as idx:
-        idx_rows = idx.execute(
-            "SELECT close FROM index_daily WHERE code='sh000300' ORDER BY date DESC LIMIT 21"
-        ).fetchall()
-    if len(idx_rows) >= 21:
-        idx_mom = (idx_rows[0][0] / idx_rows[-1][0] - 1) * 100
-        rel = mom - idx_mom
-        sorted_rel = np.sort(rel)[::-1]
-        top10_mean = sorted_rel[:10].mean()
-        bot10_mean = sorted_rel[-10:].mean()
-        spread = top10_mean - bot10_mean
-        if spread < 10:
-            fixes.append(f"相对强弱区分度不足(Top10-Bottom10={spread:.1f}pp)")
+    idx_mom = repo.get_index_momentum()
+    rel = mom - idx_mom
+    sorted_rel = np.sort(rel)[::-1]
+    top10_mean = sorted_rel[:10].mean()
+    bot10_mean = sorted_rel[-10:].mean()
+    spread = top10_mean - bot10_mean
+    if spread < 10:
+        fixes.append(f"相对强弱区分度不足(Top10-Bottom10={spread:.1f}pp)")
 
     if fixes:
         new = {

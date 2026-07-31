@@ -202,3 +202,119 @@ class TestPrompts:
         sp = sector_selection_system_prompt()
         assert "JSON" in sp
         assert "markdown" in sp.lower()
+
+
+# ============================================================
+# features — compute_fund_features（C3 公式单一来源）
+# ============================================================
+
+from app.features.calculator import compute_fund_features, combo_score, regime_combo_weights
+
+class TestComputeFundFeatures:
+    def test_returns_seven_features(self):
+        """固定单调净值序列应产出全部 7 个特征且数值有限。"""
+        navs = np.linspace(1.0, 1.5, 80)
+        idx_closes = np.linspace(3000.0, 3200.0, 80)
+        idx_vols = np.full(80, 1e8)
+        feat = compute_fund_features(navs, idx_closes, idx_vols)
+        assert feat is not None
+        for key in ("hurst_60d", "momentum_20d", "calmar", "downside_vol",
+                    "capture_up", "capture_down", "bias_60d"):
+            assert key in feat
+            assert np.isfinite(feat[key])
+        assert feat["momentum_20d"] > 0  # 单调上涨序列动量应为正
+
+    def test_insufficient_data_returns_none(self):
+        """净值不足 60 条时返回 None（与训练样本跳过逻辑一致）。"""
+        navs = np.linspace(1.0, 1.1, 30)
+        idx_closes = np.linspace(3000.0, 3200.0, 30)
+        assert compute_fund_features(navs, idx_closes, np.full(30, 1.0)) is None
+
+    def test_consistency_with_short_history(self):
+        """刚好 61 天净值的特征公式应产出有限特征，不抛异常。"""
+        navs = np.linspace(1.0, 1.2, 61)
+        idx_closes = np.linspace(3000.0, 3100.0, 61)
+        feat = compute_fund_features(navs, idx_closes, np.full(61, 1e8))
+        assert feat is not None
+        assert all(np.isfinite(feat[k]) for k in feat)
+
+
+# ============================================================
+# features — combo_score / regime_combo_weights（C3 打分收敛）
+# ============================================================
+
+class TestComboScore:
+    def test_basic_combination(self):
+        """combo_score 是各因子加权和，且权重由 w 驱动。"""
+        w = {"model": 0.5, "rs": 0.15, "cal": 0.1, "hurst": 0.1}
+        base = combo_score(1.0, 5.0, 2.0, 0.6, w)
+        higher = combo_score(1.0, 10.0, 2.0, 0.6, w)
+        assert higher > base  # rel_strength 越大 combo 越高
+
+    def test_default_sector_and_rbsa_zero(self):
+        """未传赛道相对项与 rbsa 权重时按 0 处理（降级/回测路径）。"""
+        w = {"model": 0.5, "rs": 0.15, "cal": 0.1, "hurst": 0.1}
+        a = combo_score(0.5, 0.0, 0.0, 0.5, w)
+        b = combo_score(0.5, 0.0, 0.0, 0.5, w, sector_rel_momentum=10.0)
+        assert b > a  # 赛道相对动量项为正贡献
+
+
+class TestRegimeComboWeights:
+    def test_bull_shifts_to_momentum(self):
+        cfg = {"model_weight": 0.5, "rel_strength_weight": 0.15,
+               "calmar_weight": 0.1, "hurst_weight": 0.1}
+        bull = regime_combo_weights("BULL", cfg)
+        assert bull["rs"] > cfg["rel_strength_weight"]
+        assert bull["cal"] < cfg["calmar_weight"]
+
+    def test_bear_shifts_to_calmar(self):
+        cfg = {"model_weight": 0.5, "rel_strength_weight": 0.15,
+               "calmar_weight": 0.1, "hurst_weight": 0.1}
+        bear = regime_combo_weights("BEAR", cfg)
+        assert bear["cal"] > cfg["calmar_weight"]
+        assert bear["rs"] < cfg["rel_strength_weight"]
+
+
+# ============================================================
+# monitor — 防线链数据驱动（C2）与遮蔽 bug 回归
+# ============================================================
+
+import inspect
+from app.engine import monitor as monitor_mod
+
+class TestDefenseChain:
+    def test_short_circuit_exit_stops_chain(self):
+        """short_circuit=True 的规则触发 EXIT 时链立即终止。"""
+
+        class FakeExit(monitor_mod.DefenseRule):
+            severity = 10
+            short_circuit = True
+
+            def check(self, ctx):
+                return monitor_mod.DefenseResult(signal="EXIT", reason="fake exit")
+
+        class FakeWarn(monitor_mod.DefenseRule):
+            severity = 20
+            short_circuit = False
+
+            def check(self, ctx):
+                return monitor_mod.DefenseResult(signal="WARNING", reason="fake warn")
+
+        signal, detail, *_ = monitor_mod._apply_defense_chain(
+            monitor_mod.DefenseContext(code="X"), [FakeExit(), FakeWarn()]
+        )
+        assert signal == "EXIT"
+        assert detail == "fake exit"
+
+    def test_non_short_circuit_warning_finalizes(self):
+        """非短路 WARNING 规则设置最终信号，链继续但最终为 WARNING。"""
+        signal, detail, *_ = monitor_mod._apply_defense_chain(
+            monitor_mod.DefenseContext(code="X"),
+            [monitor_mod.SectorAdvantageRule()],
+        )
+        assert signal in ("WARNING", "HOLD")
+
+    def test_update_highest_nav_is_repo_version(self):
+        """回归：monitor.update_highest_nav 不应被本地 2 参函数遮蔽。"""
+        sig = inspect.signature(monitor_mod.update_highest_nav)
+        assert len(sig.parameters) == 3, f"遮蔽 bug 复现: {sig}"

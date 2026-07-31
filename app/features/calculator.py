@@ -6,9 +6,12 @@ import time
 
 import numpy as np
 
+import app.repo as repo
+
 logger = get_logger("features")
 
-
+_FEATURE_RETENTION_ROWS = 250
+"""fund_features 每只基金保留的特征快照行数（与净值保留窗口一致，覆盖监控风格漂移的历史查询）。"""
 
 
 def calc_hurst(series: np.ndarray, max_lag: int = 20) -> float:
@@ -40,26 +43,109 @@ def calc_hurst(series: np.ndarray, max_lag: int = 20) -> float:
     return float(np.clip(slope, 0, 1))
 
 
-def calc_rbsa(holdings: list[dict], conn: sqlite3.Connection | None = None) -> list[dict]:
+def compute_fund_features(navs: np.ndarray, idx_closes: np.ndarray,
+                          idx_volumes: np.ndarray) -> dict | None:
+    """从净值+指数数组计算 7 个特征（纯函数，不触碰 DB；数据不足返回 None）。
+
+    特征公式单一来源：calc_features / 训练样本 / 回测均复用，避免多套公式漂移。
+    """
+    if len(navs) < 60:
+        return None
+    with np.errstate(divide="ignore", invalid="ignore"):
+        returns = np.diff(navs) / navs[:-1]
+    returns = returns[np.isfinite(returns)]
+
+    feat: dict = {}
+    window = min(60, len(returns))
+    feat["hurst_60d"] = float(calc_hurst(returns[-window:]))
+    feat["momentum_20d"] = float((navs[-1] / navs[-20] - 1) * 100) if len(navs) >= 20 else 0.0
+
+    if len(navs) >= 60:
+        cum = navs[-60:] / navs[-60]
+        peak = np.maximum.accumulate(cum)
+        dd = (cum - peak) / peak
+        max_dd = float(np.min(dd))
+        ann = float((navs[-1] / navs[-60] - 1) * 252 / 60)
+        feat["calmar"] = ann / abs(max_dd) if abs(max_dd) > 1e-10 else 0.0
+    else:
+        feat["calmar"] = 0.0
+
+    if len(returns) >= 20:
+        neg = returns[-20:][returns[-20:] < 0]
+        feat["downside_vol"] = float(np.std(neg) * np.sqrt(252)) if len(neg) > 0 else 0.0
+    else:
+        feat["downside_vol"] = 0.0
+
+    if len(idx_closes) >= 60 and len(returns) >= 60:
+        idx_ret = np.diff(idx_closes) / idx_closes[:-1]
+        idx_ret = idx_ret[np.isfinite(idx_ret)]
+        m = min(60, len(returns), len(idx_ret))
+        fr, ir = returns[-m:], idx_ret[-m:]
+        up, down = ir > 0, ir < 0
+        feat["capture_up"] = float(np.mean(fr[up]) / np.mean(ir[up])) if up.sum() > 0 else 1.0
+        feat["capture_down"] = float(np.mean(fr[down]) / np.mean(ir[down])) if down.sum() > 0 else 1.0
+    else:
+        feat["capture_up"] = feat["capture_down"] = 1.0
+
+    if len(idx_closes) >= 60:
+        idx_ma60 = np.mean(idx_closes[-60:])
+        feat["bias_60d"] = float((idx_closes[-1] - idx_ma60) / idx_ma60 * 100)
+    else:
+        feat["bias_60d"] = 0.0
+    return feat
+
+
+def combo_score(score_norm, rel_strength, calmar, hurst, w,
+                sector_rel_momentum=0.0, sector_rel_calmar=0.0,
+                rbsa_weight=0.0):
+    """组合打分公式单一来源（主路径/降级路径/回测共用）。
+
+    主路径传 sector_rel + rbsa_weight；降级与回测路径缺失的数据按 0 处理。
+    """
+    return (score_norm * w["model"]
+            + rel_strength * w["rs"]
+            + sector_rel_momentum * 0.15
+            + calmar * w["cal"]
+            + sector_rel_calmar * 0.05
+            + (hurst - 0.5) * 10 * w["hurst"]
+            + rbsa_weight * 0.003)
+
+
+def regime_combo_weights(regime: str, cfg: dict) -> dict:
+    """根据大盘状态调整因子权重：BULL 偏动量+赫斯特，BEAR 偏卡玛。"""
+    w_model = cfg["model_weight"]
+    w_rs = cfg["rel_strength_weight"]
+    w_cal = cfg["calmar_weight"]
+    w_hurst = cfg["hurst_weight"]
+    if regime == "BULL":
+        w_rs *= 1.3
+        w_hurst *= 1.3
+        w_cal *= 0.5
+    elif regime == "BEAR":
+        w_cal *= 1.5
+        w_rs *= 0.7
+        w_hurst *= 0.5
+    return {"model": w_model, "rs": w_rs, "cal": w_cal, "hurst": w_hurst}
+
+
+def calc_rbsa(holdings: list[dict], industry_map: dict[str, str] | None = None) -> list[dict]:
+    """按持仓权重聚合前 3 大行业暴露。
+
+    industry_map 为预加载的 stock_code→industry_name 映射（由 calc_all_features 一次性载入，
+    避免逐持仓查询）。
+    """
     industry_weights: dict[str, float] = {}
     for h in holdings:
         stock_code = h["stock_code"]
-        industry = None
-        if conn:
-            row = conn.execute(
-                "SELECT industry_name FROM stock_industry_map WHERE stock_code = ?",
-                (stock_code,),
-            ).fetchone()
-            if row and row[0]:
-                industry = row[0]
-        if not industry:
-            industry = "其他"
+        industry = (industry_map or {}).get(stock_code) or "其他"
         industry_weights[industry] = industry_weights.get(industry, 0) + h["weight"]
     sorted_industries = sorted(industry_weights.items(), key=lambda x: x[1], reverse=True)
     return [{"industry": ind, "weight": w} for ind, w in sorted_industries[:3]]
 
 
-def calc_features(code: str, conn: sqlite3.Connection) -> dict:
+def calc_features(code: str, conn: sqlite3.Connection,
+                  idx_closes: np.ndarray | None = None,
+                  idx_volumes: np.ndarray | None = None) -> dict:
     cur = conn.execute(
         "SELECT date, cum_nav FROM fund_nav WHERE code = ? ORDER BY date ASC",
         (code,),
@@ -70,61 +156,17 @@ def calc_features(code: str, conn: sqlite3.Connection) -> dict:
         return {}
     dates = [r[0] for r in rows]
     navs = np.array([r[1] for r in rows], dtype=float)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        returns = np.diff(navs) / navs[:-1]
-    returns = returns[np.isfinite(returns)]
+    if idx_closes is None:
+        idx_rows = conn.execute(
+            "SELECT date, close, volume FROM index_daily WHERE code = 'sh000300' ORDER BY date ASC",
+        ).fetchall()
+        idx_volumes = np.array([r[2] for r in idx_rows], dtype=float) if idx_rows else np.array([])
+        idx_closes = np.array([r[1] for r in idx_rows], dtype=float) if idx_rows else np.array([])
+    feat = compute_fund_features(navs, idx_closes, idx_volumes)
+    if feat is None:
+        return {}
     features: dict = {"code": code, "date": dates[-1]}
-    window = min(60, len(returns))
-    features["hurst_60d"] = calc_hurst(returns[-window:])
-    if len(navs) >= 20:
-        features["momentum_20d"] = float((navs[-1] / navs[-20] - 1) * 100)
-    else:
-        features["momentum_20d"] = 0.0
-    if len(navs) >= 60:
-        cum_returns = navs[-60:] / navs[-60]
-        peak = np.maximum.accumulate(cum_returns)
-        drawdown = (cum_returns - peak) / peak
-        max_dd = float(np.min(drawdown))
-        ann_return = float((navs[-1] / navs[-60] - 1) * 252 / 60)
-        features["calmar"] = ann_return / abs(max_dd) if abs(max_dd) > 1e-10 else 0.0
-    else:
-        features["calmar"] = 0.0
-    if len(returns) >= 20:
-        neg_returns = returns[-20:][returns[-20:] < 0]
-        features["downside_vol"] = float(np.std(neg_returns) * np.sqrt(252)) if len(neg_returns) > 0 else 0.0
-    else:
-        features["downside_vol"] = 0.0
-    cur_idx = conn.execute(
-        "SELECT date, close, volume FROM index_daily WHERE code = 'sh000300' ORDER BY date ASC",
-    )
-    idx_rows = cur_idx.fetchall()
-    idx_volumes = np.array([r[2] for r in idx_rows], dtype=float) if idx_rows else np.array([])
-    idx_closes = np.array([r[1] for r in idx_rows], dtype=float) if idx_rows else np.array([])
-    if len(idx_rows) >= 60 and len(returns) >= 60:
-        idx_returns = np.diff(idx_closes) / idx_closes[:-1]
-        idx_returns = idx_returns[np.isfinite(idx_returns)]
-        min_len = min(60, len(returns), len(idx_returns))
-        fund_ret = returns[-min_len:]
-        idx_ret = idx_returns[-min_len:]
-        up_mask = idx_ret > 0
-        down_mask = idx_ret < 0
-        if np.sum(up_mask) > 0:
-            features["capture_up"] = float(np.mean(fund_ret[up_mask]) / np.mean(idx_ret[up_mask]))
-        else:
-            features["capture_up"] = 1.0
-        if np.sum(down_mask) > 0:
-            features["capture_down"] = float(np.mean(fund_ret[down_mask]) / np.mean(idx_ret[down_mask]))
-        else:
-            features["capture_down"] = 1.0
-    else:
-        features["capture_up"] = 1.0
-        features["capture_down"] = 1.0
-    # bias_60d 改为指数乖离率（沪深300 close vs MA60），表征大盘超跌反弹环境
-    if len(idx_rows) >= 60:
-        idx_ma60 = np.mean(idx_closes[-60:])
-        features["bias_60d"] = float((idx_closes[-1] - idx_ma60) / idx_ma60 * 100)
-    else:
-        features["bias_60d"] = 0.0
+    features.update(feat)
     # 数据质量校验：检测 NaN/Inf/极端值
     for key in ("hurst_60d", "momentum_20d", "calmar", "downside_vol",
                  "capture_up", "capture_down", "bias_60d"):
@@ -150,6 +192,17 @@ def calc_all_features(batch_commit: int = 500) -> int:
             ).fetchall()
         ]
         total = len(all_codes)
+        # 预加载全局不变的数据，避免逐基金/逐持仓重复查询（N+1）
+        industry_map = dict(
+            conn.execute(
+                "SELECT stock_code, industry_name FROM stock_industry_map"
+            ).fetchall()
+        )
+        idx_rows = conn.execute(
+            "SELECT date, close, volume FROM index_daily WHERE code = 'sh000300' ORDER BY date ASC",
+        ).fetchall()
+        idx_volumes = np.array([r[2] for r in idx_rows], dtype=float) if idx_rows else np.array([])
+        idx_closes = np.array([r[1] for r in idx_rows], dtype=float) if idx_rows else np.array([])
         rbsa_data: dict[str, list[dict]] = {}
         cur_r = conn.execute(
             "SELECT code, stock_code, stock_name, weight FROM fund_holdings "
@@ -160,19 +213,13 @@ def calc_all_features(batch_commit: int = 500) -> int:
         for code, sc, sn, w in cur_r.fetchall():
             _rbsa_buf.setdefault(code, []).append({"stock_code": sc, "stock_name": sn, "weight": w})
         for code, holdings in _rbsa_buf.items():
-            top = calc_rbsa(holdings, conn)
+            top = calc_rbsa(holdings, industry_map)
             if top:
                 rbsa_data[code] = top
         logger.info("RBSA 预加载完成: %d 只基金有行业暴露", len(rbsa_data))
-        # 大盘状态机：沪深300 close vs MA60 → BULL/BEAR
-        regime = "NEUTRAL"
-        idx_row = conn.execute(
-            "SELECT close, ma60 FROM index_daily WHERE code='sh000300' ORDER BY date DESC LIMIT 1"
-        ).fetchone()
-        if idx_row and idx_row[0] and idx_row[1] and idx_row[1] > 0:
-            regime = "BULL" if idx_row[0] > idx_row[1] else "BEAR"
-        logger.info("大盘状态机: %s (close=%s, ma60=%s)", regime,
-                     idx_row[0] if idx_row else None, idx_row[1] if idx_row else None)
+        # 大盘状态机：沪深300 close vs MA60 → BULL/BEAR（repo 单一来源）
+        regime = repo.get_market_regime()
+        logger.info("大盘状态机: %s", regime)
         feature_dates = dict(
             conn.execute("SELECT code, date FROM fund_features").fetchall()
         )
@@ -215,7 +262,7 @@ def calc_all_features(batch_commit: int = 500) -> int:
             if code in skip_codes:
                 done += 1
                 continue
-            features = calc_features(code, conn)
+            features = calc_features(code, conn, idx_closes, idx_volumes)
             done += 1
             if features:
                 top = rbsa_data.get(code, [])
@@ -250,6 +297,15 @@ def calc_all_features(batch_commit: int = 500) -> int:
                 elapsed = time.monotonic() - start_time
                 speed = done / elapsed if elapsed > 0 else 0
                 logger.info("特征计算进度: %d/%d, speed=%.1f/s", done, total, speed)
+        # 修剪：每只基金仅保留最近 N 行特征快照，防止历史快照无限累积
+        conn.execute(
+            "DELETE FROM fund_features WHERE rowid IN ("
+            "  SELECT rowid FROM ("
+            "    SELECT rowid, ROW_NUMBER() OVER (PARTITION BY code ORDER BY date DESC) rk"
+            "    FROM fund_features) WHERE rk > ?)",
+            (_FEATURE_RETENTION_ROWS,),
+        )
+        conn.commit()
     elapsed = time.monotonic() - start_time
     logger.info("特征计算完成: %d/%d 只基金入库, 耗时 %.1f 秒", saved, total, elapsed)
     return saved

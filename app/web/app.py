@@ -21,6 +21,7 @@ import json
 from app.database import get_db as _get_db, db_conn
 from app.config import load_settings as _load_settings, save_settings as _save_settings, SETTINGS_PATH
 from app.pipeline import run as run_full_pipeline
+import app.repo as repo
 
 logger = logging.getLogger("web")
 
@@ -242,56 +243,52 @@ async def index(request: Request):
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     # 今日推荐（最新 2 条 recommend_log）
-    recs = _q(
-        "SELECT r.id, r.code, fb.name, r.score, r.combo, r.regime, r.buy_reason, r.status, "
-        "r.recommend_date, r.return_rate, fb.type "
-        "FROM recommend_log r LEFT JOIN fund_basic fb ON fb.code = r.code "
-        "ORDER BY r.id DESC LIMIT 2"
-    )
+    recs = repo.get_latest_recommendations(2)
 
     latest = None
     latest_rec_id = None
     latest_list: list[dict] = []
     for rec in recs:
         if latest_rec_id is None:
-            latest_rec_id = rec[0]
-        raw_reason = (rec[6] or "").split(" | 否决记录:")[0].strip()
+            latest_rec_id = rec["id"]
         entry = {
-            "code": rec[1], "name": rec[2], "score": _display_score(rec[4], rec[3]),
-            "regime": rec[5] or "NEUTRAL", "reason": raw_reason,
-            "status": rec[7], "date": rec[8] or today, "return": rec[9],
-            "type": rec[10] or "",
+            "code": rec["code"], "name": rec["name"], "score": _display_score(rec["combo"], rec["score"]),
+            "regime": rec["regime"] or "NEUTRAL", "reason": rec["reason"],
+            "status": rec["status"], "date": rec["date"] or today, "return": rec["return"],
+            "type": rec["type"] or "",
         }
         latest_list.append(entry)
         if latest is None:
             latest = entry
 
     # 宏观摘要（从 macro_news 取管线已入库的快讯，与 LLM 分析数据源一致）
+    import re as _re
     news_items = ["暂无快讯"]
-    try:
-        row = _q1(
-            "SELECT news_summary, top_gainers, top_losers, etf_net_flow FROM macro_news "
-            "ORDER BY date DESC LIMIT 1"
-        )
-        if row and row[0]:
-            text = row[0]
-            lines = text.replace("；", "\n").split("\n")
-            seen = set()
-            items = []
-            for seg in lines:
-                seg = seg.strip()
-                if not seg or len(seg) < 6 or seg.startswith(("http", "www")):
-                    continue
-                dedup = seg[:100] if len(seg) > 100 else seg
-                if dedup in seen:
-                    continue
-                seen.add(dedup)
-                items.append(seg)
-            if items:
-                news_items = items
-        top_gainers = row[1] if row and row[1] else ""
-        top_losers = row[2] if row and row[2] else ""
-        etf_net_flow = row[3] if row and row[3] else ""
+    sector_gainers = sector_losers = []
+    flow_inflows = []
+    flow_outflows = []
+    sector_reasoning = ""
+    regime_label = "NEUTRAL"
+    mn = repo.get_latest_macro_news()
+    if mn:
+        text = mn.get("news_summary") or ""
+        lines = text.replace("；", "\n").split("\n")
+        seen = set()
+        items = []
+        for seg in lines:
+            seg = seg.strip()
+            if not seg or len(seg) < 6 or seg.startswith(("http", "www")):
+                continue
+            dedup = seg[:100] if len(seg) > 100 else seg
+            if dedup in seen:
+                continue
+            seen.add(dedup)
+            items.append(seg)
+        if items:
+            news_items = items
+        top_gainers = mn.get("top_gainers") or ""
+        top_losers = mn.get("top_losers") or ""
+        etf_net_flow = mn.get("etf_net_flow") or ""
         gainer_seen = set()
         if top_gainers:
             for g in top_gainers.replace("、", "\n").split("\n"):
@@ -306,28 +303,9 @@ async def index(request: Request):
                     news_items.append("\u2193 " + l)
         if etf_net_flow:
             news_items.insert(0, "\u8d44\u91d1\u6d41\u5411: " + etf_net_flow)
-    except Exception as e:
-        logger.warning("快讯加载失败: %s", e)
-    macro_data = {
-        "news": "；".join(news_items),
-        "news_items": news_items,
-        "top_gainers": [],
-        "top_losers": [],
-        "etf_net_flow": "",
-    }
-
-    # 领涨/领跌行业（取最近有数据的日期，各取前3，带幅度强度）
-    sector_gainers = sector_losers = []
-    try:
-        import re as _re
-        row = _q1(
-            "SELECT top_gainers, top_losers FROM macro_news "
-            "WHERE top_gainers IS NOT NULL AND top_gainers != '' "
-            "ORDER BY date DESC LIMIT 1"
-        )
-        if row:
-            raw_g = _re.findall(r"([^(]+)\(([^)]+)\)", row[0])[:9]
-            raw_l = _re.findall(r"([^(]+)\(([^)]+)\)", row[1] or "")[:3]
+        # 领涨/领跌行业（各取前3，带幅度强度）
+        if top_gainers:
+            raw_g = _re.findall(r"([^(]+)\(([^)]+)\)", top_gainers)[:9]
             if raw_g:
                 g = [(n.strip("、 "), float(p.replace("%", ""))) for n, p in raw_g]
                 m = len(g)
@@ -335,6 +313,8 @@ async def index(request: Request):
                     {"name": n, "pct": f"{v:+.2f}%", "s": 1 - i / (m - 1) if m > 1 else 0.5}
                     for i, (n, v) in enumerate(g)
                 ]
+        if top_losers:
+            raw_l = _re.findall(r"([^(]+)\(([^)]+)\)", top_losers)[:3]
             if raw_l:
                 l = [(n.strip("、 "), float(p.replace("%", ""))) for n, p in raw_l]
                 l.sort(key=lambda x: x[1])
@@ -345,46 +325,23 @@ async def index(request: Request):
                         for i, (n, v) in enumerate(l)
                     ]
                     sector_losers.reverse()  # 左浅右深：跌幅从小到大排列
-    except Exception as e:
-        logger.warning("板块排行解析失败: %s", e)
-
-    # 资金流向（优先从 flow_json 读取，独立于 LLM 管线）
-    flow_inflows = []
-    flow_outflows = []
-    try:
-        import json as _json
-        row = _q1(
-            "SELECT flow_json FROM macro_news "
-            "WHERE flow_json IS NOT NULL AND flow_json != '' "
-            "ORDER BY date DESC LIMIT 1"
-        )
-        if row:
-            f = _json.loads(row[0])
-            flow_inflows = f.get("top_flows", [])
-            flow_outflows = [
-                {**s, "abs": abs(s.get("flow", 0) or 0)}
-                for s in f.get("top_outflows", [])
-            ]
-    except Exception as e:
-        logger.warning("资金流向数据解析失败: %s", e)
-
-    # 赛道分析（从 context_json 解析，依赖 LLM 管线）
-    sector_reasoning = ""
-    regime_label = "NEUTRAL"
-    try:
-        import json as _json
-        cj = _q1(
-            "SELECT context_json FROM macro_news "
-            "WHERE context_json IS NOT NULL AND context_json != '' "
-            "ORDER BY date DESC LIMIT 1"
-        )
-        if cj:
-            ctx = _json.loads(cj[0])
-            sector_reasoning = ctx.get("sector_reasoning", "")
-            raw_regime = (ctx.get("regime_label") or "neutral").upper()
-            regime_label = raw_regime if raw_regime in ("BULL", "BEAR") else "NEUTRAL"
-    except Exception as e:
-        logger.warning("宏观上下文解析失败: %s", e)
+        # 资金流向（flow_json 合并行）
+        flow_inflows = mn.get("flow_inflows") or []
+        flow_outflows = [
+            {**s, "abs": abs(s.get("flow", 0) or 0)}
+            for s in (mn.get("flow_outflows") or [])
+        ]
+        # 赛道分析（context_json 合并行）
+        sector_reasoning = mn.get("sector_reasoning") or ""
+        raw_regime = (mn.get("regime_label") or "neutral").upper()
+        regime_label = raw_regime if raw_regime in ("BULL", "BEAR") else "NEUTRAL"
+    macro_data = {
+        "news": "；".join(news_items),
+        "news_items": news_items,
+        "top_gainers": [],
+        "top_losers": [],
+        "etf_net_flow": "",
+    }
 
     # 行业热力图
     sectors = _q(
@@ -399,63 +356,39 @@ async def index(request: Request):
     ]
 
     # 基金池总数 + 按类型分组
-    pool = _q1("SELECT COUNT(*) FROM fund_basic WHERE is_buyable=1")
-    fund_pool = pool[0] if pool else 0
-    pool_by_type = _q(
-        "SELECT type, COUNT(*) FROM fund_basic WHERE is_buyable=1 GROUP BY type ORDER BY COUNT(*) DESC"
-    )
-    pool_types = [{"type": t[0] or "其他", "count": t[1]} for t in pool_by_type]
+    fund_pool, pool_by_type = repo.get_fund_pool_stats()
+    pool_types = [{"type": t["type"], "count": t["count"]} for t in pool_by_type]
 
     # 追踪监控列表
-    candidates = _q(
-        "SELECT r.code, fb.name, "
-        "MIN(r.recommend_date) AS first_date, "
-        "COUNT(*) AS rec_count, "
-        "MAX(r.status) AS status, "
-        "MAX(r.exit_date) AS exit_date "
-        "FROM recommend_log r "
-        "LEFT JOIN fund_basic fb ON fb.code = r.code "
-        "GROUP BY r.code "
-        "ORDER BY MAX(r.recommend_date) DESC"
-    )
+    candidates = repo.get_tracking_list()
     candidate_list = []
     today_str = datetime.now().strftime("%Y-%m-%d")
     for c in candidates:
-        code, name, first_date, rec_count, status, exit_date = c[0], c[1], c[2], c[3], c[4] or "HOLD", c[5]
+        code, first_date = c["code"], c["first_date"]
+        name = c["name"] or ""
+        rec_count = c["rec_count"]
+        status = c["status"] or "HOLD"
+        exit_date = c["exit_date"] or ""
         # 首次推荐净值（优先读 recommend_log.entry_nav，缺失时查 fund_nav 当日净值，无则 --）
-        entry_nav = _q1(
-            "SELECT entry_nav FROM recommend_log WHERE code=? AND recommend_date=? ORDER BY id ASC LIMIT 1",
-            (code, first_date),
-        )
-        first_nav = entry_nav[0] if entry_nav else None
+        first_nav = repo.get_entry_nav(code, first_date)
         if first_nav is None:
-            fn = _q1(
-                "SELECT cum_nav FROM fund_nav WHERE code=? AND date=?",
-                (code, first_date),
-            )
-            first_nav = fn[0] if fn else None
+            first_nav = repo.get_nav_at_date(code, first_date)
         # 当前净值（取最新盘后净值，今日无则自动回退到前一日）
-        cur_nav = None
-        if first_nav is not None:
-            cur_nav_row = _q1(
-                "SELECT cum_nav FROM fund_nav WHERE code=? ORDER BY date DESC LIMIT 1",
-                (code,),
-            )
-            cur_nav = cur_nav_row[0] if cur_nav_row else None
+        cur_nav = repo.get_latest_nav(code) if first_nav is not None else None
         # 累计收益
         ret = None
         if first_nav and cur_nav and first_nav > 0:
             ret = round((cur_nav / first_nav - 1) * 100, 2)
         candidate_list.append({
-            "code": code, "name": name or "",
+            "code": code, "name": name,
             "first_date": first_date or "",
             "first_nav": round(first_nav, 4) if first_nav else None,
             "cur_nav": round(cur_nav, 4) if cur_nav else None,
             "return": ret,
             "rec_count": rec_count,
             "status": status,
-            "exit_date": exit_date or "",
-            "type": c[0] if len(c) > 6 else "",
+            "exit_date": exit_date,
+            "type": "",
         })
     # 累计收益总和
     total_return = round(sum(c["return"] for c in candidate_list if c["return"] is not None), 2) if candidate_list else 0
@@ -471,106 +404,66 @@ async def index(request: Request):
     # 基金特征画像
     fund_features = None
     if latest:
-        feat = _q1(
-            "SELECT hurst_60d, momentum_20d, calmar, downside_vol, capture_up, capture_down, "
-            "bias_60d, rbsa_industry_1, rbsa_weight_1 "
-            "FROM fund_features WHERE code=? ORDER BY date DESC LIMIT 1",
-            (latest["code"],),
-        )
+        feat = repo.get_latest_features(latest["code"])
         if feat:
             fund_features = {
-                "hurst": feat[0], "momentum": round(feat[1] or 0, 2) if feat[1] is not None else None,
-                "calmar": round(feat[2] or 0, 2) if feat[2] is not None else None,
-                "downside_vol": round(feat[3] or 0, 2) if feat[3] is not None else None,
-                "capture_up": round(feat[4] or 0, 1) if feat[4] is not None else None,
-                "capture_down": round(feat[5] or 0, 1) if feat[5] is not None else None,
-                "bias": round(feat[6] or 0, 2) if feat[6] is not None else None,
-                "top_industry": feat[7] or "",
-                "top_industry_weight": round(feat[8] or 0, 1),
+                "hurst": feat["hurst_60d"],
+                "momentum": round(feat["momentum_20d"] or 0, 2) if feat["momentum_20d"] is not None else None,
+                "calmar": round(feat["calmar"] or 0, 2) if feat["calmar"] is not None else None,
+                "downside_vol": round(feat["downside_vol"] or 0, 2) if feat["downside_vol"] is not None else None,
+                "capture_up": round(feat["capture_up"] or 0, 1) if feat["capture_up"] is not None else None,
+                "capture_down": round(feat["capture_down"] or 0, 1) if feat["capture_down"] is not None else None,
+                "bias": round(feat["bias_60d"] or 0, 2) if feat["bias_60d"] is not None else None,
+                "top_industry": feat["rbsa_industry_1"] or "",
+                "top_industry_weight": round(feat["rbsa_weight_1"] or 0, 1),
             }
 
     # 持仓透视
     top_holdings = []
     if latest:
-        holdings = _q(
-            "SELECT h.stock_code, h.stock_name, h.weight, i.industry_name "
-            "FROM fund_holdings h "
-            "LEFT JOIN stock_industry_map i ON h.stock_code = i.stock_code "
-            "WHERE h.code=? AND h.report_date = ("
-            "  SELECT MAX(report_date) FROM fund_holdings WHERE code=?) "
-            "ORDER BY h.weight DESC LIMIT 10",
-            (latest["code"], latest["code"]),
-        )
         top_holdings = [
-            {"code": h[0], "name": h[1], "weight": h[2], "industry": h[3] or ""}
-            for h in holdings
+            {"code": h["stock_code"], "name": h["stock_name"], "weight": h["weight"],
+             "industry": h["industry"] or ""}
+            for h in repo.get_holdings(latest["code"], 10)
         ]
 
     top_holdings2 = []
     if len(latest_list) > 1:
-        code2 = latest_list[1]["code"]
-        holdings2 = _q(
-            "SELECT h.stock_code, h.stock_name, h.weight, i.industry_name "
-            "FROM fund_holdings h "
-            "LEFT JOIN stock_industry_map i ON h.stock_code = i.stock_code "
-            "WHERE h.code=? AND h.report_date = ("
-            "  SELECT MAX(report_date) FROM fund_holdings WHERE code=?) "
-            "ORDER BY h.weight DESC LIMIT 10",
-            (code2, code2),
-        )
         top_holdings2 = [
-            {"code": h[0], "name": h[1], "weight": h[2], "industry": h[3] or ""}
-            for h in holdings2
+            {"code": h["stock_code"], "name": h["stock_name"], "weight": h["weight"],
+             "industry": h["industry"] or ""}
+            for h in repo.get_holdings(latest_list[1]["code"], 10)
         ]
 
     # 运行天数
-    uptime = _q1("SELECT value FROM meta WHERE key='uptime_start'")
-    if uptime:
-        start = datetime.strptime(uptime[0], "%Y-%m-%d")
-        uptime_days = (datetime.now() - start).days
-    else:
-        uptime_days = 365  # fallback
+    uptime_days = repo.get_uptime_days()
 
     # 超额阿尔法（系统运行以来累计超额收益 = total_return - 同期沪深300涨幅）
     alpha = None
     alpha_pcts = []
-    start_date = _q1("SELECT MIN(recommend_date) FROM recommend_log")
-    if start_date and start_date[0] and total_return is not None:
-        hs300_start = _q1(
-            "SELECT close FROM index_daily WHERE code='sh000300' AND date<=? ORDER BY date DESC LIMIT 1",
-            (start_date[0],),
-        )
-        hs300_now = _q1(
-            "SELECT close FROM index_daily WHERE code='sh000300' ORDER BY date DESC LIMIT 1"
-        )
-        if hs300_start and hs300_start[0] and hs300_now and hs300_now[0]:
-            hs300_pct = round((hs300_now[0] / hs300_start[0] - 1) * 100, 2)
+    start_date = repo.get_first_reco_date()
+    if start_date and total_return is not None:
+        hs300_start = repo.get_index_close("sh000300", start_date)
+        hs300_now = repo.get_index_close("sh000300")
+        if hs300_start and hs300_now:
+            hs300_pct = round((hs300_now / hs300_start - 1) * 100, 2)
             alpha = round(total_return - hs300_pct, 2)
     # 逐基金alpha贡献（按推荐日期排序，用于alpha曲线）
-    # ponytail: 对已平仓基金用 exit_date 截断持有期，避免基准延伸至今日
+    # 对已平仓基金用 exit_date 截断持有期，避免基准延伸至今日
     sorted_candidates = sorted(candidate_list, key=lambda x: x["first_date"] or "")
     cum_alpha = 0.0
     for c in sorted_candidates:
         if c["return"] is not None and c["first_date"]:
-            hs_start = _q1(
-                "SELECT close FROM index_daily WHERE code='sh000300' AND date<=? ORDER BY date DESC LIMIT 1",
-                (c["first_date"],),
-            )
+            hs_start = repo.get_index_close("sh000300", c["first_date"])
             end_str = c["exit_date"] or today_str
-            hs_end = _q1(
-                "SELECT close FROM index_daily WHERE code='sh000300' AND date<=? ORDER BY date DESC LIMIT 1",
-                (end_str,),
-            )
-            if hs_start and hs_start[0] and hs_end and hs_end[0]:
-                hs_ret = (hs_end[0] / hs_start[0] - 1) * 100
+            hs_end = repo.get_index_close("sh000300", end_str)
+            if hs_start and hs_end:
+                hs_ret = (hs_end / hs_start - 1) * 100
                 fund_ret = c["return"]
                 if c.get("exit_date") and c["status"] == "EXIT":
-                    end_nav = _q1(
-                        "SELECT cum_nav FROM fund_nav WHERE code=? AND date<=? ORDER BY date DESC LIMIT 1",
-                        (c["code"], end_str),
-                    )
-                    if end_nav and end_nav[0] and c["first_nav"] and c["first_nav"] > 0:
-                        fund_ret = round((end_nav[0] / c["first_nav"] - 1) * 100, 2)
+                    end_nav = repo.get_nav_at_or_before(c["code"], end_str)
+                    if end_nav and c["first_nav"] and c["first_nav"] > 0:
+                        fund_ret = round((end_nav / c["first_nav"] - 1) * 100, 2)
                 cum_alpha += fund_ret - hs_ret
                 alpha_pcts.append(round(cum_alpha, 2))
     # alpha曲线SVG（自动缩放）
@@ -641,20 +534,38 @@ async def index(request: Request):
 
 
 @app.get("/api/logs")
-async def get_logs(lines: int = 100, start: int = 0):
-    from app.utils.log import LOG_FILE
-    if not LOG_FILE.exists():
-        return {"lines": [], "total": 0}
-    with open(str(LOG_FILE), "r", encoding="utf-8", errors="replace") as f:
-        all_lines = f.readlines()
-    total = len(all_lines)
-    if start >= total:
-        tail = []
-    elif start > 0:
-        tail = all_lines[start:start + lines]
-    else:
-        tail = all_lines[-lines:] if total > lines else all_lines
-    return {"lines": tail, "total": total}
+async def get_logs(lines: int = 200, after: int = 0):
+    """从 SQLite 返回日志；after 为上次读取的最大 id（增量游标，轮转/清理后仍可靠）。"""
+    from app.utils.log import SYSTEM_LOG_TABLE_SQL
+    with db_conn() as conn:
+        conn.execute(SYSTEM_LOG_TABLE_SQL)
+        total = conn.execute("SELECT COUNT(*) FROM system_logs").fetchone()[0]
+        if after <= 0:
+            rows = conn.execute(
+                "SELECT id, ts, level, logger, event, message, correlation_id "
+                "FROM system_logs ORDER BY id DESC LIMIT ?",
+                (lines,),
+            ).fetchall()
+            rows.reverse()
+        else:
+            rows = conn.execute(
+                "SELECT id, ts, level, logger, event, message, correlation_id "
+                "FROM system_logs WHERE id > ? ORDER BY id LIMIT ?",
+                (after, lines),
+            ).fetchall()
+    out = []
+    last_id = after
+    for r in rows:
+        last_id = r[0]
+        out.append(json.dumps({
+            "timestamp": r[1],
+            "level": r[2],
+            "logger": r[3],
+            "event": r[4],
+            "message": r[5],
+            "correlation_id": r[6],
+        }, ensure_ascii=False))
+    return {"lines": out, "total": total, "last_id": last_id}
 
 
 @app.get("/api/settings")
@@ -734,10 +645,8 @@ async def clear_recommendations(body: dict | None = None):
 @app.get("/api/recommendation-status")
 async def recommendation_status():
     """返回最新推荐ID和时间，前端用于检测推荐是否更新。"""
-    rec = _q1("SELECT id, created_at FROM recommend_log ORDER BY id DESC LIMIT 1")
-    if rec:
-        return {"id": rec[0], "updated_at": rec[1]}
-    return {"id": 0, "updated_at": None}
+    rid, created_at = repo.get_latest_reco_id()
+    return {"id": rid, "updated_at": created_at}
 
 
 @app.get("/api/pipeline-log")
@@ -750,53 +659,33 @@ async def get_pipeline_log(since: int = 0):
 @app.get("/api/fund-detail/{code}")
 async def get_fund_detail(code: str):
     """返回指定基金的首次推荐分析、理由、十大持仓、净值走势数据。"""
-    rec = _q1(
-        "SELECT r.recommend_date, r.buy_reason, r.score, r.combo, r.regime, "
-        "r.entry_nav, r.status, fb.name, fb.type, "
-        "(SELECT MIN(r2.recommend_date) FROM recommend_log r2 WHERE r2.code = r.code) AS first_date "
-        "FROM recommend_log r LEFT JOIN fund_basic fb ON fb.code = r.code "
-        "WHERE r.code=? ORDER BY r.recommend_date DESC LIMIT 1",
-        (code,),
-    )
+    rec = repo.get_fund_detail(code)
     if not rec:
         return {"error": "未找到该基金的推荐记录"}
 
-    raw_reason = (rec[1] or "").split(" | 否决记录:")[0].strip()
     fund_info = {
         "code": code,
-        "name": rec[7] or code,
-        "type": rec[8] or "",
-        "first_date": rec[9] or rec[0] or "",
-        "entry_nav": round(rec[5], 4) if rec[5] else None,
-        "buy_reason": raw_reason,
-        "score": rec[2],
-        "combo": rec[3],
-        "regime": rec[4] or "NEUTRAL",
-        "status": rec[6] or "HOLD",
-        "display_score": _display_score(rec[3], rec[2]),
+        "name": rec["name"] or code,
+        "type": rec["type"] or "",
+        "first_date": rec["first_date"] or "",
+        "entry_nav": rec["entry_nav"],
+        "buy_reason": rec["buy_reason"],
+        "score": rec["score"],
+        "combo": rec["combo"],
+        "regime": rec["regime"] or "NEUTRAL",
+        "status": rec["status"] or "HOLD",
+        "display_score": _display_score(rec["combo"], rec["score"]),
     }
 
-    holdings = _q(
-        "SELECT h.stock_code, h.stock_name, h.weight, i.industry_name "
-        "FROM fund_holdings h "
-        "LEFT JOIN stock_industry_map i ON h.stock_code = i.stock_code "
-        "WHERE h.code=? AND h.report_date = ("
-        "  SELECT MAX(report_date) FROM fund_holdings WHERE code=?) "
-        "ORDER BY h.weight DESC LIMIT 10",
-        (code, code),
-    )
     top_holdings = [
-        {"stock_code": h[0], "stock_name": h[1], "weight": h[2], "industry": h[3] or ""}
-        for h in holdings
+        {"stock_code": h["stock_code"], "stock_name": h["stock_name"], "weight": h["weight"],
+         "industry": h["industry"] or ""}
+        for h in repo.get_holdings(code, 10)
     ]
 
-    nav_rows = _q(
-        "SELECT date, cum_nav FROM fund_nav WHERE code=? ORDER BY date DESC LIMIT 90",
-        (code,),
-    )
-    nav_rows = list(reversed(nav_rows))
     nav_data = [
-        {"date": r[0], "nav": round(r[1], 4) if r[1] else None} for r in nav_rows
+        {"date": r[0], "nav": round(r[1], 4) if r[1] else None}
+        for r in repo.get_nav_history(code, 90)
     ]
 
     signal = _q1(

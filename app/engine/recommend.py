@@ -8,9 +8,7 @@
 """
 
 import json
-import logging
 from app.utils.log import get_logger
-import sqlite3
 from datetime import datetime
 from pathlib import Path
 
@@ -18,113 +16,44 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-from app.features.calculator import calc_hurst
+from app.features.calculator import (compute_fund_features, combo_score,
+                                     regime_combo_weights as _regime_combo_weights)
 from app.llm.macro_agent import build_macro_context, MacroContext
-from app.database import db_conn, get_db as _get_db
+from app.database import db_conn
 from app.data.nav import fetch_fund_nav_incremental
 from app.llm.client import call_llm
 from app.llm.prompts import final_pick_prompt, final_pick_system_prompt
+import app.repo as repo
 
 logger = get_logger("recommend")
 
 MODEL_PATH = Path("models/lgb_model.txt")
-FEATURE_COLS = [
-    "hurst_60d", "momentum_20d", "calmar", "downside_vol",
-    "capture_up", "capture_down", "bias_60d",
-]
-_FORWARD_WINDOW = 20
+FEATURE_COLS = repo.FEATURE_COLS
+_FORWARD_WINDOW = repo.FORWARD_WINDOW
 
 
 def _load_ranking_cfg() -> dict:
     """从 meta 表读取排序权重，找不到则用默认值。"""
-    defaults = {
-        "model_weight": 0.5,
-        "rel_strength_weight": 0.15,
-        "calmar_weight": 0.1,
-        "hurst_weight": 0.1,
-        "momentum_guard_pct": -15.0,
-    }
-    try:
-        with db_conn() as conn:
-            row = conn.execute(
-                "SELECT value FROM meta WHERE key = 'ranking_cfg'"
-            ).fetchone()
-            if row:
-                import json
-                cfg = json.loads(row[0])
-                defaults.update({k: v for k, v in cfg.items() if k in defaults})
-    except Exception:
-        pass
-    return defaults
+    return repo.get_ranking_cfg()
 
 
 # ========== 2.1 标注数据准备 ==========
 
-def _features_from_window(navs: np.ndarray, idx_closes: np.ndarray,
-                          idx_volumes: np.ndarray) -> dict | None:
-    if len(navs) < 60:
-        return None
-    with np.errstate(divide="ignore", invalid="ignore"):
-        returns = np.diff(navs) / navs[:-1]
-    returns = returns[np.isfinite(returns)]
-
-    feat: dict = {}
-    window = min(60, len(returns))
-    feat["hurst_60d"] = float(calc_hurst(returns[-window:]))
-    feat["momentum_20d"] = float((navs[-1] / navs[-20] - 1) * 100) if len(navs) >= 20 else 0.0
-
-    if len(navs) >= 60:
-        cum = navs[-60:] / navs[-60]
-        peak = np.maximum.accumulate(cum)
-        dd = (cum - peak) / peak
-        max_dd = float(np.min(dd))
-        ann = float((navs[-1] / navs[-60] - 1) * 252 / 60)
-        feat["calmar"] = ann / abs(max_dd) if abs(max_dd) > 1e-10 else 0.0
-    else:
-        feat["calmar"] = 0.0
-
-    if len(returns) >= 20:
-        neg = returns[-20:][returns[-20:] < 0]
-        feat["downside_vol"] = float(np.std(neg) * np.sqrt(252)) if len(neg) > 0 else 0.0
-    else:
-        feat["downside_vol"] = 0.0
-
-    if len(idx_closes) >= 60 and len(returns) >= 60:
-        idx_ret = np.diff(idx_closes) / idx_closes[:-1]
-        idx_ret = idx_ret[np.isfinite(idx_ret)]
-        m = min(60, len(returns), len(idx_ret))
-        fr, ir = returns[-m:], idx_ret[-m:]
-        up, down = ir > 0, ir < 0
-        feat["capture_up"] = float(np.mean(fr[up]) / np.mean(ir[up])) if up.sum() > 0 else 1.0
-        feat["capture_down"] = float(np.mean(fr[down]) / np.mean(ir[down])) if down.sum() > 0 else 1.0
-    else:
-        feat["capture_up"] = feat["capture_down"] = 1.0
-
-    # bias_60d 改为指数乖离率（沪深300 close vs MA60）
-    if len(idx_closes) >= 60:
-        feat["bias_60d"] = float((idx_closes[-1] - np.mean(idx_closes[-60:])) / np.mean(idx_closes[-60:]) * 100)
-    else:
-        feat["bias_60d"] = 0.0
-    feat["rbsa_weight_1"] = 0.0
-    return feat
-
 
 _MAX_TRAIN_FUNDS = 2000
-"""ponytail: 全量12K基金特征计算太慢，限2000只代表性样本训练。"""
+# 全量12K基金特征计算太慢，限2000只代表性样本训练。
 
 
 def prepare_lgb_training_data() -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
     """面板样本 + walk-forward 时间划分，返回 (X_train, y_train, X_val, y_val)。
 
-    ponytail: 不预加载全库NAV（14M行→51s），改用逐基金SQL流式处理，
+    不预加载全库NAV（14M行→51s），改用逐基金SQL流式处理，
     并限制基金数避免训练过慢。
     """
+    idx_rows = repo.get_index_series("sh000300", ("date", "close", "volume"))
+    if not idx_rows:
+        raise RuntimeError("沪深300指数数据缺失，无法准备训练数据")
     with db_conn() as conn:
-        idx_rows = conn.execute(
-            "SELECT date, close, volume FROM index_daily WHERE code = 'sh000300' ORDER BY date ASC"
-        ).fetchall()
-        if not idx_rows:
-            raise RuntimeError("沪深300指数数据缺失，无法准备训练数据")
         idx_df = pd.DataFrame(idx_rows, columns=["date", "close", "volume"])
         idx_df["date"] = pd.to_datetime(idx_df["date"])
         idx_df = idx_df.set_index("date").sort_index()
@@ -168,7 +97,7 @@ def prepare_lgb_training_data() -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, 
                     continue
                 idx_closes_w = idx_close.iloc[idx_pos - 59: idx_pos + 1].to_numpy(dtype=float)
                 idx_vols_w = idx_vol.iloc[idx_pos - 59: idx_pos + 1].to_numpy(dtype=float)
-                feat = _features_from_window(navs_arr[:pos + 1], idx_closes_w, idx_vols_w)
+                feat = compute_fund_features(navs_arr[:pos + 1], idx_closes_w, idx_vols_w)
                 if feat is None or any(pd.isna(v) for v in feat.values()):
                     continue
                 samples.append((d, feat, y))
@@ -263,12 +192,7 @@ def _match_one_sector(ideal: str, candidates: list[str]) -> str | None:
 
 def _resolve_sectors(sectors: list[str]) -> list[str]:
     """把 LLM 选的行业名匹配到 RBSA 表中存在的行业名。"""
-    with db_conn() as conn:
-        rows = conn.execute(
-            "SELECT DISTINCT rbsa_industry_1 FROM fund_features "
-            "WHERE rbsa_industry_1 IS NOT NULL AND rbsa_industry_1 != ''"
-        ).fetchall()
-    candidates = [r[0] for r in rows]
+    candidates = repo.get_available_sectors()
     resolved = []
     for s in sectors:
         matched = _match_one_sector(s, candidates)
@@ -279,37 +203,12 @@ def _resolve_sectors(sectors: list[str]) -> list[str]:
     return list(dict.fromkeys(resolved))  # 去重保留顺序
 
 def _index_momentum() -> float:
-    with db_conn() as conn:
-        idx = conn.execute(
-            "SELECT close FROM index_daily WHERE code='sh000300' ORDER BY date DESC LIMIT 21"
-        ).fetchall()
-    return (idx[0][0] / idx[-1][0] - 1) * 100 if len(idx) >= 21 else 0.0
+    return repo.get_index_momentum()
 
 
 def _get_market_regime() -> str:
     """从沪深300收盘价 vs MA60 判断大盘状态：BULL/BEAR。"""
-    with db_conn() as conn:
-        row = conn.execute(
-            "SELECT close, ma60 FROM index_daily WHERE code='sh000300' "
-            "AND close IS NOT NULL AND ma60 IS NOT NULL "
-            "ORDER BY date DESC LIMIT 1"
-        ).fetchone()
-    if not row or not row[0] or not row[1] or row[1] <= 0:
-        return "NEUTRAL"
-    return "BULL" if row[0] > row[1] else "BEAR"
-
-
-def _regime_combo_weights(regime: str, cfg: dict) -> dict:
-    """根据大盘状态调整因子权重：BULL 偏动量+赫斯特，BEAR 偏卡玛。"""
-    w_model = cfg["model_weight"]
-    w_rs = cfg["rel_strength_weight"]
-    w_cal = cfg["calmar_weight"]
-    w_hurst = cfg["hurst_weight"]
-    if regime == "BULL":
-        w_rs *= 1.3; w_hurst *= 1.3; w_cal *= 0.5
-    elif regime == "BEAR":
-        w_cal *= 1.5; w_rs *= 0.7; w_hurst *= 0.5
-    return {"model": w_model, "rs": w_rs, "cal": w_cal, "hurst": w_hurst}
+    return repo.get_market_regime()
 
 
 def _add_sector_relatives(df: pd.DataFrame) -> pd.DataFrame:
@@ -339,35 +238,15 @@ def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> list[dict]:
     logger.info("LLM赛道 %s → 匹配到 %s", raw_sectors, sectors)
     risk_sectors = _resolve_sectors(ctx.risk_sectors)
 
-    with db_conn() as conn:
-        placeholders = ",".join("?" * len(sectors))
-        rows = conn.execute(
-            f"SELECT ff.code, fb.name, ff.regime, "
-            f"ff.rbsa_industry_1, ff.rbsa_weight_1, "
-            f"ff.rbsa_industry_2, ff.rbsa_weight_2, "
-            f"ff.rbsa_industry_3, ff.rbsa_weight_3, "
-            f"{', '.join('ff.' + c for c in FEATURE_COLS)} "
-            f"FROM fund_features ff "
-            f"JOIN fund_basic fb ON fb.code = ff.code "
-            f"WHERE fb.is_buyable = 1 "
-            f"AND (ff.rbsa_industry_1 IN ({placeholders}) "
-            f"  OR ff.rbsa_industry_2 IN ({placeholders}) "
-            f"  OR ff.rbsa_industry_3 IN ({placeholders}))",
-            sectors + sectors + sectors,
-        ).fetchall()
+    rows = repo.get_sector_candidates(sectors)
+    if not rows:
+        logger.info("赛道内无匹配基金，降级为全市场 Top 10")
+        return rank_funds(model)
 
-        if not rows:
-            logger.info("赛道内无匹配基金，降级为全市场 Top 10")
-            return rank_funds(model)
-
-        cols = ["code", "name", "regime",
-                "rbsa_industry_1", "rbsa_weight_1",
-                "rbsa_industry_2", "rbsa_weight_2",
-                "rbsa_industry_3", "rbsa_weight_3"] + FEATURE_COLS
-        df = pd.DataFrame(rows, columns=cols)
-        df = df.dropna(subset=FEATURE_COLS)
-        if df.empty:
-            return rank_funds(model)
+    df = pd.DataFrame(rows)
+    df = df.dropna(subset=FEATURE_COLS)
+    if df.empty:
+        return rank_funds(model)
 
     # 展开多行业：一只基金如有多个行业匹配赛道，则重复出现
     expanded = []
@@ -401,14 +280,11 @@ def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> list[dict]:
     df["score_norm"] = (df["score"] - score_min) / score_range
     regime = df["regime"].iloc[0] if "regime" in df.columns and len(df) > 0 and pd.notna(df["regime"].iloc[0]) else _get_market_regime()
     w = _regime_combo_weights(regime, cfg)
-    df["combo"] = (
-        df["score_norm"] * w["model"]
-        + df["rel_strength"] * w["rs"]
-        + df["sector_rel_momentum"] * 0.15
-        + calmar_clipped * w["cal"]
-        + df["sector_rel_calmar"] * 0.05
-        + (df["hurst_60d"] - 0.5) * 10 * w["hurst"]
-        + df["rbsa_weight"] * 0.003
+    df["combo"] = combo_score(
+        df["score_norm"], df["rel_strength"], calmar_clipped, df["hurst_60d"], w,
+        sector_rel_momentum=df["sector_rel_momentum"],
+        sector_rel_calmar=df["sector_rel_calmar"],
+        rbsa_weight=df["rbsa_weight"],
     )
 
     top_per_sector = []
@@ -444,18 +320,8 @@ def rank_funds(model: lgb.Booster) -> list[dict]:
     """全市场排名（降级备选），返回 Top 10。"""
     cfg = _load_ranking_cfg()
     guard = cfg["momentum_guard_pct"]
-    with db_conn() as conn:
-        rows = conn.execute(
-            "SELECT ff.code, fb.name, ff.regime, ff.rbsa_industry_1, ff.rbsa_weight_1, "
-            f"{', '.join('ff.' + c for c in FEATURE_COLS)} "
-            "FROM fund_features ff "
-            "JOIN fund_basic fb ON fb.code = ff.code "
-            "WHERE fb.is_buyable = 1 "
-            "AND ff.rbsa_industry_1 IS NOT NULL AND ff.rbsa_industry_1 != ''"
-        ).fetchall()
-
-    cols = ["code", "name", "regime", "rbsa_industry_1", "rbsa_weight_1"] + FEATURE_COLS
-    df = pd.DataFrame(rows, columns=cols)
+    rows = repo.get_all_ranking_rows()
+    df = pd.DataFrame(rows)
     df = df.dropna(subset=FEATURE_COLS)
     if df.empty:
         return []
@@ -474,12 +340,9 @@ def rank_funds(model: lgb.Booster) -> list[dict]:
     df["score_norm"] = (df["score"] - score_min) / score_range
     regime = df["regime"].iloc[0] if "regime" in df.columns and len(df) > 0 and pd.notna(df["regime"].iloc[0]) else _get_market_regime()
     w = _regime_combo_weights(regime, cfg)
-    df["combo"] = (
-        df["score_norm"] * w["model"]
-        + df["rel_strength"] * w["rs"]
-        + calmar_clipped * w["cal"]
-        + (df["hurst_60d"] - 0.5) * 10 * w["hurst"]
-        + df["rbsa_weight_1"] * 0.003
+    df["combo"] = combo_score(
+        df["score_norm"], df["rel_strength"], calmar_clipped, df["hurst_60d"], w,
+        rbsa_weight=df["rbsa_weight_1"],
     )
     top = df.sort_values("combo", ascending=False).head(10)
     candidates = []
@@ -497,82 +360,53 @@ def rank_funds(model: lgb.Booster) -> list[dict]:
 
 # ========== LLM 最终定论 ==========
 
-def _load_insights(conn: sqlite3.Connection) -> list[str]:
-    rows = conn.execute(
-        "SELECT insight FROM evolution_insights "
-        "WHERE active = 1 AND confidence > 0.3 "
-        "ORDER BY created_date DESC LIMIT 8"
-    ).fetchall()
-    return [r[0] for r in rows]
+def _load_insights() -> list[str]:
+    return repo.get_active_insights(8)
 
 
 
 def _llm_final_pick(candidates: list[dict], ctx: MacroContext, insights: list) -> dict:
     """LLM 基于重仓股+CLS新闻匹配+持仓时效性做最终选择，返回选定基金和否决记录。"""
-    with db_conn() as conn:
-        latest_feature_date = conn.execute(
-            "SELECT MAX(date) FROM fund_features"
-        ).fetchone()[0]
+    latest_feature_date = repo.get_latest_feature_date()
 
-        for c in candidates:
-            hold_rows = conn.execute(
-                "SELECT h.stock_code, h.stock_name, h.weight, "
-                "COALESCE(s.industry_name, '其他') "
-                "FROM fund_holdings h "
-                "LEFT JOIN stock_industry_map s ON h.stock_code = s.stock_code "
-                "WHERE h.code = ? "
-                "AND h.report_date = (SELECT MAX(report_date) FROM fund_holdings WHERE code = ?) "
-                "ORDER BY h.weight DESC LIMIT 5",
-                (c["code"], c["code"]),
-            ).fetchall()
-            c["holdings"] = [
-                {"stock_code": r[0], "stock_name": r[1], "weight": r[2], "industry": r[3]}
-                for r in hold_rows
-            ]
-            matched = []
-            for h in c["holdings"]:
-                for s in ctx.cls_stock_mentions:
-                    if s["code"] == h["stock_code"] or s["name"] == h["stock_name"]:
-                        matched.append({"stock_name": h["stock_name"], "stock_code": h["stock_code"], **s})
-                        break
-            c["matched_news"] = matched
+    for c in candidates:
+        c["holdings"] = repo.get_holdings(c["code"], 5)
+        matched = []
+        for h in c["holdings"]:
+            for s in ctx.cls_stock_mentions:
+                if s["code"] == h["stock_code"] or s["name"] == h["stock_name"]:
+                    matched.append({"stock_name": h["stock_name"], "stock_code": h["stock_code"], **s})
+                    break
+        c["matched_news"] = matched
 
-            report_row = conn.execute(
-                "SELECT MAX(report_date) FROM fund_holdings WHERE code = ?",
-                (c["code"],),
-            ).fetchone()
-            report_date = report_row[0] if report_row else None
-            c["report_date"] = report_date
-            if report_date:
-                try:
-                    rd = datetime.strptime(report_date, "%Y-%m-%d")
-                    months = (datetime.now().year - rd.year) * 12 + (datetime.now().month - rd.month)
-                    c["holdings_months"] = max(0, months)
-                except Exception:
-                    c["holdings_months"] = None
-            else:
+        report_date = repo.get_latest_holdings_date(c["code"])
+        c["report_date"] = report_date
+        if report_date:
+            try:
+                rd = datetime.strptime(report_date, "%Y-%m-%d")
+                months = (datetime.now().year - rd.year) * 12 + (datetime.now().month - rd.month)
+                c["holdings_months"] = max(0, months)
+            except Exception:
                 c["holdings_months"] = None
+        else:
+            c["holdings_months"] = None
 
-            sector = c.get("sector") or c.get("rbsa_industry_1", "")
-            fund_mom = c.get("momentum_20d", 0) or 0
-            if sector and latest_feature_date:
-                peer_rows = conn.execute(
-                    "SELECT momentum_20d FROM fund_features "
-                    "WHERE rbsa_industry_1 = ? AND date = ? AND momentum_20d IS NOT NULL",
-                    (sector, latest_feature_date),
-                ).fetchall()
-                if len(peer_rows) >= 3:
-                    values = sorted(r[0] for r in peer_rows)
-                    n = len(values)
-                    median = values[n // 2] if n % 2 else (values[n // 2 - 1] + values[n // 2]) / 2
-                    c["sector_median_mom"] = round(float(median), 1)
-                    c["mom_gap"] = round(float(fund_mom) - float(median), 1)
-                else:
-                    c["sector_median_mom"] = None
-                    c["mom_gap"] = None
+        sector = c.get("sector") or c.get("rbsa_industry_1", "")
+        fund_mom = c.get("momentum_20d", 0) or 0
+        if sector and latest_feature_date:
+            peer_values = repo.get_momentum_in_sector(sector, latest_feature_date)
+            if len(peer_values) >= 3:
+                values = sorted(peer_values)
+                n = len(values)
+                median = values[n // 2] if n % 2 else (values[n // 2 - 1] + values[n // 2]) / 2
+                c["sector_median_mom"] = round(float(median), 1)
+                c["mom_gap"] = round(float(fund_mom) - float(median), 1)
             else:
                 c["sector_median_mom"] = None
                 c["mom_gap"] = None
+        else:
+            c["sector_median_mom"] = None
+            c["mom_gap"] = None
 
     prompt = final_pick_prompt(candidates, ctx, insights)
     system_prompt = final_pick_system_prompt()
@@ -655,16 +489,8 @@ def _save_recommendation(date_str: str, selected: dict, candidates: list[dict],
         reason = selected.get("reason", "")
         if vetoed:
             reason = reason + " | 否决记录: " + veto_json
-        real_name = conn.execute(
-            "SELECT name FROM fund_basic WHERE code = ?", (selected["selected_code"],)
-        ).fetchone()
-        real_name = real_name[0] if real_name else selected["selected_name"]
-        entry_nav_row = conn.execute(
-            "SELECT cum_nav FROM fund_nav WHERE code=? "
-            "ORDER BY date DESC LIMIT 1",
-            (selected["selected_code"],),
-        ).fetchone()
-        entry_nav = entry_nav_row[0] if entry_nav_row else None
+        real_name = repo.get_fund_name(selected["selected_code"]) or selected["selected_name"]
+        entry_nav = repo.get_latest_nav(selected["selected_code"])
         conn.execute(
             "INSERT INTO recommend_log "
             "(recommend_date, code, name, rank, score, combo, regime, buy_reason, status, feature_snapshot, entry_nav) "
@@ -686,8 +512,7 @@ def run_recommendation(retrain: bool = False, force: bool = False) -> None:
     force=True 时跳过宏观缓存，强制实时抓取新闻+LLM 重新选赛道。
     """
     date_str = datetime.now().strftime("%Y-%m-%d")
-    with db_conn() as conn:
-        insights = _load_insights(conn)
+    insights = _load_insights()
 
     if retrain or not MODEL_PATH.exists():
         logger.info("=== 准备训练数据并训练 LightGBM ===")

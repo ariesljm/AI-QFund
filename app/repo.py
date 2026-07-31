@@ -4,26 +4,28 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 import json as _json
-import sqlite3
 
+from app.database import db_conn
 from app.utils.log import get_logger
 
 logger = get_logger("repo")
 
-DB_PATH = Path("data/qfund.db")
-
 
 @contextmanager
 def db():
-    conn = sqlite3.connect(str(DB_PATH), timeout=10)
-    try:
+    """统一连接 seam：复用 database.db_conn（含 WAL + schema 初始化 + 迁移）。"""
+    with db_conn() as conn:
         yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+
+
+# 模型特征列清单（fund_features 表列名，单一来源；recommend/backtest 均从此导入）
+FEATURE_COLS = [
+    "hurst_60d", "momentum_20d", "calmar", "downside_vol",
+    "capture_up", "capture_down", "bias_60d",
+]
+
+# 推荐模型前向预测窗口（交易日），训练与回测共用
+FORWARD_WINDOW = 20
 
 
 def get_latest_macro_news() -> dict | None:
@@ -94,20 +96,6 @@ def get_cached_context(date_str: str) -> dict | None:
     return None
 
 
-def get_buyable_funds() -> list[str]:
-    with db() as conn:
-        rows = conn.execute("SELECT code FROM fund_basic WHERE is_buyable = 1").fetchall()
-    return [r[0] for r in rows]
-
-
-def get_fund_info(code: str) -> dict | None:
-    with db() as conn:
-        row = conn.execute(
-            "SELECT code, name, type FROM fund_basic WHERE code = ?", (code,)
-        ).fetchone()
-    return {"code": row[0], "name": row[1], "type": row[2]} if row else None
-
-
 def get_fund_pool_stats() -> tuple[int, list[dict]]:
     with db() as conn:
         total = conn.execute("SELECT COUNT(*) FROM fund_basic WHERE is_buyable = 1").fetchone()[0]
@@ -115,56 +103,6 @@ def get_fund_pool_stats() -> tuple[int, list[dict]]:
             "SELECT type, COUNT(*) FROM fund_basic WHERE is_buyable = 1 GROUP BY type ORDER BY COUNT(*) DESC"
         ).fetchall()
     return total, [{"type": t[0] or "其他", "count": t[1]} for t in by_type]
-
-
-def get_fund_features(code: str) -> dict | None:
-    with db() as conn:
-        row = conn.execute(
-            "SELECT hurst_60d, momentum_20d, calmar, downside_vol, capture_up, capture_down, "
-            "bias_60d, rbsa_industry_1, rbsa_weight_1 "
-            "FROM fund_features WHERE code = ? ORDER BY date DESC LIMIT 1",
-            (code,),
-        ).fetchone()
-    if not row:
-        return None
-    return {
-        "hurst": row[0],
-        "momentum": round(row[1] or 0, 2) if row[1] is not None else None,
-        "calmar": round(row[2] or 0, 2) if row[2] is not None else None,
-        "downside_vol": round(row[3] or 0, 2) if row[3] is not None else None,
-        "capture_up": round(row[4] or 0, 1) if row[4] is not None else None,
-        "capture_down": round(row[5] or 0, 1) if row[5] is not None else None,
-        "bias": round(row[6] or 0, 2) if row[6] is not None else None,
-        "top_industry": row[7] or "",
-        "top_industry_weight": round(row[8] or 0, 1),
-    }
-
-
-def get_funds_by_sectors(sectors: list[str]) -> list[dict]:
-    if not sectors:
-        return []
-    placeholders = ", ".join("?" * len(sectors))
-    params = sectors * 3
-    with db() as conn:
-        rows = conn.execute(
-            f"SELECT ff.code, fb.name, ff.regime, "
-            f"ff.rbsa_industry_1, ff.rbsa_weight_1, "
-            f"ff.rbsa_industry_2, ff.rbsa_weight_2, "
-            f"ff.rbsa_industry_3, ff.rbsa_weight_3 "
-            f"FROM fund_features ff JOIN fund_basic fb ON fb.code = ff.code "
-            f"WHERE fb.is_buyable = 1 "
-            f"AND (ff.rbsa_industry_1 IN ({placeholders}) "
-            f"  OR ff.rbsa_industry_2 IN ({placeholders}) "
-            f"  OR ff.rbsa_industry_3 IN ({placeholders}))",
-            params,
-        ).fetchall()
-    return [
-        {"code": r[0], "name": r[1], "regime": r[2],
-         "rbsa_industry_1": r[3], "rbsa_weight_1": r[4],
-         "rbsa_industry_2": r[5], "rbsa_weight_2": r[6],
-         "rbsa_industry_3": r[7], "rbsa_weight_3": r[8]}
-        for r in rows
-    ]
 
 
 def get_available_sectors() -> list[str]:
@@ -180,7 +118,7 @@ def get_available_sectors() -> list[str]:
     return [r[0] for r in rows]
 
 
-def get_holdings(code: str) -> list[dict]:
+def get_holdings(code: str, limit: int = 10) -> list[dict]:
     with db() as conn:
         rows = conn.execute(
             "SELECT h.stock_code, h.stock_name, h.weight, i.industry_name "
@@ -188,10 +126,10 @@ def get_holdings(code: str) -> list[dict]:
             "LEFT JOIN stock_industry_map i ON h.stock_code = i.stock_code "
             "WHERE h.code = ? AND h.report_date = ("
             "  SELECT MAX(report_date) FROM fund_holdings WHERE code = ?) "
-            "ORDER BY h.weight DESC LIMIT 10",
-            (code, code),
+            "ORDER BY h.weight DESC LIMIT ?",
+            (code, code, limit),
         ).fetchall()
-    return [{"code": r[0], "name": r[1], "weight": r[2], "industry": r[3] or ""} for r in rows]
+    return [{"stock_code": r[0], "stock_name": r[1], "weight": r[2], "industry": r[3] or ""} for r in rows]
 
 
 def get_latest_recommendations(limit: int = 2) -> list[dict]:
@@ -279,6 +217,26 @@ def get_nav_history(code: str, limit: int = 60) -> list[tuple[str, float]]:
     return [(r[0], r[1]) for r in rows]
 
 
+def get_nav_at_date(code: str, date: str) -> float | None:
+    """指定日期的累计净值（追踪列表首次净值回退用）。"""
+    with db() as conn:
+        row = conn.execute(
+            "SELECT cum_nav FROM fund_nav WHERE code = ? AND date = ?",
+            (code, date),
+        ).fetchone()
+    return row[0] if row else None
+
+
+def get_nav_at_or_before(code: str, date: str) -> float | None:
+    """截至指定日期最近一条净值（已平仓基金持有期截断用）。"""
+    with db() as conn:
+        row = conn.execute(
+            "SELECT cum_nav FROM fund_nav WHERE code = ? AND date <= ? ORDER BY date DESC LIMIT 1",
+            (code, date),
+        ).fetchone()
+    return row[0] if row else None
+
+
 def get_index_close(code: str, date: str | None = None) -> float | None:
     with db() as conn:
         if date:
@@ -316,19 +274,12 @@ def get_sector_insights(limit: int = 5) -> str:
     return "\n".join(f"  - {r[0]}" for r in rows)
 
 
-def get_meta(key: str) -> str | None:
-    with db() as conn:
-        row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
-    return row[0] if row else None
-
-
-def set_meta(key: str, value: str) -> None:
-    with db() as conn:
-        conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
-
-
 def get_uptime_days() -> int:
-    start = get_meta("uptime_start")
+    with db() as conn:
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = 'uptime_start'"
+        ).fetchone()
+    start = row[0] if row else None
     if start:
         return (datetime.now() - datetime.strptime(start, "%Y-%m-%d")).days
     return 365
@@ -443,6 +394,182 @@ def update_highest_nav(code: str, highest: float, statuses: tuple[str, ...]) -> 
             f"UPDATE recommend_log SET highest_nav = ? WHERE code = ? AND status IN ({placeholders})",
             (highest, code, *statuses),
         )
+
+
+# ============================================================
+# 引擎/推荐/进化域 数据访问（深化 seam，收编各引擎内联 SQL）
+# ============================================================
+
+def get_index_series(code: str = "sh000300",
+                     columns: tuple[str, ...] = ("date", "close", "volume", "ma60")) -> list[tuple]:
+    """宽基指数日线序列（按日期升序），供特征/训练/回测共用。"""
+    cols = ", ".join(columns)
+    with db() as conn:
+        rows = conn.execute(
+            f"SELECT {cols} FROM index_daily WHERE code = ? ORDER BY date ASC",
+            (code,),
+        ).fetchall()
+    return rows
+
+
+def get_market_regime() -> str:
+    """沪深300 close vs ma60 → BULL/BEAR/NEUTRAL（大盘状态机单一来源）。"""
+    with db() as conn:
+        row = conn.execute(
+            "SELECT close, ma60 FROM index_daily WHERE code='sh000300' "
+            "AND close IS NOT NULL AND ma60 IS NOT NULL ORDER BY date DESC LIMIT 1"
+        ).fetchone()
+    if not row or not row[0] or not row[1] or row[1] <= 0:
+        return "NEUTRAL"
+    return "BULL" if row[0] > row[1] else "BEAR"
+
+
+def get_rbsa_weight_at_date(code: str, date: str) -> float | None:
+    """指定日期的 rbsa_weight_1（监控风格漂移对比买入时点用）。"""
+    with db() as conn:
+        row = conn.execute(
+            "SELECT rbsa_weight_1 FROM fund_features WHERE code = ? AND date = ?",
+            (code, date),
+        ).fetchone()
+    return row[0] if row else None
+
+
+def get_holding_log_id(code: str, statuses: tuple[str, ...]) -> int | None:
+    placeholders = ",".join("?" * len(statuses))
+    with db() as conn:
+        row = conn.execute(
+            f"SELECT id FROM recommend_log WHERE code = ? AND status IN ({placeholders}) "
+            f"ORDER BY id DESC LIMIT 1",
+            (code, *statuses),
+        ).fetchone()
+    return row[0] if row else None
+
+
+def insert_monitor_event(code: str, date: str, signal: str, trailing: bool, drift: bool,
+                         sector_adv: bool, logic_verdict: str, sector_risk: bool,
+                         holding_risk: bool, detail: str, log_id: int | None) -> None:
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO monitor_events "
+            "(code, date, signal, trigger_trailing, trigger_drift, trigger_sector_adv, "
+            "logic_verdict, sector_risk, holding_risk, detail, recommend_log_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (code, date, signal, trailing, drift, sector_adv,
+             logic_verdict, sector_risk, holding_risk, detail, log_id),
+        )
+
+
+def exit_position(code: str, sell_reason: str, return_rate: float | None,
+                  statuses: tuple[str, ...], today: str) -> None:
+    placeholders = ",".join("?" * len(statuses))
+    with db() as conn:
+        conn.execute(
+            "UPDATE recommend_log SET status='EXIT', sell_reason=?, exit_date=?, return_rate=? "
+            f"WHERE code=? AND status IN ({placeholders})",
+            (sell_reason, today, return_rate, code, *statuses),
+        )
+
+
+def get_active_insights(limit: int = 8) -> list[str]:
+    """活跃进化洞察（推荐终选定论用）。"""
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT insight FROM evolution_insights "
+            "WHERE active = 1 AND confidence > 0.3 "
+            "ORDER BY created_date DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
+def get_ranking_cfg() -> dict:
+    """读取排序权重（meta 表），与默认值合并（推荐/回测共用）。"""
+    defaults = {
+        "model_weight": 0.5, "rel_strength_weight": 0.15,
+        "calmar_weight": 0.1, "hurst_weight": 0.1,
+        "momentum_guard_pct": -15.0,
+    }
+    with db() as conn:
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = 'ranking_cfg'"
+        ).fetchone()
+    if row:
+        try:
+            defaults.update({k: v for k, v in _json.loads(row[0]).items() if k in defaults})
+        except Exception:
+            pass
+    return defaults
+
+
+def save_ranking_cfg(weights: dict) -> None:
+    """写入排序权重（进化自纠偏用）。"""
+    with db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('ranking_cfg', ?)",
+            (_json.dumps(weights),),
+        )
+
+
+def get_sector_candidates(sectors: list[str]) -> list[dict]:
+    """赛道内候选基金：fund_features 三行业匹配 + 全部特征列（推荐排序用）。"""
+    if not sectors:
+        return []
+    placeholders = ",".join("?" * len(sectors))
+    feat_cols = ", ".join("ff." + c for c in FEATURE_COLS)
+    with db() as conn:
+        rows = conn.execute(
+            f"SELECT ff.code, fb.name, ff.regime, "
+            f"ff.rbsa_industry_1, ff.rbsa_weight_1, "
+            f"ff.rbsa_industry_2, ff.rbsa_weight_2, "
+            f"ff.rbsa_industry_3, ff.rbsa_weight_3, {feat_cols} "
+            f"FROM fund_features ff JOIN fund_basic fb ON fb.code = ff.code "
+            f"WHERE fb.is_buyable = 1 "
+            f"AND (ff.rbsa_industry_1 IN ({placeholders}) "
+            f"  OR ff.rbsa_industry_2 IN ({placeholders}) "
+            f"  OR ff.rbsa_industry_3 IN ({placeholders}))",
+            sectors + sectors + sectors,
+        ).fetchall()
+    names = (["code", "name", "regime",
+              "rbsa_industry_1", "rbsa_weight_1",
+              "rbsa_industry_2", "rbsa_weight_2",
+              "rbsa_industry_3", "rbsa_weight_3"] + FEATURE_COLS)
+    return [dict(zip(names, r)) for r in rows]
+
+
+def get_all_ranking_rows() -> list[dict]:
+    """全市场可投基金特征（推荐降级路径用）。"""
+    feat_cols = ", ".join("ff." + c for c in FEATURE_COLS)
+    with db() as conn:
+        rows = conn.execute(
+            f"SELECT ff.code, fb.name, ff.regime, ff.rbsa_industry_1, ff.rbsa_weight_1, {feat_cols} "
+            f"FROM fund_features ff JOIN fund_basic fb ON fb.code = ff.code "
+            f"WHERE fb.is_buyable = 1 "
+            f"AND ff.rbsa_industry_1 IS NOT NULL AND ff.rbsa_industry_1 != ''"
+        ).fetchall()
+    names = ["code", "name", "regime", "rbsa_industry_1", "rbsa_weight_1"] + FEATURE_COLS
+    return [dict(zip(names, r)) for r in rows]
+
+
+def get_fund_name(code: str) -> str | None:
+    with db() as conn:
+        row = conn.execute("SELECT name FROM fund_basic WHERE code = ?", (code,)).fetchone()
+    return row[0] if row else None
+
+
+def get_latest_feature_date() -> str | None:
+    """fund_features 最新特征日期（赛道中位动量对齐用）。"""
+    with db() as conn:
+        row = conn.execute("SELECT MAX(date) FROM fund_features").fetchone()
+    return row[0] if row else None
+
+
+def get_latest_holdings_date(code: str) -> str | None:
+    """基金最新季报披露日期。"""
+    with db() as conn:
+        row = conn.execute(
+            "SELECT MAX(report_date) FROM fund_holdings WHERE code = ?", (code,)
+        ).fetchone()
+    return row[0] if row else None
 
 
 # ============================================================

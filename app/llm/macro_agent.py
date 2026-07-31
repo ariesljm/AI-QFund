@@ -41,24 +41,28 @@ class MacroContext:
 def build_macro_context(date_str: str | None = None, force: bool = False) -> MacroContext:
     """聚合多源数据 + LLM 选赛道，返回宏观上下文。
 
+    缓存先行：命中当天缓存直接返回（不再白抓网络）。
     force=True 时跳过缓存，强制实时抓取新闻+LLM 重新选赛道。
-    资金流数据始终实时刷新。
+    板块行情一次性抓取，供资金流与新闻复用，避免同一接口重复请求。
     """
     _ensure_column()
     date_str = date_str or datetime.now().strftime("%Y-%m-%d")
-
-    sectors = _load_board_sectors()
-
-    flow = _fetch_flow(date_str, sectors)
 
     if not force:
         cached = _load_cache(date_str)
         if cached is not None:
             return cached
 
+    sectors = _load_board_sectors()
+
+    flow = _fetch_flow(date_str, sectors)
+
     news = _fetch_news(date_str, sectors)
 
     ctx = _suggest_sectors(date_str, news, flow)
+    if not ctx.recommended_sectors:
+        # 空赛道不缓存：LLM 未给出可投赛道时直接失败，避免空结果被缓存导致后续全部静默终止
+        raise RuntimeError("LLM 未推荐任何可投赛道，拒绝缓存空结果")
     _save_cache(ctx)
     return ctx
 
@@ -189,11 +193,10 @@ def _load_board_sectors() -> list[dict]:
     ]
 
 
-def _fetch_news(date_str: str, sectors: list | None = None) -> dict:
-    """抓取板块排行 + 财联社电报，写入 macro_news。"""
+def _fetch_news(date_str: str, sectors: list) -> dict:
+    """抓取板块排行 + 财联社电报，写入 macro_news。sectors 由 build_macro_context 一次性抓取。"""
     top_gainers = top_losers = etf_net_flow = ""
     try:
-        sectors = _load_board_sectors()
         if sectors:
             sorted_by_chg = sorted(sectors, key=lambda x: float(x.get("u", 0) or 0), reverse=True)
             gainers = sorted_by_chg[:9]
@@ -227,11 +230,10 @@ def _fetch_news(date_str: str, sectors: list | None = None) -> dict:
     }
 
 
-def _fetch_flow(date_str: str, sectors: list | None = None) -> dict:
+def _fetch_flow(date_str: str, sectors: list) -> dict:
     """抓取行业板块资金流排名（主力净流入/涨跌），排除概念/风格板块。"""
     result = {"summary": ""}
     try:
-        sectors = _load_board_sectors()
         if not sectors:
             return result
         real_sectors = [s for s in sectors if not _is_concept_name(s.get("n", "") or "", s.get("c", "") or "")]
@@ -330,6 +332,9 @@ def _suggest_sectors(date_str: str, news: dict, flow: dict) -> MacroContext:
 
         rec_valid = [s for s in rec_raw if s in avail_set]
         risk_valid = [s for s in risk_raw if s in avail_set]
+
+        if rec_raw and not rec_valid:
+            raise RuntimeError(f"LLM 推荐赛道均不可投: {rec_raw}，可用赛道: {sorted(avail_set)}")
 
         if len(rec_valid) < len(rec_raw):
             dropped = set(rec_raw) - set(rec_valid)
