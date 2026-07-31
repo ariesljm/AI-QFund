@@ -9,7 +9,7 @@
 
 import json
 import logging
-from log_utils import get_logger
+from app.utils.log import get_logger
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -18,12 +18,12 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-from features import calc_hurst
-from macro_agent import build_macro_context, MacroContext
-from data_store import _db_conn, _get_db
-from data_foundation import fetch_fund_nav_incremental
-from llm import call_llm
-from prompts import final_pick_prompt, final_pick_system_prompt
+from app.features.calculator import calc_hurst
+from app.llm.macro_agent import build_macro_context, MacroContext
+from app.database import db_conn, get_db as _get_db
+from app.data.nav import fetch_fund_nav_incremental
+from app.llm.client import call_llm
+from app.llm.prompts import final_pick_prompt, final_pick_system_prompt
 
 logger = get_logger("recommend")
 
@@ -45,7 +45,7 @@ def _load_ranking_cfg() -> dict:
         "momentum_guard_pct": -15.0,
     }
     try:
-        with _db_conn() as conn:
+        with db_conn() as conn:
             row = conn.execute(
                 "SELECT value FROM meta WHERE key = 'ranking_cfg'"
             ).fetchone()
@@ -119,7 +119,7 @@ def prepare_lgb_training_data() -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, 
     ponytail: 不预加载全库NAV（14M行→51s），改用逐基金SQL流式处理，
     并限制基金数避免训练过慢。
     """
-    with _db_conn() as conn:
+    with db_conn() as conn:
         idx_rows = conn.execute(
             "SELECT date, close, volume FROM index_daily WHERE code = 'sh000300' ORDER BY date ASC"
         ).fetchall()
@@ -263,7 +263,7 @@ def _match_one_sector(ideal: str, candidates: list[str]) -> str | None:
 
 def _resolve_sectors(sectors: list[str]) -> list[str]:
     """把 LLM 选的行业名匹配到 RBSA 表中存在的行业名。"""
-    with _db_conn() as conn:
+    with db_conn() as conn:
         rows = conn.execute(
             "SELECT DISTINCT rbsa_industry_1 FROM fund_features "
             "WHERE rbsa_industry_1 IS NOT NULL AND rbsa_industry_1 != ''"
@@ -279,7 +279,7 @@ def _resolve_sectors(sectors: list[str]) -> list[str]:
     return list(dict.fromkeys(resolved))  # 去重保留顺序
 
 def _index_momentum() -> float:
-    with _db_conn() as conn:
+    with db_conn() as conn:
         idx = conn.execute(
             "SELECT close FROM index_daily WHERE code='sh000300' ORDER BY date DESC LIMIT 21"
         ).fetchall()
@@ -288,7 +288,7 @@ def _index_momentum() -> float:
 
 def _get_market_regime() -> str:
     """从沪深300收盘价 vs MA60 判断大盘状态：BULL/BEAR。"""
-    with _db_conn() as conn:
+    with db_conn() as conn:
         row = conn.execute(
             "SELECT close, ma60 FROM index_daily WHERE code='sh000300' "
             "AND close IS NOT NULL AND ma60 IS NOT NULL "
@@ -339,7 +339,7 @@ def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> list[dict]:
     logger.info("LLM赛道 %s → 匹配到 %s", raw_sectors, sectors)
     risk_sectors = _resolve_sectors(ctx.risk_sectors)
 
-    with _db_conn() as conn:
+    with db_conn() as conn:
         placeholders = ",".join("?" * len(sectors))
         rows = conn.execute(
             f"SELECT ff.code, fb.name, ff.regime, "
@@ -444,7 +444,7 @@ def rank_funds(model: lgb.Booster) -> list[dict]:
     """全市场排名（降级备选），返回 Top 10。"""
     cfg = _load_ranking_cfg()
     guard = cfg["momentum_guard_pct"]
-    with _db_conn() as conn:
+    with db_conn() as conn:
         rows = conn.execute(
             "SELECT ff.code, fb.name, ff.regime, ff.rbsa_industry_1, ff.rbsa_weight_1, "
             f"{', '.join('ff.' + c for c in FEATURE_COLS)} "
@@ -509,7 +509,7 @@ def _load_insights(conn: sqlite3.Connection) -> list[str]:
 
 def _llm_final_pick(candidates: list[dict], ctx: MacroContext, insights: list) -> dict:
     """LLM 基于重仓股+CLS新闻匹配+持仓时效性做最终选择，返回选定基金和否决记录。"""
-    with _db_conn() as conn:
+    with db_conn() as conn:
         latest_feature_date = conn.execute(
             "SELECT MAX(date) FROM fund_features"
         ).fetchone()[0]
@@ -644,7 +644,7 @@ def _save_recommendation(date_str: str, selected: dict, candidates: list[dict],
                            vetoed: list, regime: str, feature_snapshot: str = "",
                            clear: bool = False) -> int:
     """入库推荐记录，返回新插入行的 id。"""
-    with _db_conn() as conn:
+    with db_conn() as conn:
         rank = next(
             (i + 1 for i, c in enumerate(candidates) if c["code"] == selected["selected_code"]), 1)
         score = next(
@@ -686,7 +686,7 @@ def run_recommendation(retrain: bool = False, force: bool = False) -> None:
     force=True 时跳过宏观缓存，强制实时抓取新闻+LLM 重新选赛道。
     """
     date_str = datetime.now().strftime("%Y-%m-%d")
-    with _db_conn() as conn:
+    with db_conn() as conn:
         insights = _load_insights(conn)
 
     if retrain or not MODEL_PATH.exists():
@@ -751,7 +751,7 @@ def run_recommendation(retrain: bool = False, force: bool = False) -> None:
         if sel_momentum is not None and sel_momentum < guard:
             logger.warning("风控拦截 [%s]: %s 近20日动量 %.1f%% 低于阈值 %.0f%%",
                            sector, selected["selected_code"], sel_momentum, guard)
-            with _db_conn() as conn:
+            with db_conn() as conn:
                 conn.execute(
                     "INSERT INTO recommend_log "
                     "(recommend_date, code, name, rank, score, combo, regime, buy_reason, status) "
@@ -774,7 +774,7 @@ def run_recommendation(retrain: bool = False, force: bool = False) -> None:
             "sector_rel_calmar": sel_features.get("sector_rel_calmar", 0),
         }, ensure_ascii=False)
 
-        with _db_conn() as conn:
+        with db_conn() as conn:
             new_rows = fetch_fund_nav_incremental(selected["selected_code"], conn)
             if new_rows:
                 conn.commit()
@@ -793,7 +793,7 @@ def run_recommendation(retrain: bool = False, force: bool = False) -> None:
 
 def _write_sector_selection(date_str: str, ctx: MacroContext,
                             log_id: int, sector_name: str | None = None) -> None:
-    with _db_conn() as conn:
+    with db_conn() as conn:
         conn.execute(
             "INSERT INTO sector_selections (date, recommend_log_id, recommended_sectors, "
             "risk_sectors, sector_reasoning, regime_label) VALUES (?, ?, ?, ?, ?, ?)",

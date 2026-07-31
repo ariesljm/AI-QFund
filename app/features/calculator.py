@@ -1,12 +1,10 @@
 """特征计算模块：Hurst、动量、卡玛、RBSA、大盘状态机。"""
 
-from log_utils import get_logger
+from app.utils.log import get_logger
 import sqlite3
 import time
 
 import numpy as np
-
-import log_utils  # noqa: F401
 
 logger = get_logger("features")
 
@@ -143,9 +141,9 @@ def calc_features(code: str, conn: sqlite3.Connection) -> dict:
 
 
 def calc_all_features(batch_commit: int = 500) -> int:
-    from data_store import _db_conn
+    from app.database import db_conn
 
-    with _db_conn() as conn:
+    with db_conn() as conn:
         all_codes = [
             r[0] for r in conn.execute(
                 "SELECT code FROM fund_basic WHERE is_buyable = 1"

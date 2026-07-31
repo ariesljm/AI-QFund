@@ -4,11 +4,11 @@ import time
 import uuid
 from datetime import datetime
 
-from data_foundation import run_pipeline as run_data_foundation
-from data_store import _db_conn
-from log_utils import set_correlation_id, get_logger
-from monitor import run_monitor
-from recommend import run_recommendation
+from app.data.foundation import run_pipeline as run_data_foundation
+from app.database import db_conn
+from app.utils.log import set_correlation_id, get_logger
+from app.engine.monitor import run_monitor
+from app.engine.recommend import run_recommendation
 
 logger = get_logger("pipeline")
 
@@ -16,7 +16,7 @@ _HOLDINGS_INTERVAL_DAYS = 7
 
 
 def _daily_data_steps() -> list[int]:
-    with _db_conn() as conn:
+    with db_conn() as conn:
         conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
         row = conn.execute("SELECT value FROM meta WHERE key = 'holdings_last_run'").fetchone()
     if row:
@@ -25,7 +25,7 @@ def _daily_data_steps() -> list[int]:
     else:
         elapsed = _HOLDINGS_INTERVAL_DAYS + 1
     if elapsed > _HOLDINGS_INTERVAL_DAYS:
-        with _db_conn() as conn:
+        with db_conn() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES ('holdings_last_run', ?)",
                 (datetime.now().strftime("%Y-%m-%d"),),
@@ -48,7 +48,7 @@ def run(force: bool = False) -> None:
         ("监控引擎", lambda: run_monitor()),
     ]
     if datetime.now().day == 1:
-        from evolve import run_evolve
+        from app.engine.evolve import run_evolve
         phases.append(("进化引擎", lambda: run_evolve()))
 
     pipeline_start = time.time()

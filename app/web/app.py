@@ -2,7 +2,7 @@
 
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import collections
 import logging
@@ -18,8 +18,9 @@ from fastapi.templating import Jinja2Templates
 
 import json
 
-from data_store import _get_db, _db_conn, SETTINGS_PATH, _save_settings, _load_settings
-from pipeline import run as run_full_pipeline
+from app.database import get_db as _get_db, db_conn
+from app.config import load_settings as _load_settings, save_settings as _save_settings, SETTINGS_PATH
+from app.pipeline import run as run_full_pipeline
 
 logger = logging.getLogger("web")
 
@@ -116,13 +117,13 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
 def _q(sql: str, params: tuple = ()):
-    with _db_conn() as conn:
+    with db_conn() as conn:
         r = conn.execute(sql, params).fetchall()
     return r
 
 
 def _q1(sql: str, params: tuple = ()):
-    with _db_conn() as conn:
+    with db_conn() as conn:
         r = conn.execute(sql, params).fetchone()
     return r
 
@@ -641,7 +642,7 @@ async def index(request: Request):
 
 @app.get("/api/logs")
 async def get_logs(lines: int = 100, start: int = 0):
-    from log_utils import LOG_FILE
+    from app.utils.log import LOG_FILE
     if not LOG_FILE.exists():
         return {"lines": [], "total": 0}
     with open(str(LOG_FILE), "r", encoding="utf-8", errors="replace") as f:
@@ -698,6 +699,36 @@ async def run_pipeline():
 @app.get("/api/pipeline-status")
 async def get_pipeline_status():
     return _pipeline.status
+
+
+@app.post("/api/clear-recommendations")
+async def clear_recommendations(body: dict | None = None):
+    """清除推荐决策域数据（推荐记录、赛道选择、监控事件、进化洞察）。
+
+    dry_run=true 时仅返回各表行数不删除（前端确认弹窗用）。
+    管线运行中拒绝执行；保留底层数据与 meta 配置。
+    """
+    if _pipeline.status.get("state") == "running":
+        return {"status": "error", "message": "管线运行中，请稍后再试"}
+    from app.repo import clear_recommendations as _clear
+    from app.database import db_conn as _db_conn
+    body = body or {}
+    dry_run = bool(body.get("dry_run"))
+    if dry_run:
+        with _db_conn() as conn:
+            counts = {
+                "recommend_log": conn.execute("SELECT COUNT(*) FROM recommend_log").fetchone()[0],
+                "sector_selections": conn.execute("SELECT COUNT(*) FROM sector_selections").fetchone()[0],
+                "monitor_events": conn.execute("SELECT COUNT(*) FROM monitor_events").fetchone()[0],
+                "evolution_insights": conn.execute("SELECT COUNT(*) FROM evolution_insights").fetchone()[0],
+            }
+        return {"status": "ok", "dry_run": True, "deleted": counts}
+    try:
+        counts = _clear()
+        return {"status": "ok", "deleted": counts}
+    except Exception as e:
+        logger.error("清除推荐数据失败: %s", e)
+        return {"status": "error", "message": str(e)}
 
 
 @app.get("/api/recommendation-status")
@@ -809,4 +840,4 @@ if __name__ == "__main__":
         logger.warning("设置文件加载失败(使用默认端口): %s", e)
         port = 9123
     reload = _os.environ.get("UVICORN_RELOAD", "").lower() in ("1", "true", "yes")
-    uvicorn.run("web.app:app", host="0.0.0.0", port=port, reload=reload)
+    uvicorn.run("app.web.app:app", host="0.0.0.0", port=port, reload=reload)

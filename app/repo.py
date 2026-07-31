@@ -1,7 +1,4 @@
-"""数据库仓库层 Deep Module：封装所有 SQL 查询，统一数据访问 seam。
-
-Interface: 约 20 个方法，隐藏 SQLite 实现、连接管理、表结构细节。
-"""
+"""数据库仓库层：封装所有 SQL 查询，统一数据访问 seam。"""
 
 from contextlib import contextmanager
 from datetime import datetime
@@ -9,7 +6,7 @@ from pathlib import Path
 import json as _json
 import sqlite3
 
-from log_utils import get_logger
+from app.utils.log import get_logger
 
 logger = get_logger("repo")
 
@@ -28,10 +25,6 @@ def db():
     finally:
         conn.close()
 
-
-# ============================================================
-# 宏观新闻 / 赛道上下文
-# ============================================================
 
 def get_latest_macro_news() -> dict | None:
     with db() as conn:
@@ -101,10 +94,6 @@ def get_cached_context(date_str: str) -> dict | None:
     return None
 
 
-# ============================================================
-# 基基金数据
-# ============================================================
-
 def get_buyable_funds() -> list[str]:
     with db() as conn:
         rows = conn.execute("SELECT code FROM fund_basic WHERE is_buyable = 1").fetchall()
@@ -127,10 +116,6 @@ def get_fund_pool_stats() -> tuple[int, list[dict]]:
         ).fetchall()
     return total, [{"type": t[0] or "其他", "count": t[1]} for t in by_type]
 
-
-# ============================================================
-# 基金特征 / RBSA / 持仓
-# ============================================================
 
 def get_fund_features(code: str) -> dict | None:
     with db() as conn:
@@ -209,10 +194,6 @@ def get_holdings(code: str) -> list[dict]:
     return [{"code": r[0], "name": r[1], "weight": r[2], "industry": r[3] or ""} for r in rows]
 
 
-# ============================================================
-# 推荐记录
-# ============================================================
-
 def get_latest_recommendations(limit: int = 2) -> list[dict]:
     with db() as conn:
         rows = conn.execute(
@@ -287,10 +268,6 @@ def get_fund_detail(code: str) -> dict | None:
     }
 
 
-# ============================================================
-# 净值 / 指数
-# ============================================================
-
 def get_nav_history(code: str, limit: int = 60) -> list[tuple[str, float]]:
     with db() as conn:
         rows = conn.execute(
@@ -326,10 +303,6 @@ def get_index_momentum(code: str = "sh000300", days: int = 21) -> float:
     return (idx[0][0] / idx[-1][0] - 1) * 100 if len(idx) >= days else 0.0
 
 
-# ============================================================
-# 进化 / 洞察
-# ============================================================
-
 def get_sector_insights(limit: int = 5) -> str:
     with db() as conn:
         rows = conn.execute(
@@ -342,10 +315,6 @@ def get_sector_insights(limit: int = 5) -> str:
         return ""
     return "\n".join(f"  - {r[0]}" for r in rows)
 
-
-# ============================================================
-# 元数据
-# ============================================================
 
 def get_meta(key: str) -> str | None:
     with db() as conn:
@@ -366,118 +335,134 @@ def get_uptime_days() -> int:
 
 
 # ============================================================
-# 向后兼容：旧 class-based interface（计划在 C4 重构 monitor 后移除）
+# 监控引擎专用（原 NavRepo/FeatureRepo/RecommendLogRepo）
 # ============================================================
 
-class NavRepo:
-    @staticmethod
-    def get_nav_since(code: str, since_date: str) -> list[tuple]:
-        with db() as conn:
-            rows = conn.execute(
-                "SELECT date, cum_nav FROM fund_nav WHERE code = ? AND date >= ? ORDER BY date ASC",
-                (code, since_date),
-            ).fetchall()
-        return rows
-
-    @staticmethod
-    def get_latest_nav(code: str) -> float | None:
-        with db() as conn:
-            row = conn.execute(
-                "SELECT cum_nav FROM fund_nav WHERE code = ? ORDER BY date DESC LIMIT 1",
-                (code,),
-            ).fetchone()
-        return row[0] if row else None
+def get_nav_since(code: str, since_date: str) -> list[tuple]:
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT date, cum_nav FROM fund_nav WHERE code = ? AND date >= ? ORDER BY date ASC",
+            (code, since_date),
+        ).fetchall()
+    return rows
 
 
-class FeatureRepo:
-    @staticmethod
-    def get_latest(code: str) -> dict | None:
-        with db() as conn:
-            row = conn.execute(
-                "SELECT hurst_60d, momentum_20d, calmar, downside_vol, capture_up, capture_down, "
-                "bias_60d, rbsa_industry_1, rbsa_weight_1, rbsa_industry_2, rbsa_weight_2, "
-                "rbsa_industry_3, rbsa_weight_3, date "
-                "FROM fund_features WHERE code = ? ORDER BY date DESC LIMIT 1",
-                (code,),
-            ).fetchone()
-        if not row:
-            return None
-        return {
-            "hurst_60d": row[0], "momentum_20d": row[1], "calmar": row[2],
-            "downside_vol": row[3], "capture_up": row[4], "capture_down": row[5],
-            "bias_60d": row[6], "rbsa_industry_1": row[7], "rbsa_weight_1": row[8] or 0,
-            "rbsa_industry_2": row[9], "rbsa_weight_2": row[10] or 0,
-            "rbsa_industry_3": row[11], "rbsa_weight_3": row[12] or 0,
-            "date": row[13],
-        }
-
-    @staticmethod
-    def get_momentum_in_sector(sector: str, date: str) -> list[float]:
-        with db() as conn:
-            rows = conn.execute(
-                "SELECT momentum_20d FROM fund_features "
-                "WHERE rbsa_industry_1 = ? AND date = ? AND momentum_20d IS NOT NULL",
-                (sector, date),
-            ).fetchall()
-        return [r[0] for r in rows]
+def get_latest_nav(code: str) -> float | None:
+    with db() as conn:
+        row = conn.execute(
+            "SELECT cum_nav FROM fund_nav WHERE code = ? ORDER BY date DESC LIMIT 1",
+            (code,),
+        ).fetchone()
+    return row[0] if row else None
 
 
-class RecommendLogRepo:
-    @staticmethod
-    def get_reco_date_of(code: str, statuses: tuple[str, ...] = ("HOLD", "BUY_MORE", "WARNING")) -> str | None:
-        placeholders = ",".join("?" * len(statuses))
-        with db() as conn:
-            row = conn.execute(
-                f"SELECT recommend_date FROM recommend_log WHERE code = ? AND status IN ({placeholders}) "
-                f"ORDER BY id DESC LIMIT 1",
-                (code, *statuses),
-            ).fetchone()
-        return row[0] if row else None
+def get_latest_features(code: str) -> dict | None:
+    with db() as conn:
+        row = conn.execute(
+            "SELECT hurst_60d, momentum_20d, calmar, downside_vol, capture_up, capture_down, "
+            "bias_60d, rbsa_industry_1, rbsa_weight_1, rbsa_industry_2, rbsa_weight_2, "
+            "rbsa_industry_3, rbsa_weight_3, date "
+            "FROM fund_features WHERE code = ? ORDER BY date DESC LIMIT 1",
+            (code,),
+        ).fetchone()
+    if not row:
+        return None
+    return {
+        "hurst_60d": row[0], "momentum_20d": row[1], "calmar": row[2],
+        "downside_vol": row[3], "capture_up": row[4], "capture_down": row[5],
+        "bias_60d": row[6], "rbsa_industry_1": row[7], "rbsa_weight_1": row[8] or 0,
+        "rbsa_industry_2": row[9], "rbsa_weight_2": row[10] or 0,
+        "rbsa_industry_3": row[11], "rbsa_weight_3": row[12] or 0,
+        "date": row[13],
+    }
 
-    @staticmethod
-    def get_entry(code: str, statuses: tuple[str, ...] = ("HOLD", "BUY_MORE", "WARNING")) -> dict | None:
-        placeholders = ",".join("?" * len(statuses))
-        with db() as conn:
-            row = conn.execute(
-                f"SELECT id, code, recommend_date, entry_nav, status FROM recommend_log "
-                f"WHERE code = ? AND status IN ({placeholders}) ORDER BY id DESC LIMIT 1",
-                (code, *statuses),
-            ).fetchone()
-        return {
-            "id": row[0], "code": row[1], "recommend_date": row[2],
-            "entry_nav": row[3], "status": row[4],
-            "entry_nav_val": row[3],  # 向后兼容: 旧代码用 entry[1] 访问 entry_nav
-        } if row else None
 
-    @staticmethod
-    def get_holding_codes(statuses: tuple[str, ...] = ("HOLD", "BUY_MORE", "WARNING")) -> list[tuple]:
-        placeholders = ",".join("?" * len(statuses))
-        with db() as conn:
-            rows = conn.execute(
-                f"SELECT r.code, fb.name, r.recommend_date, r.buy_reason, ff.rbsa_industry_1 "
-                f"FROM recommend_log r "
-                f"LEFT JOIN fund_basic fb ON fb.code = r.code "
-                f"LEFT JOIN fund_features ff ON ff.code = r.code "
-                f"WHERE r.status IN ({placeholders}) "
-                f"GROUP BY r.code ORDER BY MAX(r.id) DESC",
-                statuses,
-            ).fetchall()
-        return rows
+def get_momentum_in_sector(sector: str, date: str) -> list[float]:
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT momentum_20d FROM fund_features "
+            "WHERE rbsa_industry_1 = ? AND date = ? AND momentum_20d IS NOT NULL",
+            (sector, date),
+        ).fetchall()
+    return [r[0] for r in rows]
 
-    @staticmethod
-    def update_status(code: str, signal: str, statuses: tuple[str, ...]) -> None:
-        placeholders = ",".join("?" * len(statuses))
-        with db() as conn:
-            conn.execute(
-                f"UPDATE recommend_log SET status = ? WHERE code = ? AND status IN ({placeholders})",
-                (signal, code, *statuses),
-            )
 
-    @staticmethod
-    def update_highest_nav(code: str, highest: float, statuses: tuple[str, ...]) -> None:
-        placeholders = ",".join("?" * len(statuses))
-        with db() as conn:
-            conn.execute(
-                f"UPDATE recommend_log SET highest_nav = ? WHERE code = ? AND status IN ({placeholders})",
-                (highest, code, *statuses),
-            )
+def get_reco_date_of(code: str, statuses: tuple[str, ...] = ("HOLD", "BUY_MORE", "WARNING")) -> str | None:
+    placeholders = ",".join("?" * len(statuses))
+    with db() as conn:
+        row = conn.execute(
+            f"SELECT recommend_date FROM recommend_log WHERE code = ? AND status IN ({placeholders}) "
+            f"ORDER BY id DESC LIMIT 1",
+            (code, *statuses),
+        ).fetchone()
+    return row[0] if row else None
+
+
+def get_entry(code: str, statuses: tuple[str, ...] = ("HOLD", "BUY_MORE", "WARNING")) -> dict | None:
+    placeholders = ",".join("?" * len(statuses))
+    with db() as conn:
+        row = conn.execute(
+            f"SELECT id, code, recommend_date, entry_nav, status FROM recommend_log "
+            f"WHERE code = ? AND status IN ({placeholders}) ORDER BY id DESC LIMIT 1",
+            (code, *statuses),
+        ).fetchone()
+    return {
+        "id": row[0], "code": row[1], "recommend_date": row[2],
+        "entry_nav": row[3], "status": row[4],
+    } if row else None
+
+
+def get_holding_codes(statuses: tuple[str, ...] = ("HOLD", "BUY_MORE", "WARNING")) -> list[tuple]:
+    placeholders = ",".join("?" * len(statuses))
+    with db() as conn:
+        rows = conn.execute(
+            f"SELECT r.code, fb.name, r.recommend_date, r.buy_reason, ff.rbsa_industry_1 "
+            f"FROM recommend_log r "
+            f"LEFT JOIN fund_basic fb ON fb.code = r.code "
+            f"LEFT JOIN fund_features ff ON ff.code = r.code "
+            f"WHERE r.status IN ({placeholders}) "
+            f"GROUP BY r.code ORDER BY MAX(r.id) DESC",
+            statuses,
+        ).fetchall()
+    return rows
+
+
+def update_status(code: str, signal: str, statuses: tuple[str, ...]) -> None:
+    placeholders = ",".join("?" * len(statuses))
+    with db() as conn:
+        conn.execute(
+            f"UPDATE recommend_log SET status = ? WHERE code = ? AND status IN ({placeholders})",
+            (signal, code, *statuses),
+        )
+
+
+def update_highest_nav(code: str, highest: float, statuses: tuple[str, ...]) -> None:
+    placeholders = ",".join("?" * len(statuses))
+    with db() as conn:
+        conn.execute(
+            f"UPDATE recommend_log SET highest_nav = ? WHERE code = ? AND status IN ({placeholders})",
+            (highest, code, *statuses),
+        )
+
+
+# ============================================================
+# 清除推荐决策域
+# ============================================================
+
+def clear_recommendations() -> dict:
+    """清空推荐决策域：推荐记录、赛道选择、监控事件、进化洞察及推荐结果文件。
+
+    保留底层数据（fund_basic/fund_nav/fund_features 等）与 meta 配置。
+    返回各表删除的行数。
+    """
+    counts: dict[str, int] = {}
+    with db() as conn:
+        for table in ("recommend_log", "sector_selections", "monitor_events", "evolution_insights"):
+            cur = conn.execute(f"DELETE FROM {table}")
+            counts[table] = cur.rowcount
+    last_reco = Path("data/last_recommendation.txt")
+    if last_reco.exists():
+        last_reco.unlink()
+        counts["last_recommendation.txt"] = 1
+    logger.info("清除推荐决策域: %s", counts)
+    return counts

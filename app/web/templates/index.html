@@ -554,6 +554,11 @@ LIVE LOG STREAM / 系统实时日志
           <button class="w-full bg-primary text-white py-3 font-black uppercase tracking-[0.2em] hover:bg-black transition-all" onclick="triggerPipeline()">立即启动推荐管线</button>
 </section>
 <section>
+<h3 class="font-black text-[13px] uppercase tracking-[0.2em] mb-md border-b border-outline-variant pb-1">DANGER ZONE / 数据管理</h3>
+<p class="text-[13px] font-bold text-on-surface-variant mb-sm">永久删除全部推荐记录、赛道选择、监控事件与进化洞察（保留基金/净值底层数据）</p>
+<button class="w-full bg-error text-white py-3 font-black uppercase tracking-[0.2em] hover:bg-black transition-all" onclick="clearRecommendationsFlow()">清除全部推荐数据</button>
+</section>
+<section>
 <h3 class="font-black text-[13px] uppercase tracking-[0.2em] mb-md border-b border-outline-variant pb-1">LLM CONFIG / 大模型配置</h3>
 <div class="space-y-md">
 <div><label class="font-bold text-[13px] block mb-xs">API 地址</label><input id="llmBaseUrl" class="w-full p-lg border border-outline-variant bg-background font-bold text-[14px] focus:border-primary focus:outline-none" placeholder="http://localhost:11434/v1"/></div>
@@ -842,7 +847,10 @@ async function fetchLogs() {
 
 function val(id) { return document.getElementById(id).value; }
 
-function openPasswordPrompt() {
+var _pendingClear = false;
+
+function openPasswordPrompt(action) {
+    _pendingClear = (action === 'clear');
     document.getElementById('passwordInput').value = '';
     document.getElementById('passwordError').classList.add('hidden');
     openModal('passwordModal');
@@ -854,9 +862,33 @@ async function submitPassword() {
     try {
         var r = await fetch('/api/check-password', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({password:pwd}) });
         var d = await r.json();
-        if (d.ok) { closeModal('passwordModal'); openModal('settingsModal'); }
+        if (d.ok) {
+            closeModal('passwordModal');
+            if (_pendingClear) { _pendingClear = false; doClearRecommendations(); }
+            else { openModal('settingsModal'); }
+        }
         else { document.getElementById('passwordError').classList.remove('hidden'); }
     } catch(e) { document.getElementById('passwordError').classList.remove('hidden'); }
+}
+
+function clearRecommendationsFlow() {
+    openPasswordPrompt('clear');
+}
+
+async function doClearRecommendations() {
+    try {
+        var r = await fetch('/api/clear-recommendations', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({dry_run:true}) });
+        var d = await r.json();
+        if (d.status !== 'ok') { alert(d.message || '请求失败'); return; }
+        var del = d.deleted || {};
+        var rec = del.recommend_log || 0;
+        var total = rec + (del.sector_selections || 0) + (del.monitor_events || 0) + (del.evolution_insights || 0);
+        if (!confirm('将永久删除 ' + rec + ' 条推荐记录及关联数据（共 ' + total + ' 条），此操作不可恢复。确定继续吗？')) return;
+        var r2 = await fetch('/api/clear-recommendations', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({dry_run:false}) });
+        var d2 = await r2.json();
+        if (d2.status === 'ok') { alert('已清除全部推荐数据'); location.reload(); }
+        else { alert('清除失败: ' + (d2.message || '未知错误')); }
+    } catch(e) { alert('请求失败: ' + e.message); }
 }
 
 async function loadSettings() {

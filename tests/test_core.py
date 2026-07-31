@@ -20,7 +20,7 @@ import numpy as np
 # sector_api — is_industry_code
 # ============================================================
 
-from sector_api import is_industry_code
+from app.features.sector import is_industry_code
 
 class TestIndustryCode:
     def test_valid_sws_code(self):
@@ -64,7 +64,7 @@ class TestIndustryCode:
 # macro_agent — _is_concept_name
 # ============================================================
 
-from macro_agent import _is_concept_name
+from app.llm.macro_agent import _is_concept_name
 
 class TestConceptName:
     def test_known_concept_codes(self):
@@ -93,7 +93,7 @@ class TestConceptName:
 # features — calc_hurst
 # ============================================================
 
-from features import calc_hurst
+from app.features.calculator import calc_hurst
 
 class TestHurst:
     def test_random_walk_in_range(self):
@@ -125,7 +125,7 @@ class TestHurst:
 # recommend — _match_one_sector
 # ============================================================
 
-from recommend import _match_one_sector
+from app.engine.recommend import _match_one_sector
 
 class TestMatchOneSector:
     def test_exact_match(self):
@@ -156,7 +156,7 @@ class TestMatchOneSector:
 # prompts — sector_selection_prompt
 # ============================================================
 
-from prompts import sector_selection_prompt, sector_selection_system_prompt
+from app.llm.prompts import sector_selection_prompt, sector_selection_system_prompt
 
 class TestPrompts:
     def test_basic_prompt_structure(self):

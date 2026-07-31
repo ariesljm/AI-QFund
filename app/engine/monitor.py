@@ -12,18 +12,20 @@
 
 import json
 import logging
-from log_utils import get_logger
+from app.utils.log import get_logger
 import time
 from datetime import datetime
 from dataclasses import dataclass, field
 
 import numpy as np
 
-from data_store import _db_conn
-from repo import NavRepo, FeatureRepo, RecommendLogRepo
-from macro_agent import build_macro_context
-from llm import call_llm
-from prompts import monitor_logic_prompt
+from app.database import db_conn
+from app.repo import (get_nav_since, get_latest_nav, get_latest_features,
+                      get_momentum_in_sector, get_reco_date_of, get_entry,
+                      get_holding_codes, update_status, update_highest_nav)
+from app.llm.macro_agent import build_macro_context
+from app.llm.client import call_llm
+from app.llm.prompts import monitor_logic_prompt
 
 logger = get_logger("monitor")
 
@@ -83,7 +85,7 @@ class LogicVerificationRule(DefenseRule):
     """防线3：LLM 逻辑证伪"""
 
     def check(self, code, buy_reason, sector, ctx, highest, navs, atr, reco_date):
-        with _db_conn() as conn:
+        with db_conn() as conn:
             logic = _check_logic_enhanced(code, buy_reason or "", sector or "", ctx, conn)
         if logic["logic_verdict"] == "断裂":
             return DefenseResult(signal="EXIT", reason=f"LLM逻辑证伪: {logic['reason']}")
@@ -103,7 +105,7 @@ class LogicVerificationRule(DefenseRule):
 
 
 def _nav_since(code: str, since_date: str) -> list[float]:
-    return NavRepo.get_nav_since(code, since_date)
+    return get_nav_since(code, since_date)
 
 
 def update_highest_nav(code: str, since_date: str) -> float | None:
@@ -139,18 +141,18 @@ def check_trailing_stop(code: str, highest_nav: float, atr: float,
 
 
 def _reco_date_of(code: str) -> str:
-    return RecommendLogRepo.get_reco_date_of(code, _HOLD_STATES) or ""
+    return get_reco_date_of(code, _HOLD_STATES) or ""
 
 
 def check_style_drift(code: str) -> tuple[bool, str]:
     reco_date = _reco_date_of(code)
-    init_feat = FeatureRepo.get_latest(code) if not reco_date else None
-    cur_feat = FeatureRepo.get_latest(code)
+    init_feat = get_latest_features(code) if not reco_date else None
+    cur_feat = get_latest_features(code)
 
     # fallback: roc_date 对应的 rbsa_weight_1 需要单独查
     init_w = None
     if reco_date:
-        with _db_conn() as conn:
+        with db_conn() as conn:
             row = conn.execute(
                 "SELECT rbsa_weight_1 FROM fund_features WHERE code = ? AND date = ?",
                 (code, reco_date),
@@ -174,7 +176,7 @@ def check_style_drift(code: str) -> tuple[bool, str]:
 
 
 def check_sector_advantage(code: str, sector: str) -> tuple[bool, str]:
-    feat = FeatureRepo.get_latest(code)
+    feat = get_latest_features(code)
     if not feat:
         return False, ""
     fund_mom = feat.get("momentum_20d")
@@ -182,7 +184,7 @@ def check_sector_advantage(code: str, sector: str) -> tuple[bool, str]:
     if fund_mom is None or not latest_date:
         return False, ""
 
-    sector_moms = FeatureRepo.get_momentum_in_sector(sector, latest_date) if sector else []
+    sector_moms = get_momentum_in_sector(sector, latest_date) if sector else []
 
     if len(sector_moms) < 3:
         logger.info("赛道 %s 基金不足 3 只，跳过赛道优势检测", sector or "未知")
@@ -264,7 +266,7 @@ def _check_logic_enhanced(code: str, buy_reason: str, sector: str,
 def _log_monitor_event(code: str, signal: str, logic: dict,
                        trailing: bool, drift: bool, sector_adv: bool,
                        detail: str) -> None:
-    with _db_conn() as conn:
+    with db_conn() as conn:
         log_id = conn.execute(
             f"SELECT id FROM recommend_log WHERE code = ? AND status IN "
             f"({','.join('?'*len(_HOLD_STATES))}) ORDER BY id DESC LIMIT 1",
@@ -284,13 +286,13 @@ def _log_monitor_event(code: str, signal: str, logic: dict,
 
 
 def _exit_position(code: str, sell_reason: str) -> None:
-    with _db_conn() as conn:
+    with db_conn() as conn:
         today = datetime.now().strftime("%Y-%m-%d")
-        entry = RecommendLogRepo.get_entry(code, _HOLD_STATES)
+        entry = get_entry(code, _HOLD_STATES)
         return_rate = None
         if entry:
             entry_nav = entry.get("entry_nav")
-            latest_nav = NavRepo.get_latest_nav(code)
+            latest_nav = get_latest_nav(code)
             if entry_nav and latest_nav:
                 return_rate = latest_nav / entry_nav - 1.0
         placeholders = ",".join("?" * len(_HOLD_STATES))
@@ -304,7 +306,7 @@ def _exit_position(code: str, sell_reason: str) -> None:
 
 
 def _update_signal(code: str, signal: str) -> None:
-    RecommendLogRepo.update_status(code, signal, _HOLD_STATES)
+    update_status(code, signal, _HOLD_STATES)
 
 
 def _apply_defense_chain(code: str, buy_reason: str, sector: str,
@@ -347,7 +349,7 @@ def _apply_defense_chain(code: str, buy_reason: str, sector: str,
 
 
 def run_monitor() -> None:
-    rows = RecommendLogRepo.get_holding_codes(_HOLD_STATES)
+    rows = get_holding_codes(_HOLD_STATES)
     if not rows:
         logger.info("无持仓，监控结束")
         return
@@ -361,7 +363,7 @@ def run_monitor() -> None:
 
         highest = update_highest_nav(code_str, reco_date)
         if highest is not None:
-            RecommendLogRepo.update_highest_nav(code_str, highest, _HOLD_STATES)
+            update_highest_nav(code_str, highest, _HOLD_STATES)
         navs = _nav_since(code_str, reco_date)
         atr = calc_atr(navs)
 

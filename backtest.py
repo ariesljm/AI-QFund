@@ -11,8 +11,8 @@ from pathlib import Path
 
 import lightgbm as lgb
 
-from data_store import _db_conn
-from recommend import (
+from app.database import db_conn as _db_conn
+from app.engine.recommend import (
     _features_from_window, FEATURE_COLS, _FORWARD_WINDOW,
     _load_ranking_cfg, _regime_combo_weights,
 )

@@ -1,14 +1,8 @@
-"""Phase 1 数据基座：基金列表、净值、指数、特征计算。
-
-运行方式：
-    uv run python data_foundation.py          # 全流程
-    uv run python data_foundation.py --step 1  # 仅执行某步骤
-"""
+"""数据基座：基金列表、净值、指数、持仓、行业映射、RBSA。"""
 
 import asyncio
 import json
 import logging
-from log_utils import get_logger
 import re
 import sqlite3
 import sys
@@ -20,12 +14,12 @@ from pathlib import Path
 import numpy as np
 import requests
 
-import features as _features
-from data_store import _db_conn, _get_db, _load_settings, _meta_get, _meta_set, _save_nav_batch, save_fund_list, save_index_daily, save_holdings, _backfill_guard
-from fetch import fetch_async
-from fetch import fetch as _push2_fetch
-from fetchers.nav import async_update_nav_incremental, async_download_all_nav
-from fetchers.nav import async_update_nav_incremental, async_download_all_nav
+from app.database import db_conn, meta_get, meta_set
+from app.data.fetchers import fetch as _push2_fetch, fetch_async
+from app.data.nav import async_update_nav_incremental, async_download_all_nav
+from app.data.store import save_fund_list, save_index_daily, backfill_guard
+from app.features import calculator as _features
+from app.utils.log import get_logger
 
 try:
     import aiohttp
@@ -35,49 +29,16 @@ except ImportError:
 
 logger = get_logger(__name__)
 
-
-def _fetch(url: str, params: dict | None = None, timeout: float = 15) -> requests.Response:
-    """发起 GET 请求，绕过系统代理。"""
-    from fetch import fetch
-    return fetch(url, params=params, timeout=timeout)
-
-
-# ========== 数据源 URL 常量 ==========
-
-# 基金全量列表（天天基金官方的基金代码搜索 JS，由天天基金官方维护，格式固定）
 _API_FUND_LIST_URL = "https://fund.eastmoney.com/js/fundcode_search.js"
-
-# 单只基金历史净值（东方财富 pingzhongdata，{code} 替换为基金代码，仅首次全量用）
-_API_PINGZHONGDATA_URL = "http://fund.eastmoney.com/pingzhongdata/{code}.js"
-
-# 单只基金历史净值分页接口（支持日期范围，用于真·增量更新）
-_API_LSJZ_URL = "https://api.fund.eastmoney.com/f10/lsjz"
-
-# 单只基金季报持仓明细（天天基金 f10，返回 HTML，含股票代码/名称/占净值比例）
 _API_HOLDINGS_URL = "https://fundf10.eastmoney.com/FundArchivesDatas.aspx"
-
-# 宽基指数日线（新浪财经 K 线接口，返回标准 JSON）
 _API_INDEX_URL = "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData"
-
-# 沪深300 在新浪接口中的标的代号（sh=上海，000300=沪深300）
 _API_HS300_SYMBOL = "sh000300"
 
-
-# ========== 1.1 基金列表获取与过滤 ==========
-
-# 需要剔除的基金类型关键词（名称维度兜底，数据源名称可能不准）
 _EXCLUDE_KEYWORDS = ["货币", "债券", "封闭", "偏债", "QDII", "FOF", "理财", "定开", "定期开放", "持有", "LOF"]
-
-# 交易所上市基金（ETF/LOF/封基）代码前缀：只能通过证券账户场内交易，
-# 不属于可场外申购的开放式基金，直接按代码剔除（不依赖名称，避免名称错配漏剔）
 _EXCLUDE_CODE_PREFIXES = ("15", "16", "18", "50", "51", "55", "56", "58", "59")
 
 
 def fetch_fund_list(settings: dict | None = None) -> list[dict]:
-    """从天天基金官方 JS 获取基金列表，剔除不可投类型。
-
-    返回格式：[{"code": "000001", "name": "华夏成长", "type": "混合型", "is_buyable": 1}, ...]
-    """
     resp = requests.get(
         _API_FUND_LIST_URL,
         headers={"User-Agent": "Mozilla/5.0", "Referer": "https://fund.eastmoney.com/"},
@@ -89,7 +50,6 @@ def fetch_fund_list(settings: dict | None = None) -> list[dict]:
         logger.error("基金列表 JS 解析失败")
         return []
     data = json.loads(m.group(1))
-
     type_map = {"股票型": "股票型", "混合型": "混合型", "指数型": "指数型"}
     result = []
     for code, _, name, full_type, *_ in data:
@@ -111,12 +71,8 @@ _LIST_UPDATE_INTERVAL_DAYS = 7
 
 
 def update_fund_list_weekly(settings: dict | None = None, force: bool = False) -> int:
-    """按周更新基金列表：距上次更新不足 7 天则跳过。
-
-    返回本次实际写入的基金条数；跳过时返回 -1。
-    """
-    with _db_conn() as conn:
-        last = _meta_get(conn, "fund_list_last_update")
+    with db_conn() as conn:
+        last = meta_get(conn, "fund_list_last_update")
         if last and not force:
             last_dt = datetime.strptime(last, "%Y-%m-%d")
             age_days = (datetime.now() - last_dt).days
@@ -124,194 +80,26 @@ def update_fund_list_weekly(settings: dict | None = None, force: bool = False) -
                 logger.info("基金列表 %d 天前更新过（<%d 天），跳过",
                             age_days, _LIST_UPDATE_INTERVAL_DAYS)
                 return -1
-
     funds = fetch_fund_list(settings)
     n = save_fund_list(funds)
-    with _db_conn() as conn:
-        _meta_set(conn, "fund_list_last_update", datetime.now().strftime("%Y-%m-%d"))
+    with db_conn() as conn:
+        meta_set(conn, "fund_list_last_update", datetime.now().strftime("%Y-%m-%d"))
     logger.info("基金列表更新完成，写入 %d 条", n)
     return n
 
 
-# ========== 1.2 净值增量更新 ==========
-
-def fetch_fund_nav(code: str, settings: dict | None = None) -> list[dict]:
-    """从 pingzhongdata 拉取单只基金历史净值（累计净值）。
-
-    返回格式：[{"date": "2024-01-02", "cum_nav": 1.2345}, ...]
-    """
-    url = _API_PINGZHONGDATA_URL.format(code=code)
-    resp = _fetch(url)
-    text = resp.text
-
-    # 提取 ACWorthTrend（累计净值序列）
-    m = re.search(r"ACWorthTrend\s*=\s*(\[.*?\]);", text, re.DOTALL)
-    if not m:
-        logger.warning("基金 %s 未找到 ACWorthTrend", code)
-        return []
-
-    series = json.loads(m.group(1))
-    nav_list = []
-    for item in series:
-        if len(item) < 2:
-            continue
-        ts_ms, cum_nav = item[0], item[1]
-        if cum_nav is None:
-            continue
-        date_str = datetime.fromtimestamp(ts_ms / 1000).strftime("%Y-%m-%d")
-        nav_list.append({"date": date_str, "cum_nav": cum_nav})
-
-    return nav_list
-
-
-def fetch_fund_nav_incremental(code: str, conn: sqlite3.Connection, settings: dict | None = None) -> int:
-    """增量拉取单只基金净值，仅补充缺失数据。返回新增条数。"""
-    # 查询本地最新日期
-    cur = conn.execute("SELECT MAX(date) FROM fund_nav WHERE code = ?", (code,))
-    row = cur.fetchone()
-    local_max = row[0] if row and row[0] else None
-
-    all_nav = fetch_fund_nav(code, settings)
-    if not all_nav:
-        return 0
-
-    # 过滤：仅保留本地缺失的日期
-    if local_max:
-        new_nav = [n for n in all_nav if n["date"] > local_max]
-    else:
-        new_nav = all_nav
-
-    if not new_nav:
-        return 0
-
-    conn.executemany(
-        "INSERT OR IGNORE INTO fund_nav (code, date, cum_nav) VALUES (?, ?, ?)",
-        [(code, n["date"], n["cum_nav"]) for n in new_nav],
-    )
-    return len(new_nav)
-
-
-# ========== 1.2b 异步并发净值下载 ==========
-
-_HEADERS_ASYNC = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Referer": "https://fund.eastmoney.com/data/fundranking.html",
-}
-
-
-def _parse_nav_response(text: str, code: str) -> list[dict]:
-    """从 pingzhongdata 响应文本中解析净值序列。"""
-    m = re.search(r"ACWorthTrend\s*=\s*(\[.*?\]);", text, re.DOTALL)
-    if not m:
-        return []
-    series = json.loads(m.group(1))
-    nav_list = []
-    for item in series:
-        if len(item) < 2:
-            continue
-        ts_ms, cum_nav = item[0], item[1]
-        if cum_nav is None:
-            continue
-        date_str = datetime.fromtimestamp(ts_ms / 1000).strftime("%Y-%m-%d")
-        nav_list.append({"date": date_str, "cum_nav": cum_nav})
-    return nav_list
-
-
-async def _async_fetch_one(
-    session: "aiohttp.ClientSession",
-    code: str,
-    url_template: str,
-    semaphore: asyncio.Semaphore,
-) -> tuple[str, list[dict]]:
-    """异步拉取单只基金净值。"""
-    url = url_template.format(code=code)
-    async with semaphore:
-        try:
-            resp = await fetch_async(session, url, timeout=15)
-            text = await resp.text()
-            navs = _parse_nav_response(text, code)
-            return code, navs, False
-        except Exception as e:
-            logger.debug("基金 %s 异步拉取失败: %s", code, str(e)[:120], exc_info=True)
-            return code, [], True
-
-
-async def _async_batch_fetch(
-    codes: list[str],
-    url_template: str,
-    concurrency: int = 20,
-) -> tuple[dict[str, list[dict]], set[str]]:
-    """并发拉取一批基金净值，返回 ({code: [nav_list]}, 失败基金集合)。"""
-    semaphore = asyncio.Semaphore(concurrency)
-    headers = _HEADERS_ASYNC.copy()
-    # ponytail: 复用 TCP/TLS 连接（keep-alive），关闭 force_close 显著提速
-    connector = aiohttp.TCPConnector(limit=concurrency, ttl_dns_cache=300, enable_cleanup_closed=True)
-
-    async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
-        tasks = [_async_fetch_one(session, c, url_template, semaphore) for c in codes]
-        results = await asyncio.gather(*tasks)
-
-    navs_dict = {}
-    failed = set()
-    for code, navs, err in results:
-        if err:
-            failed.add(code)
-            if navs:
-                navs_dict[code] = navs
-        else:
-            navs_dict[code] = navs
-    return navs_dict, failed
-
-
-# ========== 1.2c 真·增量：基于 lsjz 分页接口 ==========
-
-_LSJZ_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Referer": "https://fundf10.eastmoney.com/",
-}
-
-
-_DIVIDEND_RE = re.compile(r"每份派现金\s*([\d.]+)\s*元")
-
-
-def _parse_fhsp_dividend(fhsp: str | None) -> float | None:
-    """从 lsjz 的 FHSP 字段提取每份派现金额（元）。
-
-    FHSP 形如 "每份派现金0.0500元"（现金分红）或 "每份基金份额折算..."（拆分），
-    仅提取现金分红金额，其余返回 None。
-    """
-    if not fhsp:
-        return None
-    m = _DIVIDEND_RE.search(fhsp)
-    if not m:
-        return None
-    try:
-        return float(m.group(1))
-    except ValueError:
-        return None
-
-
-
-
-
-# ========== 1.3 宏观指数获取 ==========
+# ── 指数数据 ──
 
 def fetch_index_daily(settings: dict | None = None, datalen: int = 250) -> list[dict]:
-    """获取沪深300指数日线数据（新浪 K 线接口）。
-
-    datalen: 拉取的交易日条数。冷启动默认 250 条（约 1 年），
-    足够 EMA60 收敛；增量场景由调用方传入较小值。
-    """
     url = _API_INDEX_URL
     params = {
         "symbol": _API_HS300_SYMBOL,
-        "scale": 240,  # 日线
+        "scale": 240,
         "ma": 60,
         "datalen": datalen,
     }
-    resp = _fetch(url, params)
+    resp = requests.get(url, params=params, timeout=15)
     klines = resp.json()
-
     result = []
     for k in klines:
         result.append({
@@ -325,15 +113,10 @@ def fetch_index_daily(settings: dict | None = None, datalen: int = 250) -> list[
     return result
 
 
-_API_ETF510300_SYMBOL = "sh510300"  # 沪深300ETF，用于资金流斜率
+_API_ETF510300_SYMBOL = "sh510300"
 
 
 def fetch_etf_daily(datalen: int = 10) -> list[dict]:
-    """获取沪深300ETF（510300）日线数据，复用新浪 K 线接口。
-
-    用于计算 etf_flow_slope_5d（市场资金流斜率代理）。
-    datalen 默认 10，足够 5 日回归 + 余量。
-    """
     url = _API_INDEX_URL
     params = {
         "symbol": _API_ETF510300_SYMBOL,
@@ -341,7 +124,7 @@ def fetch_etf_daily(datalen: int = 10) -> list[dict]:
         "ma": 60,
         "datalen": datalen,
     }
-    resp = _fetch(url, params)
+    resp = requests.get(url, params=params, timeout=15)
     klines = resp.json()
     result = []
     for k in klines:
@@ -356,29 +139,21 @@ def fetch_etf_daily(datalen: int = 10) -> list[dict]:
     return result
 
 
+# ── 持仓数据 ──
 
-
-# ========== 1.5 重仓股数据获取 ==========
-
-# f10 持仓 HTML 解析：报告期 + 每行 [代码, 名称, 占净值比例]
 _HOLDING_DATE_RE = re.compile(r"([\d]{4}-[\d]{2}-[\d]{2})</font></label>")
 _HOLDING_ROW_RE = re.compile(
-    r"<td>\d+</td>"                                      # 序号
-    r"<td><a[^>]*>(\d+)</a></td>"                        # 股票代码
-    r"<td class='tol'><a[^>]*>([^<]+)</a></td>"          # 股票名称
-    r".*?<td class='tor'>([\d.]+)%</td>",               # 占净值比例
+    r"<td>\d+</td>"
+    r"<td><a[^>]*>(\d+)</a></td>"
+    r"<td class='tol'><a[^>]*>([^<]+)</a></td>"
+    r".*?<td class='tor'>([\d.]+)%</td>",
     re.DOTALL,
 )
 
 
 def _parse_holdings_html(text: str) -> tuple[str | None, list[dict]]:
-    """解析 f10 jjcc 接口返回的 HTML，返回 (报告期, 持仓列表)。
-
-    HTML 可能含多个季度块，仅取第一个（最新季报）的报告期与明细。
-    """
     date_m = _HOLDING_DATE_RE.search(text)
     report_date = date_m.group(1) if date_m else None
-
     holdings = []
     for m in _HOLDING_ROW_RE.finditer(text):
         stock_code, stock_name, weight_str = m.group(1), m.group(2), m.group(3)
@@ -395,14 +170,9 @@ def _parse_holdings_html(text: str) -> tuple[str | None, list[dict]]:
 
 
 def fetch_holdings(code: str, settings: dict | None = None) -> tuple[str | None, list[dict]]:
-    """从天天基金 f10 拉取单只基金最新季报重仓股。
-
-    返回 (报告期, [{"stock_code","stock_name","weight"}, ...])。
-    """
     params = {"type": "jjcc", "code": code, "topline": "10", "year": "", "month": ""}
-    resp = _fetch(_API_HOLDINGS_URL, params)
+    resp = requests.get(_API_HOLDINGS_URL, params=params, timeout=15)
     return _parse_holdings_html(resp.text)
-
 
 
 _HOLDINGS_HEADERS = {
@@ -420,7 +190,6 @@ async def _async_fetch_holdings_one(
     holdings_url: str,
     semaphore: asyncio.Semaphore,
 ) -> tuple[str, str | None, list[dict]]:
-    """异步拉取单只基金最新季报持仓（f10 jjcc 接口）。"""
     params = {"type": "jjcc", "code": code, "topline": "10", "year": "", "month": ""}
     async with semaphore:
         try:
@@ -429,7 +198,6 @@ async def _async_fetch_holdings_one(
                 headers=_HOLDINGS_HEADERS,
             )
             raw = await resp.read()
-            # 优先从响应头获取编码，东财传统为 GBK
             charset = resp.charset or "gbk"
             try:
                 text = raw.decode(charset)
@@ -446,24 +214,18 @@ async def async_download_all_holdings(
     concurrency: int = 20,
     batch_size: int = 200,
 ) -> int:
-    """异步并发下载所有可投基金最新季报重仓股（f10 jjcc 接口）。
-
-    根据当前日期推算最新季报截止日，仅拉取本地缺数据或数据过期的基金。
-    """
     if not HAS_AIOHTTP:
         raise RuntimeError("需要安装 aiohttp: uv add aiohttp")
 
     holdings_url = _API_HOLDINGS_URL
 
-    with _db_conn() as conn:
+    with db_conn() as conn:
         all_codes = [
             r[0] for r in conn.execute(
                 "SELECT code FROM fund_basic WHERE is_buyable = 1"
             ).fetchall()
         ]
 
-        # 各季报法定披露截止日：季报 15 工作日（≈21 天），年报 90 天
-        # Q1(3-31)→4-21, Q2(6-30)→7-21, Q3(9-30)→10-21, Q4/年报(12-31)→3-31
         today = datetime.now()
         m, d = today.month, today.day
         if m < 4:
@@ -477,13 +239,11 @@ async def async_download_all_holdings(
         else:
             latest_quarter = f"{today.year}-09-30"
 
-        # 本地各基金最新 report_date
         local_latest = dict(
             conn.execute(
                 "SELECT code, MAX(report_date) FROM fund_holdings GROUP BY code"
             ).fetchall()
         )
-        # 只拉取本地没有持仓、或持仓期早于最新季报截止日的基金
         all_codes = [
             c for c in all_codes
             if local_latest.get(c) is None or local_latest[c] < latest_quarter
@@ -503,7 +263,7 @@ async def async_download_all_holdings(
 
         async with aiohttp.ClientSession(headers=_HOLDINGS_HEADERS, connector=connector, trust_env=False) as session:
             for i in range(0, len(all_codes), batch_size):
-                batch = all_codes[i : i + batch_size]
+                batch = all_codes[i: i + batch_size]
                 coros = [
                     _async_fetch_holdings_one(session, c, holdings_url, semaphore)
                     for c in batch
@@ -537,8 +297,7 @@ async def async_download_all_holdings(
                     total_done, len(all_codes), batch_rows, speed, eta,
                 )
 
-        # 补查异步并发中失败的基金
-        if _backfill_guard(all_failed, len(all_codes), "持仓拉取"):
+        if backfill_guard(all_failed, len(all_codes), "持仓拉取"):
             for code in all_failed:
                 try:
                     resp = requests.get(
@@ -572,16 +331,10 @@ async def async_download_all_holdings(
     return total_rows
 
 
-# ========== 1.6 RBSA 行业暴露（申万二级行业）==========
+# ── 行业映射 ──
 
 def update_industry_map(force: bool = False) -> int:
-    """从东方财富拉取申万二级行业映射，写入 stock_industry_map 表。
-
-    申万二级行业不常变动，默认 90 天内不重复拉取（force=True 强制刷新）。
-    Returns: 写入的记录数
-    """
-    with _db_conn() as conn:
-        # 检查是否需要更新
+    with db_conn() as conn:
         if not force:
             row = conn.execute("SELECT value FROM meta WHERE key = 'industry_map_updated'").fetchone()
             if row:
@@ -594,7 +347,7 @@ def update_industry_map(force: bool = False) -> int:
         try:
             records = _fetch_industry_map()
         except Exception as e:
-            logger.error_event("industry_map_failed", "拉取行业映射失败", extra={"error": str(e)}, exc_info=True)
+            logger.error("拉取行业映射失败: %s", str(e)[:120], exc_info=True)
             return 0
 
         if not records:
@@ -616,15 +369,8 @@ def update_industry_map(force: bool = False) -> int:
 
 
 def _build_candidates(stock_code: str) -> list[tuple[str, dict]]:
-    """根据股票代码生成 emweb 查询候选列表。
-
-    港股（5位数字）: 优先尝试 HK 前缀的 HSF10，再尝试独立 HKF10。
-    北交所（92开头）: BJ 前缀。
-    A股（6开头=上交所，0/3开头=深交所）。
-    """
     hsf10 = "https://emweb.securities.eastmoney.com/PC_HSF10/CompanySurvey/PageAjax"
     hkf10 = "https://emweb.securities.eastmoney.com/PC_HKF10/CompanySurvey/PageAjax"
-
     if len(stock_code) == 5:
         return [
             (hsf10, {"code": f"HK{stock_code}"}),
@@ -642,13 +388,6 @@ def _build_candidates(stock_code: str) -> list[tuple[str, dict]]:
 
 
 def _fetch_hk_industry_push2(hk_stocks: list[str], results: dict[str, tuple[str, str]]) -> int:
-    """港股行业映射回退方案：通过 push2 实时行情 API 获取行业分类。
-
-    emweb 的 PC_HKF10 接口已废弃（返回 404），HSF10+HK 前缀无数据，
-    改用 push2.eastmoney.com 的个股行情接口获取 f100（所属行业）字段。
-
-    Returns: 成功映射的数量
-    """
     added = 0
     for stock_code in hk_stocks:
         secid = f"116.{stock_code}"
@@ -677,21 +416,14 @@ def _fetch_hk_industry_push2(hk_stocks: list[str], results: dict[str, tuple[str,
 
 
 def _fetch_industry_map() -> list[tuple[str, str, str]]:
-    """从东方财富 emweb 拉取股票→申万二级行业映射。
-
-    返回 [(stock_code, industry_code, industry_name), ...]
-    使用 asyncio 并发拉取，约 3-5 分钟完成全量。
-    """
-    with _db_conn() as conn:
+    with db_conn() as conn:
         all_stocks = [
             r[0] for r in conn.execute(
                 "SELECT DISTINCT stock_code FROM fund_holdings"
             ).fetchall()
         ]
-
     if not all_stocks:
         return []
-
     logger.info("需要查询 %d 只股票的行业分类...", len(all_stocks))
 
     semaphore = asyncio.Semaphore(30)
@@ -736,32 +468,30 @@ def _fetch_industry_map() -> list[tuple[str, str, str]]:
     asyncio.run(_run())
     logger.info("首次行业查询完成: 成功 %d, 失败 %d", success, fail)
 
-    # 补查失败的股票（异步并发可能因限速/超时未命中）
     failed = [s for s in all_stocks if s not in results]
-    if _backfill_guard(failed, len(all_stocks), "行业映射"):
-            _headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://emweb.securities.eastmoney.com/"}
-            for sc in failed:
-                for url, params in _build_candidates(sc):
-                    try:
-                        resp = requests.get(url, params=params, headers=_headers, timeout=10)
-                        if resp.status_code != 200:
-                            continue
-                        data = resp.json()
-                        items = data.get("jbzl", [])
-                        if items:
-                            item = items[0]
-                            em2016 = item.get("EM2016", "")
-                            if em2016:
-                                parts = em2016.split("-")
-                                industry = parts[1] if len(parts) > 1 else parts[0]
-                                results[sc] = (em2016, industry)
-                                break
-                    except Exception as e:
-                        logger.debug("补查股票 %s 失败: %s", sc, str(e)[:120], exc_info=True)
-            recovered = len([s for s in failed if s in results])
-            logger.info("补查完成: 恢复 %d 只", recovered)
+    if backfill_guard(failed, len(all_stocks), "行业映射"):
+        _headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://emweb.securities.eastmoney.com/"}
+        for sc in failed:
+            for url, params in _build_candidates(sc):
+                try:
+                    resp = requests.get(url, params=params, headers=_headers, timeout=10)
+                    if resp.status_code != 200:
+                        continue
+                    data = resp.json()
+                    items = data.get("jbzl", [])
+                    if items:
+                        item = items[0]
+                        em2016 = item.get("EM2016", "")
+                        if em2016:
+                            parts = em2016.split("-")
+                            industry = parts[1] if len(parts) > 1 else parts[0]
+                            results[sc] = (em2016, industry)
+                            break
+                except Exception as e:
+                    logger.debug("补查股票 %s 失败: %s", sc, str(e)[:120], exc_info=True)
+        recovered = len([s for s in failed if s in results])
+        logger.info("补查完成: 恢复 %d 只", recovered)
 
-    # 港股（5位代码）emweb F10 接口已废弃（404），改用 push2 实时行情接口回退
     _hk_unmapped = [s for s in all_stocks if len(s) == 5 and s not in results]
     if _hk_unmapped:
         _hk_success = _fetch_hk_industry_push2(_hk_unmapped, results)
@@ -770,29 +500,20 @@ def _fetch_industry_map() -> list[tuple[str, str, str]]:
     return [(sc, info[0], info[1]) for sc, info in results.items()]
 
 
-
-
-
-# ========== 主流程 ==========
+# ── 主流程 ──
 
 def run_pipeline(steps: list[int] | None = None):
-    """执行数据基座全流程。steps=None 表示全部执行。"""
     all_steps = {1, 2, 3, 4, 6, 7, 8}
     steps = steps or all_steps
 
-    with _db_conn() as conn:
+    with db_conn() as conn:
 
-        # Step 1: 基金列表（每周更新，不足 7 天自动跳过）
         if 1 in steps:
             logger.info("=== Step 1: 基金列表获取与过滤 ===")
             t1 = time.time()
             update_fund_list_weekly()
-            logger.info_event("step_complete", "Step1 基金列表完成",
-                              extra={"step": 1, "duration_ms": int((time.time() - t1) * 1000)})
+            logger.info("Step1 基金列表完成 (%.0fms)", (time.time() - t1) * 1000)
 
-        # Step 2: 净值更新
-        #   首次（本地无净值数据）→ async_download_all_nav：pingzhongdata 单请求/基金，高并发全量
-        #   日常（已有数据）→ async_update_nav_incremental：lsjz 按日期真·增量，仅补缺失
         if 2 in steps:
             has_nav = conn.execute("SELECT 1 FROM fund_nav LIMIT 1").fetchone()
             if has_nav:
@@ -803,11 +524,9 @@ def run_pipeline(steps: list[int] | None = None):
                 logger.info("=== Step 2: 净值首次全量下载（pingzhongdata 高并发）===")
                 t2 = time.time()
                 total_new = asyncio.run(async_download_all_nav(concurrency=50))
-            logger.info_event("step_complete", "Step2 净值更新完成",
-                              extra={"step": 2, "new_records": total_new,
-                                     "duration_ms": int((time.time() - t2) * 1000)})
+            logger.info("Step2 净值更新完成: %d 条 (%.0fms)",
+                        total_new, (time.time() - t2) * 1000)
 
-        # Step 3: 宏观指数（增量续算，覆盖长假缺口）
         if 3 in steps:
             logger.info("=== Step 3: 宏观指数获取 ===")
             has_index = conn.execute(
@@ -819,9 +538,7 @@ def run_pipeline(steps: list[int] | None = None):
                 n = save_index_daily("sh000300", index_data)
                 logger.info("沪深300日线新增 %d 条", n)
             except Exception as e:
-                logger.error_event("index_daily_failed", "沪深300 日线获取失败",
-                                   extra={"error": str(e)}, exc_info=True)
-            # 同步拉取沪深300ETF（510300）日线，用于资金流斜率
+                logger.error("沪深300 日线获取失败: %s", str(e)[:120], exc_info=True)
             has_etf = conn.execute(
                 "SELECT 1 FROM index_daily WHERE code = 'sh510300' LIMIT 1"
             ).fetchone()
@@ -831,19 +548,15 @@ def run_pipeline(steps: list[int] | None = None):
                 n_etf = save_index_daily("sh510300", etf_data)
                 logger.info("沪深300ETF(510300)日线新增 %d 条", n_etf)
             except Exception as e:
-                logger.error_event("etf_daily_failed", "沪深300ETF 日线获取失败",
-                                   extra={"error": str(e)}, exc_info=True)
+                logger.error("沪深300ETF 日线获取失败: %s", str(e)[:120], exc_info=True)
 
-        # Step 4: 重仓股（全量并发下载）
         if 4 in steps:
             logger.info("=== Step 4: 重仓股数据获取 ===")
             asyncio.run(async_download_all_holdings())
-            # 持仓入库后更新行业映射（内部 90 天增量跳过），确保 RBSA 可用
             logger.info("更新申万行业映射（持仓→行业）...")
             total_mapped = update_industry_map()
             logger.info("行业映射完成: %d 条", total_mapped)
 
-        # Step 6: RBSA 行业暴露（行业映射在 Step 4 末尾已完成，此处仅日志确认）
         if 6 in steps:
             logger.info("=== Step 6: RBSA 行业暴露 ===")
             mapped = conn.execute(
@@ -852,21 +565,19 @@ def run_pipeline(steps: list[int] | None = None):
             holdings_funds = conn.execute(
                 "SELECT COUNT(DISTINCT code) FROM fund_holdings"
             ).fetchone()[0]
-            logger.info("stock_industry_map: %d 条, fund_holdings 覆盖: %d 只基金", mapped, holdings_funds)
+            logger.info("stock_industry_map: %d 条, fund_holdings 覆盖: %d 只基金",
+                        mapped, holdings_funds)
 
-        # Step 7: 特征计算（全量本地计算入库）
         if 7 in steps:
             logger.info("=== Step 7: 特征计算 ===")
             _features.calc_all_features()
 
-        # Step 8: 推荐引擎模型准备（不存在则自动训练，推荐由 wrapper 统一调度）
         if 8 in steps:
             logger.info("=== Step 8: 推荐引擎 ===")
-            from pathlib import Path as _Path
-            model_path = _Path("models/lgb_model.txt")
+            model_path = Path("models/lgb_model.txt")
             if not model_path.exists():
                 logger.info("模型不存在，自动训练中...")
-                from recommend import prepare_lgb_training_data, train_lgb_model
+                from app.engine.recommend import prepare_lgb_training_data, train_lgb_model
                 X_train, y_train, X_val, y_val = prepare_lgb_training_data()
                 if len(X_train) == 0:
                     logger.error("训练样本为空，跳过模型训练")
@@ -884,8 +595,7 @@ if __name__ == "__main__":
         run_pipeline(steps=[step_num])
     elif len(sys.argv) > 1 and sys.argv[1] == "--async-nav":
         concurrency = int(sys.argv[2]) if len(sys.argv) > 2 else 20
-        force = "--force-full" in sys.argv
-        asyncio.run(async_download_all_nav(concurrency=concurrency, force_full=force))
+        asyncio.run(async_download_all_nav(concurrency=concurrency))
     elif len(sys.argv) > 1 and sys.argv[1] == "--update-nav":
         concurrency = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2].isdigit() else 20
         asyncio.run(async_update_nav_incremental(concurrency=concurrency))

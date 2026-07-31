@@ -6,18 +6,18 @@
 import hashlib
 import json
 import logging
-from log_utils import get_logger
+from app.utils.log import get_logger
 import re as _re
 import time as _time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 
-from llm import call_llm
-from prompts import sector_selection_prompt, sector_selection_system_prompt
-from data_store import _db_conn  # 保留用于 ensure_column/迁移
-import repo
-from fetch import fetch as _fetch
-from sector_api import is_industry_code, is_industry_name
+from app.llm.client import call_llm
+from app.llm.prompts import sector_selection_prompt, sector_selection_system_prompt
+from app.database import db_conn as _db_conn  # 保留用于 ensure_column/迁移
+import app.repo as repo
+from app.data.fetchers import fetch as _fetch
+from app.features.sector import is_industry_code, is_industry_name
 
 logger = get_logger("macro_agent")
 

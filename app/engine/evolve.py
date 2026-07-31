@@ -4,12 +4,11 @@
       → LLM 对比成功/失败模式 → evolution_insights
       → 回流 选赛道 LLM + 定论 LLM。
 
-运行：uv run python evolve.py [2026-07]
+运行：uv run python -m app.engine.evolve [2026-07]
 """
 
 import json
 import logging
-from log_utils import get_logger
 import re
 import time
 from datetime import datetime
@@ -17,8 +16,11 @@ from pathlib import Path
 
 import numpy as np
 
-from data_store import _get_db, _load_settings
-from data_store import _db_conn
+from app.utils.log import get_logger
+from app.database import get_db as _get_db, db_conn
+from app.config import load_settings
+from app.llm.client import call_llm
+from app.llm.prompts import evolution_analysis_prompt
 
 logger = get_logger("evolve")
 
@@ -31,7 +33,7 @@ _OUTCOME_DAYS_THRESHOLD = 20
 def _apply_ranking_weights(weights: dict) -> bool:
     """将排序权重写入 meta 表，供 recommend._load_ranking_cfg 读取。"""
     try:
-        with _db_conn() as conn:
+        with db_conn() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES ('ranking_cfg', ?)",
                 (json.dumps(weights),),
@@ -43,7 +45,7 @@ def _apply_ranking_weights(weights: dict) -> bool:
 
 
 def _review_ranking_all() -> list[str]:
-    with _db_conn() as conn:
+    with db_conn() as conn:
         rows = conn.execute(
             "SELECT ff.code, ff.momentum_20d, ff.hurst_60d, ff.calmar "
             "FROM fund_features ff JOIN fund_basic fb ON fb.code=ff.code "
@@ -65,7 +67,7 @@ def _review_ranking_all() -> list[str]:
     if corr_cm < 0:
         fixes.append(f"calmar与动量负相关({corr_cm:+.3f})，回撤质量信号失效")
 
-    with _db_conn() as idx:
+    with db_conn() as idx:
         idx_rows = idx.execute(
             "SELECT close FROM index_daily WHERE code='sh000300' ORDER BY date DESC LIMIT 21"
         ).fetchall()
@@ -93,7 +95,7 @@ def _review_ranking_all() -> list[str]:
 
 def _settle_outcomes(month: str) -> int:
     """更新 sector_selections 的 outcome 字段。"""
-    with _db_conn() as conn:
+    with db_conn() as conn:
         rows = conn.execute(
             "SELECT id, recommend_log_id FROM sector_selections "
             "WHERE date LIKE ? AND (outcome = '待定' OR outcome IS NULL)",
@@ -149,7 +151,7 @@ def _settle_outcomes(month: str) -> int:
 
 def _collect_cases(month: str) -> tuple[list[dict], list[dict], list[dict]]:
     """收集当月推荐案例（含回填 outcome 后的结果 + 监控信号链）。"""
-    with _db_conn() as conn:
+    with db_conn() as conn:
         rows = conn.execute(
             "SELECT ss.id, ss.recommend_log_id, ss.recommended_sectors, ss.sector_reasoning, "
             "ss.regime_label, ss.outcome, ss.outcome_note, rl.buy_reason, rl.code, rl.name, "
@@ -235,7 +237,7 @@ def _insight_conflicts(new_insight: str, existing: list) -> bool:
 
 
 def _save_insight(insight: dict) -> bool:
-    with _db_conn() as conn:
+    with db_conn() as conn:
         existing = [r[0] for r in conn.execute(
             "SELECT insight FROM evolution_insights WHERE active = 1"
         ).fetchall()]
@@ -255,7 +257,7 @@ def _save_insight(insight: dict) -> bool:
 
 def _decay_insights() -> int:
     """降低旧洞察置信度，长期无用则标记非活跃。"""
-    with _db_conn() as conn:
+    with db_conn() as conn:
         rows = conn.execute(
             "SELECT id, confidence, apply_count FROM evolution_insights WHERE active = 1"
         ).fetchall()
@@ -275,7 +277,7 @@ def _decay_insights() -> int:
 # ── 主入口 ─────────────────────────────────────────────────
 
 def _save_self_fix(fix: str) -> None:
-    with _db_conn() as conn:
+    with db_conn() as conn:
         conn.execute(
             "INSERT INTO evolution_insights (insight, insight_type, created_date) "
             "VALUES (?, 'ranking', ?)",
