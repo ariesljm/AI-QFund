@@ -197,33 +197,50 @@ async def async_download_all_nav(concurrency: int = 50) -> int:
 
     logger.info("全量净值下载: %d 只基金, 并发 %d", len(all_codes), concurrency)
 
-    url_template = "https://fundgz.1234567.com.cn/js/{code}.js"
+    # 注意：不能用 fundgz.1234567.com.cn/js/{code}.js（实时估值接口，无历史序列），
+    # 必须用 f10/lsjz 历史净值接口，与增量更新保持一致。
+    url_template = (
+        "https://api.fund.eastmoney.com/f10/lsjz?"
+        "callback=jQuery&fundCode={code}&pageIndex=1&pageSize=9999"
+    )
     batch_size = 200
     total_new = 0
     total_done = 0
     start_time = time.monotonic()
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Referer": "https://fund.eastmoney.com/",
+    }
 
     async def _fetch_one(code: str) -> tuple[str, list[dict], bool]:
         nonlocal total_new, total_done
         try:
             url = url_template.replace("{code}", code)
             resp = await fetch_async(
-                session, url, timeout=15,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/120.0.0.0 Safari/537.36"
-                    ),
-                },
+                session, url, timeout=15, headers=headers,
             )
             text = await resp.text()
-            text = text.strip()
-            m = re.search(r"Data_netWorthTrend\s*=\s*(\[.+?\]);", text, re.DOTALL)
+            m = re.search(r"jQuery\((.+)\)$", text.strip())
             if not m:
                 return code, [], True
-            trend = json.loads(m.group(1))
-            navs = parse_pingzhong_navs(trend)
+            data = json.loads(m.group(1))
+            records = data.get("Data", {}).get("LSJZList", [])
+            navs = []
+            for r2 in records:
+                unit_nav_str = r2.get("DWJZ", "")
+                cum_nav_str = r2.get("LJJZ", "")
+                if not unit_nav_str or not cum_nav_str:
+                    continue
+                navs.append({
+                    "date": r2["FSRQ"],
+                    "unit_nav": float(unit_nav_str),
+                    "cum_nav": float(cum_nav_str),
+                })
             return code, navs, False
         except Exception as e:
             logger.warning("基金 %s 全量净值拉取失败: %s", code, str(e)[:120], exc_info=True)
