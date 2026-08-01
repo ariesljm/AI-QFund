@@ -9,6 +9,7 @@ services:
     volumes:
       - /root/workspace/ai-qfund/data:/app/data
       - /root/workspace/ai-qfund/config/settings.toml:/app/config/settings.toml
+      - /root/workspace/ai-qfund/models:/app/models
     environment:
       - TZ=Asia/Shanghai
       - ENABLE_SCHEDULER=true

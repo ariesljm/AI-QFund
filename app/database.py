@@ -162,5 +162,29 @@ def _migrate(conn: sqlite3.Connection) -> None:
         if "points_json" not in qm_cols:
             conn.execute("ALTER TABLE quality_metrics ADD COLUMN points_json TEXT")
             conn.commit()
+    else:
+        # 兜底：镜像内 schema.sql 可能被 data 卷中的旧版遮蔽，保证新表在旧卷上也创建
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS quality_metrics ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "computed_date TEXT NOT NULL, "
+            "period_start TEXT, period_end TEXT, "
+            "ic REAL, excess_win_rate REAL, mean_excess REAL, cum_excess REAL, "
+            "sample_count INTEGER, points_json TEXT)"
+        )
+        conn.commit()
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_quality_metrics_period "
+        "ON quality_metrics (period_start, period_end)"
+    )
+    conn.commit()
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS empty_recommendations ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "date TEXT NOT NULL UNIQUE, "
+        "reasoning TEXT, "
+        "created_at TEXT DEFAULT (datetime('now')))"
+    )
+    conn.commit()
 
     _migrate._done = True

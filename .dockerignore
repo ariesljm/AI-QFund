@@ -24,3 +24,4 @@ data/last_*
 .github/
 config/settings.toml
 .scratch/
+models/
