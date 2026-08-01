@@ -573,6 +573,111 @@ def get_latest_holdings_date(code: str) -> str | None:
 
 
 # ============================================================
+# 空推荐日
+# ============================================================
+
+def record_empty_recommendation(date_str: str, reasoning: str) -> None:
+    """记录一个空推荐日：宏观分析判定当天无合适机会（每天一条，可回溯历史）。"""
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO empty_recommendations (date, reasoning) VALUES (?, ?) "
+            "ON CONFLICT(date) DO UPDATE SET reasoning = excluded.reasoning",
+            (date_str, reasoning),
+        )
+
+
+def get_empty_recommendation(date_str: str | None = None) -> dict | None:
+    """读取空推荐日记录；date_str 为空时返回最近一条，无则返回 None。"""
+    with db() as conn:
+        if date_str:
+            row = conn.execute(
+                "SELECT date, reasoning FROM empty_recommendations WHERE date = ?",
+                (date_str,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT date, reasoning FROM empty_recommendations "
+                "ORDER BY date DESC LIMIT 1"
+            ).fetchone()
+    if not row:
+        return None
+    return {"date": row[0], "reasoning": row[1] or ""}
+
+
+# ============================================================
+# 模型训练时间（每周自动重训用）
+# ============================================================
+
+def get_model_last_trained() -> str | None:
+    """读取最近一次模型训练日期（meta 表），无则返回 None。"""
+    with db() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = 'model_last_trained'"
+        ).fetchone()
+    return row[0] if row else None
+
+
+def set_model_last_trained(date_str: str) -> None:
+    """记录最近一次模型训练日期。"""
+    with db() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('model_last_trained', ?)",
+            (date_str,),
+        )
+
+
+# ============================================================
+# 推荐质量度量
+# ============================================================
+
+def save_quality_metrics(m: dict) -> None:
+    """保存一次质量度量结果（同区间幂等：重复运行覆盖）。"""
+    points_json = _json.dumps(m.get("points", []), ensure_ascii=False)
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO quality_metrics "
+            "(computed_date, period_start, period_end, ic, excess_win_rate, "
+            "mean_excess, cum_excess, sample_count, points_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(period_start, period_end) DO UPDATE SET "
+            "computed_date = excluded.computed_date, ic = excluded.ic, "
+            "excess_win_rate = excluded.excess_win_rate, mean_excess = excluded.mean_excess, "
+            "cum_excess = excluded.cum_excess, sample_count = excluded.sample_count, "
+            "points_json = excluded.points_json",
+            (m["computed_date"], m.get("period_start"), m.get("period_end"),
+             m.get("ic"), m.get("excess_win_rate"), m.get("mean_excess"),
+             m.get("cum_excess"), m.get("sample_count", 0), points_json),
+        )
+
+
+def get_quality_metrics(limit: int = 6) -> list[dict]:
+    """读取最近 N 次质量度量（新→旧），含累计超额曲线点。"""
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT computed_date, period_start, period_end, ic, excess_win_rate, "
+            "mean_excess, cum_excess, sample_count, points_json FROM quality_metrics "
+            "ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    out = []
+    for r in rows:
+        points = []
+        if r[8]:
+            try:
+                points = _json.loads(r[8])
+            except Exception:
+                points = []
+        out.append({
+            "computed_date": r[0], "period_start": r[1], "period_end": r[2],
+            "ic": r[3], "excess_win_rate": r[4], "mean_excess": r[5],
+            "cum_excess": r[6], "sample_count": r[7], "points": points,
+        })
+    return out
+
+
+# ============================================================
 # 清除推荐决策域
 # ============================================================
 

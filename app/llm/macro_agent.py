@@ -3,12 +3,11 @@
 输出供 recommend.py（推荐）和 monitor.py（监控）直接消费。
 """
 
-import hashlib
 import json
 import logging
+import time
 from app.utils.log import get_logger
 import re as _re
-import time as _time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 
@@ -22,7 +21,7 @@ from app.features.sector import is_industry_code, is_industry_name
 logger = get_logger("macro_agent")
 
 _BOARD_URL = "https://push2ex.eastmoney.com/getAllBKChanges?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wzchanges&pageindex=0&pagesize=500"
-_CLS_API = "https://www.cls.cn/v1/roll/get_roll_list"
+_EM_NEWS_URL = "https://np-listapi.eastmoney.com/comm/web/getNewsByColumns"
 
 
 @dataclass(frozen=True)
@@ -61,8 +60,8 @@ def build_macro_context(date_str: str | None = None, force: bool = False) -> Mac
 
     ctx = _suggest_sectors(date_str, news, flow)
     if not ctx.recommended_sectors:
-        # 空赛道不缓存：LLM 未给出可投赛道时直接失败，避免空结果被缓存导致后续全部静默终止
-        raise RuntimeError("LLM 未推荐任何可投赛道，拒绝缓存空结果")
+        # 空赛道是合法决策（空推荐日）：仅缓存当日，按日期隔离不污染后续
+        logger.info("LLM 显式判定今日无合适赛道，作为空推荐日处理")
     _save_cache(ctx)
     return ctx
 
@@ -97,75 +96,57 @@ def _http_get(url: str, timeout: float = 12) -> str:
     return _fetch(url, timeout=timeout).text
 
 
-def _cls_sign(params: dict) -> str:
-    s = "&".join(f"{k}={params[k]}" for k in sorted(params.keys()))
-    return hashlib.md5(hashlib.sha1(s.encode()).hexdigest().encode()).hexdigest()
+def _fetch_em_finance_news(date_str: str, retries: int = 3) -> list[dict]:
+    """抓取东方财富「财经要闻」栏目（column=346）当天的新闻。
 
+    返回: [{"time": "HH:MM", "title": "...", "summary": "..."}]
+    只取当天新闻，避免全量 7×24 新闻造成的上下文过大。
 
-def _fetch_cls() -> tuple[list[dict], list[dict]]:
-    """抓取财联社电报，返回 (条目列表, 关联股票列表)。
-
-    条目: [{"level": "A", "text": "...", "stocks": [...]}]
-    关联股票: [{"name": "...", "code": "...", "level": "A", "title": "..."}]
+    抓取失败时自动重试，重试耗尽仍失败则抛异常终止推荐管线，
+    避免用旧/空数据兜底导致推荐结果失真。
     """
-    try:
-        ts = int(_time.time())
-        params = {
-            "app": "CailianpressWeb", "os": "web", "sv": "8.4.6",
-            "refresh_type": "1", "rn": "60", "last_time": str(ts), "category": "",
-        }
-        params["sign"] = _cls_sign(params)
-        txt = _http_get(f"{_CLS_API}?{'&'.join(f'{k}={params[k]}' for k in params)}")
-        data = json.loads(txt)
-        items = data.get("data", {}).get("roll_data", [])
-        if not items:
-            return [], []
-
-        entries = []
-        stocks = []
-        seen_texts = set()
-        for it in items:
-            title = (it.get("title") or "").strip()
-            content = (it.get("content") or "").strip()
-            level = it.get("level", "C")
-
-            body = content or title
-            if not body:
-                continue
-
-            dedup_key = body[:120]
-            if dedup_key in seen_texts:
-                continue
-            seen_texts.add(dedup_key)
-
-            text = body
-            if title and title != content:
-                text = f"{title}。{body}"
-
-            sl = it.get("stock_list", [])
-            stock_names = []
-            for s in sl:
-                sid = s.get("StockID", "")
-                name = s.get("name", "")
-                if name:
-                    stock_names.append(name)
-                if name or sid:
-                    stocks.append({"name": name, "code": sid, "level": level, "title": title})
-            if stock_names:
-                text += f" [关联: {'/'.join(stock_names)}]"
-
-            subs = it.get("subjects", [])
-            if subs:
-                tags = [s.get("subject_name", "") for s in subs if s.get("subject_name")]
-                if tags:
-                    text += f" ({'、'.join(tags)})"
-
-            entries.append({"level": level, "text": text, "stocks": stock_names})
-
-        return entries, stocks
-    except Exception as e:
-        logger.warning("财联社电报抓取失败: %s", str(e)[:120], exc_info=True)
-        return [], []
+    last_err: Exception | None = None
+    for attempt in range(1, retries + 1):
+        entries: list[dict] = []
+        seen_titles: set[str] = set()
+        try:
+            for page in range(1, 4):  # 单日新闻较多时翻页，最多 3 页兜底
+                url = (
+                    f"{_EM_NEWS_URL}?client=web&biz=web_news_col&column=346"
+                    f"&order=1&needInteractData=0&page_index={page}&page_size=50&req_trace=1"
+                )
+                txt = _http_get(url, timeout=15)
+                data = json.loads(txt)
+                items = (data.get("data") or {}).get("list") or []
+                if not items:
+                    break
+                # 接口按时间倒序返回，若当前页首条已不是当天，说明当天新闻已取完
+                first_time = (items[0].get("showTime") or "")
+                if not first_time.startswith(date_str):
+                    break
+                for it in items:
+                    show_time = it.get("showTime") or ""
+                    if not show_time.startswith(date_str):
+                        continue
+                    title = (it.get("title") or "").strip()
+                    if not title or title in seen_titles:
+                        continue
+                    seen_titles.add(title)
+                    entries.append({
+                        "time": show_time[11:16],
+                        "title": title,
+                        "summary": (it.get("summary") or "").strip(),
+                    })
+                if len(items) < 50:
+                    break
+            return entries
+        except Exception as e:
+            last_err = e
+            logger.warning("东方财富财经要闻抓取失败(第%d/%d次): %s",
+                           attempt, retries, str(e)[:120])
+            if attempt < retries:
+                time.sleep(1.5 * attempt)
+    raise RuntimeError(f"东方财富财经要闻连续{retries}次抓取失败，终止推荐: {last_err}")
 
 
 _PSEUDO_PREFIXES = ("昨日", "当日", "今日")
@@ -194,7 +175,7 @@ def _load_board_sectors() -> list[dict]:
 
 
 def _fetch_news(date_str: str, sectors: list) -> dict:
-    """抓取板块排行 + 财联社电报，写入 macro_news。sectors 由 build_macro_context 一次性抓取。"""
+    """抓取板块排行 + 东方财富财经要闻，写入 macro_news。sectors 由 build_macro_context 一次性抓取。"""
     top_gainers = top_losers = etf_net_flow = ""
     try:
         if sectors:
@@ -208,25 +189,26 @@ def _fetch_news(date_str: str, sectors: list) -> dict:
     except Exception as e:
         logger.warning("板块排行抓取失败: %s", str(e)[:120], exc_info=True)
 
-    cls_entries, cls_stocks = _fetch_cls()
+    em_entries = _fetch_em_finance_news(date_str)
 
     news = ""
-    if cls_entries:
+    if em_entries:
         lines = []
-        for e in cls_entries:
-            prefix = "\u203c\ufe0f " if e["level"] == "A" else "\u26a0\ufe0f " if e["level"] == "B" else ""
-            lines.append(f"{prefix}{e['text']}")
+        for e in em_entries:
+            line = f"[{e['time']}] {e['title']}"
+            if e.get("summary"):
+                line += f"：{e['summary']}"
+            lines.append(line)
         news = "\n".join(lines)
 
-    if top_gainers or top_losers or cls_entries:
+    if top_gainers or top_losers or em_entries:
         repo.save_macro_news(date_str, news, top_gainers, top_losers, etf_net_flow)
-    logger.info("快讯入库: 领涨[%s] 领跌[%s] cls=%d条(去重后) 关联股票%d只",
-                top_gainers[:40], top_losers[:40], len(cls_entries), len(cls_stocks))
+    logger.info("快讯入库: 领涨[%s] 领跌[%s] 东财要闻=%d条",
+                top_gainers[:40], top_losers[:40], len(em_entries))
     return {
         "summary": news, "top_gainers": top_gainers,
         "top_losers": top_losers, "etf_net_flow": etf_net_flow,
-        "cls_stocks": cls_stocks,
-        "cls_entries": cls_entries,
+        "em_entries": em_entries,
     }
 
 
@@ -314,8 +296,6 @@ def _suggest_sectors(date_str: str, news: dict, flow: dict) -> MacroContext:
     system_prompt = sector_selection_system_prompt()
     content = call_llm(prompt, system_prompt=system_prompt, max_tokens=2048)
 
-    cls_stocks = news.get("cls_stocks", [])
-
     flow_top = flow.get("top_flows", [])
     flow_out = flow.get("top_outflows", [])
     if content is None:
@@ -349,7 +329,7 @@ def _suggest_sectors(date_str: str, news: dict, flow: dict) -> MacroContext:
             risk_sectors=risk_valid,
             sector_reasoning=parsed.get("reasoning", ""),
             regime_label=parsed.get("regime_label", "neutral"),
-            cls_stock_mentions=cls_stocks,
+            cls_stock_mentions=[],
             date=date_str,
             top_flows=flow_top,
             top_outflows=flow_out,

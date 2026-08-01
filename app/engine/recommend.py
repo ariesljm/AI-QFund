@@ -9,7 +9,7 @@
 
 import json
 from app.utils.log import get_logger
-from datetime import datetime
+from datetime import datetime, date
 from pathlib import Path
 
 import lightgbm as lgb
@@ -35,6 +35,18 @@ _FORWARD_WINDOW = repo.FORWARD_WINDOW
 def _load_ranking_cfg() -> dict:
     """从 meta 表读取排序权重，找不到则用默认值。"""
     return repo.get_ranking_cfg()
+
+
+def _retrain_due(last_trained: str | None, today: date | None = None) -> bool:
+    """距上次训练是否已满 7 天。无记录视为到期（首次部署）。"""
+    if not last_trained:
+        return True
+    try:
+        last = datetime.strptime(last_trained, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return True
+    today = today or date.today()
+    return (today - last).days >= 7
 
 
 # ========== 2.1 标注数据准备 ==========
@@ -514,13 +526,27 @@ def run_recommendation(retrain: bool = False, force: bool = False) -> None:
     date_str = datetime.now().strftime("%Y-%m-%d")
     insights = _load_insights()
 
-    if retrain or not MODEL_PATH.exists():
+    if retrain or not MODEL_PATH.exists() or _retrain_due(repo.get_model_last_trained()):
         logger.info("=== 准备训练数据并训练 LightGBM ===")
-        X_train, y_train, X_val, y_val = prepare_lgb_training_data()
-        if len(X_train) == 0:
-            logger.warning("训练样本为空——NAV数据不足或数据基座未完成，跳过本次推荐")
-            return
-        model = train_lgb_model(X_train, y_train, X_val, y_val)
+        try:
+            X_train, y_train, X_val, y_val = prepare_lgb_training_data()
+            if len(X_train) == 0:
+                if MODEL_PATH.exists():
+                    logger.warning("训练样本为空，回退使用现有模型")
+                    model = lgb.Booster(model_file=str(MODEL_PATH))
+                else:
+                    logger.warning("训练样本为空且无现有模型，跳过本次推荐")
+                    return
+            else:
+                model = train_lgb_model(X_train, y_train, X_val, y_val)
+                repo.set_model_last_trained(datetime.now().strftime("%Y-%m-%d"))
+        except Exception as e:
+            logger.error("模型重训失败: %s", e, exc_info=True)
+            if not MODEL_PATH.exists():
+                logger.warning("无可用模型，跳过本次推荐")
+                return
+            logger.warning("回退使用现有模型")
+            model = lgb.Booster(model_file=str(MODEL_PATH))
     else:
         logger.info("=== 加载已保存模型 ===")
         model = lgb.Booster(model_file=str(MODEL_PATH))
@@ -534,7 +560,8 @@ def run_recommendation(retrain: bool = False, force: bool = False) -> None:
 
     target_sectors = ctx.recommended_sectors[:2]
     if not target_sectors:
-        logger.error("LLM 未推荐任何赛道，终止")
+        repo.record_empty_recommendation(date_str, ctx.sector_reasoning or "今日无合适机会")
+        logger.info("今日无合适机会，记录空推荐日")
         return
     logger.info("=== 赛道内相对化排序 ===")
     finalists = _rank_within_sectors(ctx, model)

@@ -78,7 +78,7 @@ body::before { content: ''; position: fixed; inset: 0; pointer-events: none; z-i
 .editorial-card:hover { box-shadow: 4px 4px 0px rgba(0,0,0,0.08); }
 .editorial-card:active { transform: scale(0.998); }
 .marquee-vertical-container { height: 84px; overflow: hidden; position: relative; }
-.marquee-vertical-content { display: flex; flex-direction: column; animation: marquee-vertical-continuous 200s linear infinite; }
+.marquee-vertical-content { display: flex; flex-direction: column; animation: marquee-vertical-continuous 120s linear infinite; }
 .marquee-vertical-container:hover .marquee-vertical-content { animation-play-state: paused; }
 @keyframes marquee-vertical-continuous { 0% { transform: translateY(0); } 100% { transform: translateY(-50%); } }
 .pulse-dot { animation: pulse 2s infinite; }
@@ -126,6 +126,15 @@ button:focus-visible { outline: 2px solid #1A1A1A; outline-offset: 2px; }
 </header>
 
 <div class="mt-16 md:mt-24 px-sm md:px-lg space-y-md md:space-y-lg max-w-[1440px] mx-auto w-full">
+{% if empty_today %}
+<div class="flex items-start gap-sm border-2 border-tertiary bg-tertiary/10 text-on-surface px-md py-sm mb-md md:mb-lg">
+<span class="material-symbols-outlined text-tertiary mt-0.5">info</span>
+<div>
+<p class="font-black uppercase tracking-widest text-[13px]">今日无推荐 / NO RECOMMENDATION TODAY</p>
+<p class="text-sm mt-1">{{ empty_today.reasoning or '今日无合适机会' }}</p>
+</div>
+</div>
+{% endif %}
 <!-- Hero Section -->
 <div class="relative -mx-sm md:-mx-lg px-sm md:px-lg pt-sm md:pt-lg pb-sm md:pb-sm mb-md md:mb-lg"
      style="background:linear-gradient(180deg, #F4F1EA 0%, #FDFBF7 60%, transparent 100%);">
@@ -186,27 +195,16 @@ FLASH / 实时快讯
 
 <!-- Bento Stats Grid -->
 <section class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-gutter mt-lg md:mt-xl">
-<div class="editorial-card p-lg overflow-hidden relative">
-<div class="absolute inset-0 pointer-events-none opacity-[0.06]"
-     style="background-image:url('https://picsum.photos/seed/sectorflow/800/600');background-size:cover;background-position:center;"></div>
-<div class="relative">
+<div class="editorial-card p-lg border-t-4 border-t-primary">
 <div class="flex justify-between items-start mb-sm">
-<span class="text-on-surface-variant font-label-sm text-[14px] uppercase font-black tracking-widest">板块轮动 / SECTOR</span>
-<span class="material-symbols-outlined text-primary">grid_view</span>
+<span class="text-on-surface-variant font-label-sm text-[14px] uppercase font-black tracking-widest">今日分析 / TODAY'S ANALYSIS</span>
+<span class="material-symbols-outlined text-primary">analytics</span>
 </div>
-{% if sector_gainers %}
-<div class="grid grid-cols-3 gap-[6px]">
-{% for s in sector_gainers %}
-<div class="rounded-[5px] py-[10px] text-center min-w-0 flex flex-col items-center justify-center bg-surface-container">
-<div class="text-[12px] font-black leading-tight truncate text-primary">{{ s.name }}</div>
-<div class="text-[13px] font-bold leading-tight text-on-surface-variant">{{ s.pct }}</div>
-</div>
-{% endfor %}
-</div>
+{% if sector_reasoning %}
+<p class="text-on-surface text-[13px] leading-snug">{{ sector_reasoning }}</p>
 {% else %}
-<h3 class="font-headline-lg text-[32px] font-black">{{ uptime_days }} <span class="text-[14px] font-bold text-on-surface-variant italic">天</span></h3>
+<p class="text-on-surface-variant text-[12px] flex items-center gap-1"><span class="material-symbols-outlined text-[14px]">info</span>暂无数据</p>
 {% endif %}
-</div>
 </div>
 <div class="editorial-card p-lg border-t-4 border-t-primary">
 <div class="flex justify-between items-start mb-sm">
@@ -247,33 +245,57 @@ FLASH / 实时快讯
 </div>
 <div class="editorial-card p-lg bg-surface-container">
 <div class="flex justify-between items-start mb-sm">
-<span class="text-on-surface-variant font-label-sm text-[14px] uppercase font-black tracking-widest">累计收益率 / TOTAL ROI</span>
+<span class="text-on-surface-variant font-label-sm text-[14px] uppercase font-black tracking-widest">累计收益 / TOTAL ROI</span>
 <span class="material-symbols-outlined text-up">trending_up</span>
 </div>
+<div class="grid grid-cols-2 gap-md">
+<div>
+<p class="text-on-surface-variant text-[12px] font-black uppercase mb-xs">累计收益率</p>
 <h3 class="font-headline-lg text-[32px] font-black {% if total_return >= 0 %}text-up{% else %}text-down{% endif %}">
 {% if total_return is not none %}{{ "%+.2f"|format(total_return) }}%{% else %}--{% endif %}
 </h3>
-<div class="mt-sm pt-sm border-t border-outline-variant flex gap-xl">
-<p class="text-on-surface-variant text-[13px] font-black uppercase">推荐数量: <span class="text-on-surface">{{ rec_count }}</span></p>
-<p class="text-on-surface-variant text-[13px] font-black uppercase">命中率: <span class="{% if hit_rate >= 50 %}text-up{% else %}text-down{% endif %}">{{ hit_rate }}%</span></p>
 </div>
-</div>
-<div class="editorial-card p-lg">
-<div class="flex justify-between items-start mb-sm">
-<span class="text-on-surface-variant font-label-sm text-[14px] uppercase font-black tracking-widest">累计超额收益 / EXCESS ALPHA</span>
-<span class="material-symbols-outlined text-primary">insights</span>
-</div>
+<div>
+<p class="text-on-surface-variant text-[12px] font-black uppercase mb-xs">累计超额收益</p>
 <h3 class="font-headline-lg text-[32px] font-black {% if alpha is not none and alpha >= 0 %}text-up{% elif alpha is not none %}text-down{% endif %}">
 {% if alpha is not none %}{{ "%+.2f"|format(alpha) }}%{% else %}--{% endif %}
 </h3>
+</div>
+</div>
 {% if alpha_svg %}
-<div class="h-[80px] relative">
+<div class="mt-sm h-[80px] relative">
 <svg class="absolute inset-0 w-full h-full" viewBox="0 0 200 100" preserveAspectRatio="none">
 <line x1="0" y1="{{ alpha_baseline_y|round(1) }}" x2="200" y2="{{ alpha_baseline_y|round(1) }}" stroke="currentColor" stroke-width="0.3" stroke-dasharray="2" class="text-outline-variant" vector-effect="non-scaling-stroke"/>
 <path d="{{ alpha_svg }}" fill="none" stroke="currentColor" stroke-width="1.5" class="text-up" vector-effect="non-scaling-stroke"/>
 </svg>
 </div>
 {% endif %}
+<div class="mt-sm pt-sm border-t border-outline-variant flex gap-xl">
+<p class="text-on-surface-variant text-[13px] font-black uppercase">推荐数量: <span class="text-on-surface">{{ rec_count }}</span></p>
+<p class="text-on-surface-variant text-[13px] font-black uppercase">命中率: <span class="{% if hit_rate >= 50 %}text-up{% else %}text-down{% endif %}">{{ hit_rate }}%</span></p>
+</div>
+</div>
+<div class="editorial-card p-lg overflow-hidden relative">
+<div class="absolute inset-0 pointer-events-none opacity-[0.06]"
+     style="background-image:url('https://picsum.photos/seed/sectorflow/800/600');background-size:cover;background-position:center;"></div>
+<div class="relative">
+<div class="flex justify-between items-start mb-sm">
+<span class="text-on-surface-variant font-label-sm text-[14px] uppercase font-black tracking-widest">板块轮动 / SECTOR</span>
+<span class="material-symbols-outlined text-primary">grid_view</span>
+</div>
+{% if sector_gainers %}
+<div class="grid grid-cols-3 gap-[6px]">
+{% for s in sector_gainers %}
+<div class="rounded-[5px] py-[10px] text-center min-w-0 flex flex-col items-center justify-center bg-surface-container">
+<div class="text-[12px] font-black leading-tight truncate text-primary">{{ s.name }}</div>
+<div class="text-[13px] font-bold leading-tight text-on-surface-variant">{{ s.pct }}</div>
+</div>
+{% endfor %}
+</div>
+{% else %}
+<h3 class="font-headline-lg text-[32px] font-black">{{ uptime_days }} <span class="text-[14px] font-bold text-on-surface-variant italic">天</span></h3>
+{% endif %}
+</div>
 </div>
 </section>
 </div>
@@ -305,12 +327,6 @@ FLASH / 实时快讯
         </div>
         {% if latest %}
         <div class="mt-md">
-          {% if sector_reasoning %}
-          <div class="mb-sm">
-            <h3 class="text-[14px] font-black uppercase mb-xs text-on-surface-variant">今日分析 / TODAY'S ANALYSIS</h3>
-            <p class="text-on-surface text-[13px] leading-snug">{{ sector_reasoning }}</p>
-          </div>
-          {% endif %}
           <h3 class="text-[14px] font-black uppercase mb-xs text-on-surface-variant">推荐理由 / REASON</h3>
           <p class="text-on-surface text-[13px] leading-snug">
             {{ latest.reason if latest else '暂无推荐，请先运行推荐引擎。' }}
@@ -357,12 +373,6 @@ FLASH / 实时快讯
           </div>
         </div>
         <div class="mt-md">
-          {% if sector_reasoning %}
-          <div class="mb-sm">
-            <h3 class="text-[14px] font-black uppercase mb-xs text-on-surface-variant">今日分析 / TODAY'S ANALYSIS</h3>
-            <p class="text-on-surface text-[13px] leading-snug">{{ sector_reasoning }}</p>
-          </div>
-          {% endif %}
           <h3 class="text-[14px] font-black uppercase mb-xs text-on-surface-variant">推荐理由 / REASON</h3>
           <p class="text-on-surface text-[13px] leading-snug">{{ rec2.reason }}</p>
         </div>
@@ -394,6 +404,59 @@ FLASH / 实时快讯
     </div>
   </section>
 </section>
+<!-- Quality Metrics -->
+<section class="editorial-card" id="qualitySection">
+<div class="p-lg border-b border-primary flex items-baseline gap-md">
+<h2 class="font-headline-lg text-[24px] font-black uppercase tracking-tight">推荐质量 / RECOMMENDATION QUALITY</h2>
+<span class="text-[13px] font-black text-on-surface-variant uppercase tracking-widest">IC · 超额胜率 · 累计超额（进化闭环）</span>
+</div>
+{% if quality_curve_svg %}
+<div class="px-lg py-md border-b border-outline-variant">
+<p class="text-[12px] font-black uppercase tracking-widest text-on-surface-variant mb-2">累计超额曲线（最近一期） / CUMULATIVE EXCESS</p>
+<div class="h-[80px] relative max-w-[360px]">
+<svg class="absolute inset-0 w-full h-full" viewBox="0 0 200 100" preserveAspectRatio="none">
+<line x1="0" y1="{{ quality_curve_baseline|round(1) }}" x2="200" y2="{{ quality_curve_baseline|round(1) }}" stroke="currentColor" stroke-width="0.3" stroke-dasharray="2" class="text-outline-variant" vector-effect="non-scaling-stroke"/>
+<path d="{{ quality_curve_svg }}" fill="none" stroke="currentColor" stroke-width="1.5" class="text-up" vector-effect="non-scaling-stroke"/>
+</svg>
+</div>
+</div>
+{% endif %}
+<div class="overflow-x-auto">
+<table class="w-full text-left border-collapse">
+<thead>
+<tr class="text-on-surface font-black text-[13px] uppercase tracking-wider bg-surface-container-high border-b border-primary">
+<th class="px-sm md:px-lg py-2 md:py-4 whitespace-nowrap">计算日期</th>
+<th class="px-sm md:px-lg py-2 md:py-4 whitespace-nowrap">统计区间</th>
+<th class="px-sm md:px-lg py-2 md:py-4 whitespace-nowrap">IC</th>
+<th class="px-sm md:px-lg py-2 md:py-4 whitespace-nowrap">超额胜率</th>
+<th class="px-sm md:px-lg py-2 md:py-4 whitespace-nowrap">累计超额</th>
+<th class="px-sm md:px-lg py-2 md:py-4 whitespace-nowrap">样本</th>
+</tr>
+</thead>
+<tbody class="text-[13px] font-bold divide-y divide-outline-variant">
+{% for q in quality_metrics %}
+<tr>
+<td class="px-sm md:px-lg py-3 md:py-5 font-display-data whitespace-nowrap">{{ q.computed_date }}</td>
+<td class="px-sm md:px-lg py-3 md:py-5 whitespace-nowrap">{{ q.period_start }} ~ {{ q.period_end }}</td>
+<td class="px-sm md:px-lg py-3 md:py-5 font-display-data whitespace-nowrap {% if q.ic is not none and q.ic >= 0 %}text-up{% elif q.ic is not none %}text-down{% endif %}">{% if q.ic is not none %}{{ "%.3f"|format(q.ic) }}{% else %}--{% endif %}</td>
+<td class="px-sm md:px-lg py-3 md:py-5 font-display-data whitespace-nowrap {% if q.excess_win_rate is not none and q.excess_win_rate >= 0.5 %}text-up{% elif q.excess_win_rate is not none %}text-down{% endif %}">{% if q.excess_win_rate is not none %}{{ "%.1f"|format(q.excess_win_rate * 100) }}%{% else %}--{% endif %}</td>
+<td class="px-sm md:px-lg py-3 md:py-5 font-display-data whitespace-nowrap {% if q.cum_excess is not none and q.cum_excess >= 0 %}text-up{% elif q.cum_excess is not none %}text-down{% endif %}">{% if q.cum_excess is not none %}{{ "%+.2f"|format(q.cum_excess * 100) }}%{% else %}--{% endif %}</td>
+<td class="px-sm md:px-lg py-3 md:py-5 whitespace-nowrap">{{ q.sample_count }}</td>
+</tr>
+{% else %}
+<tr><td colspan="6" class="px-lg py-10 text-center">
+<div class="flex flex-col items-center gap-sm">
+<span class="material-symbols-outlined text-outline-variant text-[32px]">insights</span>
+<p class="text-on-surface-variant font-bold text-[14px]">暂无质量度量</p>
+<p class="text-on-surface-variant text-[13px]">月末进化引擎运行后自动生成</p>
+</div>
+</td></tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+</section>
+
 <!-- Signal Table -->
 <section class="editorial-card" id="trackingSection">
 <div class="p-lg border-b border-primary flex items-baseline gap-md">

@@ -10,7 +10,7 @@
 import json
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +19,7 @@ from app.utils.log import get_logger
 from app.database import db_conn
 from app.llm.client import call_llm
 from app.llm.prompts import evolution_analysis_prompt
+from app.engine.quality import compute_quality_metrics
 import app.repo as repo
 
 logger = get_logger("evolve")
@@ -79,6 +80,53 @@ def _review_ranking_all() -> list[str]:
         }
         _apply_ranking_weights(new)
     return fixes
+
+
+# ── 度量反哺 ───────────────────────────────────────────────
+
+_MIN_SAMPLE_FOR_ADJUST = 5
+_MODEL_WEIGHT_FLOOR = 0.1
+
+
+def plan_param_adjustment(metrics: dict, cfg: dict) -> dict | None:
+    """质量下行时规划参数调整：IC 为负或超额胜率低于五成 → 降低模型权重。
+
+    返回 {"cfg": 新权重, "reason": 说明}；证据不足或质量健康时返回 None。
+    """
+    ic = metrics.get("ic")
+    win_rate = metrics.get("excess_win_rate")
+    sample = metrics.get("sample_count", 0)
+    if sample < _MIN_SAMPLE_FOR_ADJUST:
+        return None
+    degraded = (ic is not None and ic < 0) or (win_rate is not None and win_rate < 0.5)
+    if not degraded:
+        return None
+    new_cfg = dict(cfg)
+    new_model = max(_MODEL_WEIGHT_FLOOR, new_cfg["model_weight"] * 0.5)
+    if new_model == new_cfg["model_weight"]:
+        return None
+    new_cfg["model_weight"] = new_model
+    triggers = []
+    if ic is not None and ic < 0:
+        triggers.append(f"IC={ic:.3f}<0（预测与实现负相关）")
+    if win_rate is not None and win_rate < 0.5:
+        triggers.append(f"超额胜率={win_rate:.2f}<0.5")
+    return {
+        "cfg": new_cfg,
+        "reason": (f"质量下行触发参数调整: {'、'.join(triggers)}；"
+                   f"模型权重 {cfg['model_weight']}→{new_model}"),
+    }
+
+
+def apply_param_adjustment(metrics: dict) -> str | None:
+    """度量反哺入口：按质量指标调整排序权重并留痕，返回调整说明。"""
+    plan = plan_param_adjustment(metrics, repo.get_ranking_cfg())
+    if plan is None:
+        return None
+    if not _apply_ranking_weights(plan["cfg"]):
+        return None
+    _save_self_fix(plan["reason"])
+    return plan["reason"]
 
 
 # ── 月度结算 ───────────────────────────────────────────────
@@ -226,20 +274,23 @@ def _insight_conflicts(new_insight: str, existing: list) -> bool:
     return False
 
 
-def _save_insight(insight: dict) -> bool:
+def _save_insight(insight: dict, degraded: bool = False) -> bool:
+    """入库洞察；质量下行（degraded）时以非活跃状态入库（待审），不自动启用。"""
     with db_conn() as conn:
         existing = [r[0] for r in conn.execute(
-            "SELECT insight FROM evolution_insights WHERE active = 1"
+            "SELECT insight FROM evolution_insights"
         ).fetchall()]
         if _insight_conflicts(insight["insight"], existing):
             return False
+        active = 0 if degraded else 1
         conn.execute(
-            "INSERT INTO evolution_insights (insight, insight_type, created_date) "
-            "VALUES (?, ?, ?)",
+            "INSERT INTO evolution_insights (insight, insight_type, created_date, active) "
+            "VALUES (?, ?, ?, ?)",
             (insight["insight"], insight.get("type", "sector"),
-             datetime.now().strftime("%Y-%m-%d")),
+             datetime.now().strftime("%Y-%m-%d"), active),
         )
-    logger.info("新洞察入库: [%s] %s", insight.get("type", "?"), insight["insight"][:60])
+    logger.info("新洞察入库: [%s] %s (active=%s)",
+                insight.get("type", "?"), insight["insight"][:60], active)
     return True
 
 
@@ -276,8 +327,15 @@ def _save_self_fix(fix: str) -> None:
     logger.info("排分自纠偏: %s", fix[:60])
 
 
+def _month_bounds(month: str) -> tuple[str, str]:
+    """返回某年月的首日与末日（YYYY-MM → YYYY-MM-DD）。"""
+    first = datetime.strptime(month, "%Y-%m").date()
+    last = (first.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+    return first.strftime("%Y-%m-%d"), last.strftime("%Y-%m-%d")
+
+
 def run_evolve(month: str | None = None) -> None:
-    """进化引擎主入口。"""
+    """进化引擎主入口。month 为待进化月份（如 '2026-07'），未传则默认当前月。"""
     if month is None:
         month = datetime.now().strftime("%Y-%m")
 
@@ -289,7 +347,25 @@ def run_evolve(month: str | None = None) -> None:
     # 2. 月度结算
     _settle_outcomes(month)
 
-    # 3. 批量 LLM 元分析
+    # 3. 推荐质量度量（统计区间 = month 当月首日至末日，与结算/元分析同月口径；
+    #    度量先于元分析执行，质量下行信号可供洞察采纳判断使用）
+    degraded = False
+    try:
+        start, end = _month_bounds(month)
+        with db_conn() as conn:
+            metrics = compute_quality_metrics(conn, start, end)
+        metrics["computed_date"] = datetime.now().strftime("%Y-%m-%d")
+        repo.save_quality_metrics(metrics)
+        logger.info("推荐质量度量已入库: 区间 %s~%s, IC=%s, 超额胜率=%s",
+                    start, end, metrics.get("ic"), metrics.get("excess_win_rate"))
+        adjustment = apply_param_adjustment(metrics)
+        degraded = adjustment is not None
+        if adjustment:
+            logger.info("度量反哺: %s", adjustment)
+    except Exception as e:
+        logger.warning("推荐质量度量失败: %s", str(e)[:120], exc_info=True)
+
+    # 4. 批量 LLM 元分析（质量下行时新洞察以非活跃态入库，待审不自动启用）
     successes, failures, neutrals = _collect_cases(month)
     if not successes and not failures and not neutrals:
         logger.info("当月无可分析案例，跳过元分析")
@@ -297,15 +373,15 @@ def run_evolve(month: str | None = None) -> None:
         insights = _batch_llm_analyze(successes, failures, neutrals)
         added = 0
         for ins in insights:
-            if _save_insight(ins):
+            if _save_insight(ins, degraded=degraded):
                 added += 1
         logger.info("批量元分析: %d条成功/%d条失败/%d条中性 → 新增 %d 条洞察",
                     len(successes), len(failures), len(neutrals), added)
 
-    # 4. 置信度衰减
+    # 5. 置信度衰减
     _decay_insights()
 
-    logger.info("进化完成: 结算+元分析+衰减")
+    logger.info("进化完成: 结算+质量度量+元分析+衰减")
 
 
 if __name__ == "__main__":

@@ -237,6 +237,33 @@ def _make_dual_svg(pcts, hs_pcts):
     return _smooth_path(pcts), _smooth_path(hs_pcts), baseline_y
 
 
+def _quality_curve_svg(points):
+    """累计超额曲线 SVG（单线），points=[{cum_alpha,...}] 按时间序。返回 (path, baseline_y)。"""
+    vals = [float(p["cum_alpha"]) for p in points if p.get("cum_alpha") is not None]
+    if len(vals) < 2:
+        return "", 50
+    y_min, y_max = min(vals), max(vals)
+    y_range = y_max - y_min or 1
+    pad = y_range * 0.15
+    y_min -= pad
+    y_max += pad
+    y_range = y_max - y_min or 1
+
+    def _y(v):
+        return 90 - (v - y_min) / y_range * 80
+
+    baseline_y = _y(0)
+    n = len(vals)
+    pts = [(i / (n - 1) * 200, _y(v)) for i, v in enumerate(vals)]
+    d = f"M {pts[0][0]:.1f},{pts[0][1]:.1f}"
+    for i in range(n - 1):
+        x0, y0 = pts[i]
+        x1, y1 = pts[i + 1]
+        mx = (x0 + x1) / 2
+        d += f" C {mx:.1f},{y0:.1f} {mx:.1f},{y1:.1f} {x1:.1f},{y1:.1f}"
+    return d, baseline_y
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     today = datetime.now().strftime("%Y-%m-%d")
@@ -269,40 +296,40 @@ async def index(request: Request):
     flow_outflows = []
     sector_reasoning = ""
     regime_label = "NEUTRAL"
+    empty_today = None
+    _empty_reco = repo.get_empty_recommendation(today)
+    if _empty_reco:
+        empty_today = _empty_reco
+    quality_metrics = repo.get_quality_metrics(6)
+    quality_curve_svg = ""
+    quality_curve_baseline = 50
+    if quality_metrics:
+        _pts = quality_metrics[0].get("points") or []
+        if len(_pts) >= 2:
+            quality_curve_svg, quality_curve_baseline = _quality_curve_svg(_pts)
     mn = repo.get_latest_macro_news()
     if mn:
         text = mn.get("news_summary") or ""
-        lines = text.replace("；", "\n").split("\n")
+        lines = text.split("\n")
         seen = set()
         items = []
         for seg in lines:
             seg = seg.strip()
             if not seg or len(seg) < 6 or seg.startswith(("http", "www")):
                 continue
-            dedup = seg[:100] if len(seg) > 100 else seg
+            title = seg.split("：", 1)[0].strip()
+            if not title:
+                continue
+            dedup = title[:100] if len(title) > 100 else title
             if dedup in seen:
                 continue
             seen.add(dedup)
-            items.append(seg)
+            items.append(title)
         if items:
             news_items = items
         top_gainers = mn.get("top_gainers") or ""
         top_losers = mn.get("top_losers") or ""
         etf_net_flow = mn.get("etf_net_flow") or ""
-        gainer_seen = set()
-        if top_gainers:
-            for g in top_gainers.replace("、", "\n").split("\n"):
-                g = g.strip()
-                if g and g not in gainer_seen:
-                    gainer_seen.add(g)
-                    news_items.append("\u2191 " + g)
-        if top_losers:
-            for l in top_losers.replace("、", "\n").split("\n"):
-                l = l.strip()
-                if l:
-                    news_items.append("\u2193 " + l)
-        if etf_net_flow:
-            news_items.insert(0, "\u8d44\u91d1\u6d41\u5411: " + etf_net_flow)
         # 领涨/领跌行业（各取前3，带幅度强度）
         if top_gainers:
             raw_g = _re.findall(r"([^(]+)\(([^)]+)\)", top_gainers)[:9]
@@ -530,6 +557,10 @@ async def index(request: Request):
         "flow_outflows": flow_outflows,
         "max_inflow": max_inflow,
         "max_outflow": max_outflow,
+        "empty_today": empty_today,
+        "quality_metrics": quality_metrics,
+        "quality_curve_svg": quality_curve_svg,
+        "quality_curve_baseline": quality_curve_baseline,
     })
 
 

@@ -157,4 +157,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 conn.execute(f"ALTER TABLE fund_features ADD COLUMN {col} {typ}")
                 conn.commit()
 
+    if "quality_metrics" in tables:
+        qm_cols = {row[1] for row in conn.execute("PRAGMA table_info(quality_metrics)").fetchall()}
+        if "points_json" not in qm_cols:
+            conn.execute("ALTER TABLE quality_metrics ADD COLUMN points_json TEXT")
+            conn.commit()
+
     _migrate._done = True

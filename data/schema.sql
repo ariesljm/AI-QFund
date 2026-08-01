@@ -164,3 +164,29 @@ CREATE TABLE IF NOT EXISTS evolution_insights (
     apply_count INTEGER DEFAULT 0,
     active INTEGER DEFAULT 1
 );
+
+-- 推荐质量度量（月度进化闭环）
+CREATE TABLE IF NOT EXISTS quality_metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    computed_date TEXT NOT NULL,
+    period_start TEXT,
+    period_end TEXT,
+    ic REAL,
+    excess_win_rate REAL,
+    mean_excess REAL,
+    cum_excess REAL,
+    sample_count INTEGER,
+    points_json TEXT
+);
+
+-- 同一统计区间只保留一次度量（重复运行 run_evolve 幂等）
+CREATE UNIQUE INDEX IF NOT EXISTS idx_quality_metrics_period
+    ON quality_metrics (period_start, period_end);
+
+-- 空推荐日历史（每天一条）
+CREATE TABLE IF NOT EXISTS empty_recommendations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL UNIQUE,
+    reasoning TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
