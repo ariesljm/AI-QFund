@@ -57,10 +57,12 @@ async def _lsjz_fetch_all(session, code: str, start_date: str,
     """分页拉取 lsjz 历史净值（pageSize 太大接口会返回空，必须逐页翻取）。
 
     全量时返回完整历史序列；带 start_date 时仅返回其后的净值。
+    空页（接口抖动返回空 body 但 HTTP 200）时重试一次，避免静默断档。
     """
     all_navs = []
     page_index = 1
-    while page_index <= _LSJZ_MAX_PAGES:
+
+    def _page_url() -> str:
         url = (
             "https://api.fund.eastmoney.com/f10/lsjz?"
             f"callback=jQuery&fundCode={code}&pageIndex={page_index}"
@@ -68,9 +70,18 @@ async def _lsjz_fetch_all(session, code: str, start_date: str,
         )
         if start_date:
             url += f"&startDate={start_date}"
-        resp = await fetch_async(session, url, timeout=timeout, headers=headers)
+        return url
+
+    async def _fetch_page() -> tuple[list[dict], int]:
+        resp = await fetch_async(session, _page_url(), timeout=timeout, headers=headers)
         text = await resp.text()
-        navs, total = _parse_lsjz_page(text)
+        return _parse_lsjz_page(text)
+
+    while page_index <= _LSJZ_MAX_PAGES:
+        navs, total = await _fetch_page()
+        if not navs:
+            # 空页重试一次（应对接口反爬/抖动返回空 body 的情形）
+            navs, total = await _fetch_page()
         all_navs.extend(navs)
         if not navs or len(all_navs) >= total:
             break
@@ -112,19 +123,64 @@ async def _pingzhong_fetch_all_async(session, code: str,
     return _parse_pingzhong_acworth(text)
 
 
+_PROBE_FUND_CODES = ["000001", "110011", "161725", "005827", "519674", "163406"]
+"""活跃基金代理：探测接口最新净值日期时逐只取首页，避免单只基金停更/失败导致误判。"""
+
+
 async def _probe_lsjz_latest(session, headers: dict) -> str | None:
-    """探测 lsjz 接口当前可返回的最新净值日期（用活跃基金 000001 的首页）。"""
-    try:
-        url = (
-            "https://api.fund.eastmoney.com/f10/lsjz?"
-            f"callback=jQuery&fundCode=000001&pageIndex=1&pageSize={_LSJZ_PAGE_SIZE}"
-        )
-        resp = await fetch_async(session, url, timeout=15, headers=headers)
-        text = await resp.text()
-        navs, _ = _parse_lsjz_page(text)
-        return navs[0]["date"] if navs else None
-    except Exception:
-        return None
+    """探测 lsjz 接口当前可返回的最新净值日期。
+
+    用多只活跃基金取最大值，降低单只基金停更/请求失败带来的偏差；
+    全部失败返回 None（上层降级为本地全局最新日期）。
+    """
+    latest: str | None = None
+    for code in _PROBE_FUND_CODES:
+        try:
+            url = (
+                "https://api.fund.eastmoney.com/f10/lsjz?"
+                f"callback=jQuery&fundCode={code}&pageIndex=1&pageSize={_LSJZ_PAGE_SIZE}"
+            )
+            resp = await fetch_async(session, url, timeout=15, headers=headers)
+            text = await resp.text()
+            navs, _ = _parse_lsjz_page(text)
+            if navs and (latest is None or navs[0]["date"] > latest):
+                latest = navs[0]["date"]
+        except Exception:
+            logger.debug("探测基金 %s 最新净值失败", code, exc_info=True)
+    return latest
+
+
+def _plan_nav_tasks(
+    all_codes: list[str],
+    local_max: dict[str, str],
+    global_latest: str | None,
+    api_latest: str | None,
+) -> tuple[list[tuple[str, str]], int, int]:
+    """规划净值增量/全量任务，对齐到接口最新日期（纯函数，便于测试）。
+
+    对齐基准取接口最新日期（api_latest），探测失败时降级为本地全局最新日期：
+    - api_latest > global_latest（接口有新交易日数据）→ 全库对齐：所有
+      lm < api_latest 的基金都规划增量，从本地最后日期补到接口最新；
+    - api_latest == global_latest（无新数据）→ 已对齐基金跳过，仅滞后基金增量；
+    - api_latest 为 None（探测失败）→ 降级：跳过本地==global_latest 的基金。
+
+    返回 (tasks_meta, incr_cnt, full_cnt)。
+    """
+    target = api_latest or global_latest
+    tasks_meta: list[tuple[str, str]] = []
+    incr_cnt = 0
+    full_cnt = 0
+    for code in all_codes:
+        lm = local_max.get(code)
+        if target is not None and lm == target:
+            continue
+        if lm:
+            tasks_meta.append((code, lm))
+            incr_cnt += 1
+        else:
+            tasks_meta.append((code, ""))
+            full_cnt += 1
+    return tasks_meta, incr_cnt, full_cnt
 
 
 async def async_update_nav_incremental(concurrency: int = 5) -> int:
@@ -136,29 +192,6 @@ async def async_update_nav_incremental(concurrency: int = 5) -> int:
             conn.execute("SELECT code, MAX(date) FROM fund_nav GROUP BY code").fetchall()
         )
         global_latest = conn.execute("SELECT MAX(date) FROM fund_nav").fetchone()[0]
-        before_global_max = global_latest
-
-    tasks_meta: list[tuple[str, str]] = []
-    incr_cnt = 0
-    full_cnt = 0
-    for code in all_codes:
-        lm = local_max.get(code)
-        if global_latest is not None and lm == global_latest:
-            continue
-        if lm:
-            tasks_meta.append((code, lm))
-            incr_cnt += 1
-        else:
-            tasks_meta.append((code, ""))
-            full_cnt += 1
-
-    logger.info(
-        "真·增量：跳过已最新 %d 只，增量 %d 只，全量兜底 %d 只(无本地数据)",
-        len(all_codes) - len(tasks_meta), incr_cnt, full_cnt,
-    )
-
-    if not tasks_meta:
-        return 0
 
     headers = {
         "User-Agent": (
@@ -186,6 +219,18 @@ async def async_update_nav_incremental(concurrency: int = 5) -> int:
     connector = aiohttp.TCPConnector(limit=concurrency, ttl_dns_cache=300, enable_cleanup_closed=True)
 
     async with aiohttp.ClientSession(connector=connector) as session:
+        api_latest = await _probe_lsjz_latest(session, headers)
+        tasks_meta, incr_cnt, full_cnt = _plan_nav_tasks(
+            all_codes, local_max, global_latest, api_latest,
+        )
+        logger.info(
+            "净值增量：接口最新 %s, 本地全局最新 %s, 跳过已对齐 %d 只，增量 %d 只，全量兜底 %d 只",
+            api_latest, global_latest,
+            len(all_codes) - len(tasks_meta), incr_cnt, full_cnt,
+        )
+        if not tasks_meta:
+            return 0
+
         batch_size = 100
         total_new = 0
         all_failed: list[str] = []
@@ -223,21 +268,20 @@ async def async_update_nav_incremental(concurrency: int = 5) -> int:
         if total_new == 0 and ok_cnt > 100:
             # 探测接口最新净值日期：若比本地最新还新却没写入，才是真异常；
             # 周末/停更基金导致的 0 条属正常，不应告警。
-            probe_date = await _probe_lsjz_latest(session, headers)
-            if probe_date and probe_date > before_global_max:
+            if api_latest and global_latest and api_latest > global_latest:
                 logger.error(
                     "净值增量更新写入 0 条但接口已可返回 %s（本地最新 %s）——"
                     "疑似净值接口失效或请求被拒，请检查后重跑，否则特征/推荐将基于陈旧净值",
-                    probe_date, before_global_max,
+                    api_latest, global_latest,
                 )
             else:
-                logger.info("净值增量更新 0 条: 接口最新 %s == 本地最新 %s，无新增数据（正常）",
-                            probe_date, before_global_max)
+                logger.info("净值增量更新 0 条: 接口最新 %s, 本地最新 %s，无新增数据（正常）",
+                            api_latest, global_latest)
 
     return total_new
 
 
-async def async_download_all_nav(concurrency: int = 50) -> int:
+async def async_download_all_nav(concurrency: int = 30) -> int:
     with db_conn() as conn:
         all_codes = [
             r[0] for r in conn.execute("SELECT code FROM fund_basic WHERE is_buyable = 1").fetchall()

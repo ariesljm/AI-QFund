@@ -387,31 +387,64 @@ def _build_candidates(stock_code: str) -> list[tuple[str, dict]]:
         return [(hsf10, {"code": f"SZ{stock_code}"})]
 
 
+_HK_NAME_INDUSTRY_HINTS: dict[str, str] = {
+    "银行": "银行", "保险": "保险", "证券": "证券", "期货": "期货",
+    "地产": "地产", "置业": "地产", "物业": "地产",
+    "石油": "石油天然气", "燃气": "燃气", "煤炭": "煤炭", "电力": "电力",
+    "汽车": "汽车", "医药": "医药", "生物": "生物医药", "医疗": "医疗器械",
+    "半导体": "半导体", "芯片": "半导体", "软件": "软件服务", "互联网": "互联网",
+    "科技": "科技", "通信": "通信", "食品": "食品饮料", "饮料": "食品饮料",
+    "航空": "航空", "航运": "航运", "钢铁": "钢铁", "有色金属": "有色金属",
+    "化工": "化工", "建筑": "建筑", "建材": "建筑材料", "零售": "零售",
+    "游戏": "游戏", "传媒": "传媒", "水务": "水务", "公用事业": "公用事业",
+}
+
+
+def _infer_hk_industry_by_name(name: str) -> str:
+    """数据源（东财 push2）无行业字段时，用股票名推断行业（仅作兜底）。"""
+    for kw, industry in _HK_NAME_INDUSTRY_HINTS.items():
+        if kw in name:
+            return industry
+    return ""
+
+
 def _fetch_hk_industry_push2(hk_stocks: list[str], results: dict[str, tuple[str, str]]) -> int:
+    """用 push2 批量行情接口为港股补行业分类。
+
+    单个 stock/get 接口的 f127 虽能返回行业，但逐只请求会触发全局限速（10 次/分钟，
+    数百只港股需半小时以上）；改用 ulist.np/get 批量接口（f12=代码, f100=东财行业），
+    一次请求多只，秒级完成。个别港股东财无行业字段（如恒生银行），用名称兜底。
+    """
     added = 0
-    for stock_code in hk_stocks:
-        secid = f"116.{stock_code}"
+    batch_size = 80
+    for i in range(0, len(hk_stocks), batch_size):
+        batch = hk_stocks[i:i + batch_size]
+        secids = ",".join(f"116.{c}" for c in batch)
         try:
             resp = _push2_fetch(
-                "https://push2.eastmoney.com/api/qt/stock/get",
+                "https://push2.eastmoney.com/api/qt/ulist.np/get",
                 {
-                    "secid": secid,
-                    "fields": "f57,f58,f100",
+                    "secids": secids,
+                    "fields": "f12,f14,f100",
                     "ut": "bd1d9ddb04089700cf9c27f6f7426281",
                 },
-                timeout=10,
+                timeout=15,
             )
-            data = resp.json()
-            stock_data = data.get("data")
-            if stock_data and isinstance(stock_data, dict):
-                industry = stock_data.get("f100", "")
-                if industry and industry != "-":
-                    results[stock_code] = (industry, industry)
-                    added += 1
-                    logger.debug("港股 %s 行业映射(push2): %s", stock_code, industry)
+            data = resp.json().get("data") or {}
+            diff = data.get("diff") or []
+            for item in diff:
+                if not isinstance(item, dict):
                     continue
+                code = item.get("f12", "")
+                industry = item.get("f100", "")
+                if not industry or industry == "-":
+                    industry = _infer_hk_industry_by_name(item.get("f14", "") or "")
+                if code and industry:
+                    results[code] = (industry, industry)
+                    added += 1
+                    logger.debug("港股 %s 行业映射(push2): %s", code, industry)
         except Exception as e:
-            logger.debug("港股 %s push2 查询失败: %s", stock_code, str(e)[:120], exc_info=True)
+            logger.debug("港股 push2 批量查询失败: %s", str(e)[:120], exc_info=True)
     return added
 
 
@@ -523,7 +556,7 @@ def run_pipeline(steps: list[int] | None = None):
             else:
                 logger.info("=== Step 2: 净值首次全量下载（pingzhongdata 高并发）===")
                 t2 = time.time()
-                total_new = asyncio.run(async_download_all_nav(concurrency=50))
+                total_new = asyncio.run(async_download_all_nav(concurrency=30))
             logger.info("Step2 净值更新完成: %d 条 (%.0fms)",
                         total_new, (time.time() - t2) * 1000)
 
@@ -596,6 +629,9 @@ if __name__ == "__main__":
         asyncio.run(async_download_all_holdings(concurrency=concurrency))
     elif len(sys.argv) > 1 and sys.argv[1] == "--features":
         _features.calc_all_features()
+    elif len(sys.argv) > 1 and sys.argv[1] == "--industry-map":
+        n = update_industry_map(force=True)
+        logger.info("行业映射强制更新完成: %d 条", n)
     elif len(sys.argv) > 1 and sys.argv[1] == "--prune-nav":
         from app.data.nav import prune_nav_history
         n = prune_nav_history()

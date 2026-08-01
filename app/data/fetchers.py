@@ -19,12 +19,16 @@ def _is_push2(url: str) -> bool:
     return bool(_PUSH2_RE.search(host))
 
 
-_RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504}
+_RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504, 514}
+"""可重试 HTTP 状态码。514 是东财限流（Frequency Capped），首次下载高频请求时常见。"""
 _MAX_RETRIES = 2
 _BASE_DELAY = 1.0
 
 
-def _retry_delay(attempt: int) -> float:
+def _retry_delay(attempt: int, rate_limited: bool = False) -> float:
+    # 限流（429/514）用更长的指数退避（5s/10s/20s），普通网络错误用 1s/2s
+    if rate_limited:
+        return _BASE_DELAY * 5 * (2 ** attempt)
     return _BASE_DELAY * (2 ** attempt)
 
 
@@ -115,7 +119,8 @@ def fetch(
                 raise
             if attempt == _MAX_RETRIES:
                 raise
-            delay = _retry_delay(attempt)
+            rate_limited = isinstance(e, requests.HTTPError) and e.response.status_code in (429, 514)
+            delay = _retry_delay(attempt, rate_limited)
             logger.warning("请求失败(第%d次重试), %.1f秒后重试: %s", attempt + 1, delay, str(e)[:120])
             time.sleep(delay)
 
@@ -222,7 +227,8 @@ async def fetch_async(
                 last_error = e
                 if attempt == _MAX_RETRIES:
                     raise
-                delay = _retry_delay(attempt)
+                rate_limited = e.status in (429, 514)
+                delay = _retry_delay(attempt, rate_limited)
                 logger.warning("异步请求 %d(第%d次重试), %.1f秒后重试", e.status, attempt + 1, delay)
                 await asyncio.sleep(delay)
             else:
