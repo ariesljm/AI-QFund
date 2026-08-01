@@ -46,6 +46,9 @@ def call_llm(
                 max_tokens=max_tokens,
             )
             text = resp.choices[0].message.content or ""
+            if not text.strip():
+                # 代理偶发 200 但 content 为空：视为失败进入重试
+                raise ValueError("LLM 返回空内容")
             elapsed = time.time() - t0
             logger.info("LLM 调用成功 (%d tokens, %.1fs)", resp.usage.total_tokens if resp.usage else 0, elapsed)
             return text
