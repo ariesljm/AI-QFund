@@ -16,7 +16,6 @@ data/logs/
 
 # 文档 / 说明（非运行必需）
 docs/
-README.md
 AGENTS.md
 
 # 环境与密钥
