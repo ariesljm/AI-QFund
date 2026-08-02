@@ -202,10 +202,12 @@ def mark_recovered_batch(fetch_type: str, targets: list[str]) -> None:
 
 
 def cooldown_targets(fetch_type: str, min_attempts: int = 3,
-                     cooldown_days: int = 7) -> set[str]:
+                     cooldown_days: int = 1) -> set[str]:
     """返回需冷却跳过的目标集合：连续失败次数达到阈值，且最近失败仍在冷却期内。
 
-    冷却期判断以 SQLite 存储的 UTC 时间为准（datetime('now')），与 Python 侧 UTC 对齐。
+    冷却期默认 1 天：连续失败 3 个下载周期后，暂停重试一天，避免对注定失败的
+    基金反复请求，又不至于长期搁置。冷却期判断以 SQLite 存储的 UTC 时间为准
+    （datetime('now')），与 Python 侧 UTC 对齐。
     """
     with db_conn() as conn:
         conn.execute(_FETCH_FAILURE_TABLE)

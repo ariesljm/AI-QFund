@@ -146,15 +146,15 @@ class TestCooldown:
         assert store.cooldown_targets("nav_full") == set()
 
     def test_stale_failure_not_in_cooldown(self, iso_db):
-        """最近失败时间超出冷却期（7 天）的记录不冷却。"""
+        """最近失败时间超出冷却期（1 天）的记录不冷却。"""
         store.record_failure("nav_full", "000001")
         store.record_failure("nav_full", "000001")
         store.record_failure("nav_full", "000001")  # attempts=3
-        # 把 last_failed_at 改到 8 天前（UTC），模拟冷却期已过
+        # 把 last_failed_at 改到 2 天前（UTC），模拟冷却期已过
         with db_mod.db_conn() as conn:
             conn.execute(
                 "UPDATE data_fetch_failures SET last_failed_at = "
-                "datetime('now', '-8 days') WHERE fetch_type='nav_full' AND target='000001'"
+                "datetime('now', '-2 days') WHERE fetch_type='nav_full' AND target='000001'"
             )
         assert store.cooldown_targets("nav_full") == set()
 
