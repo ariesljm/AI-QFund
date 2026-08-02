@@ -147,8 +147,8 @@ def _period_returns(code):
     dates = [r[0] for r in rows]
     navs = [r[1] or 0 for r in rows]
     latest_nav = navs[-1]
-    # 自然月 ≈ 22交易日，季≈66，半年≈126
-    periods = {"月": 22, "季": 66, "半年": 126}
+    # 周≈5交易日，月≈22，季≈66，半年≈126
+    periods = {"1周": 5, "1月": 22, "3月": 66, "6月": 126}
     hs_rows = _q(
         "SELECT date, close FROM index_daily WHERE code='sh000300' "
         "AND date >= ? ORDER BY date ASC",
@@ -237,6 +237,118 @@ def _make_dual_svg(pcts, hs_pcts):
     return _smooth_path(pcts), _smooth_path(hs_pcts), baseline_y
 
 
+def _portfolio_series():
+    """等权买入持有组合的每日累计收益序列 + 同期沪深300累计收益序列。
+
+    对每只被推荐基金，从首次推荐日起的累计净值收益率为其贡献；
+    已离场（EXIT + exit_date）基金截至离场日截断；
+    每日组合收益 = 当日所有已入场且未离场基金累计收益率的等权平均。
+    返回 (dates, port_pcts, hs_pcts)；有效点不足2个时返回空。
+    """
+    tracks = repo.get_tracking_list()
+    if not tracks:
+        return [], [], []
+    today = datetime.now().strftime("%Y-%m-%d")
+    funds = []
+    min_date = None
+    for t in tracks:
+        fd = t["first_date"]
+        if not fd:
+            continue
+        entry = repo.get_entry_nav(t["code"], fd)
+        if entry is None:
+            entry = repo.get_nav_at_date(t["code"], fd)
+        if entry is None or entry <= 0:
+            continue
+        funds.append({"code": t["code"], "fd": fd, "end": t["exit_date"] or today, "entry": entry})
+        if min_date is None or fd < min_date:
+            min_date = fd
+    if not funds or not min_date:
+        return [], [], []
+    placeholders = ",".join("?" * len(funds))
+    rows = _q(
+        f"SELECT code, date, cum_nav FROM fund_nav "
+        f"WHERE code IN ({placeholders}) ORDER BY date ASC",
+        tuple(f["code"] for f in funds),
+    )
+    nav_by_fund = {}
+    date_set = set()
+    for code, d, nav in rows:
+        if nav is None or nav <= 0:
+            continue
+        nav_by_fund.setdefault(code, {})[d] = nav
+        date_set.add(d)
+    # 推荐日当天无净值时，以入场净值作为基线点（组合曲线从 0% 起步）
+    for f in funds:
+        if f["fd"] not in nav_by_fund.get(f["code"], {}):
+            nav_by_fund.setdefault(f["code"], {})[f["fd"]] = f["entry"]
+            date_set.add(f["fd"])
+    dates = sorted(date_set)
+    if len(dates) < 2:
+        return [], [], []
+    # 每日组合累计收益率（等权平均，离场基金截断到 end）
+    port_pcts = []
+    for d in dates:
+        vals = []
+        for f in funds:
+            if d < f["fd"] or d > f["end"]:
+                continue
+            nav = nav_by_fund.get(f["code"], {}).get(d)
+            if nav is None:
+                continue
+            vals.append((nav / f["entry"] - 1) * 100)
+        port_pcts.append(sum(vals) / len(vals) if vals else None)
+    # 沪深300同期序列（相对首个可用 close，交易日向前取最近值）
+    hs_rows = _q(
+        "SELECT date, close FROM index_daily WHERE code='sh000300' AND date >= ? ORDER BY date ASC",
+        (min_date,),
+    )
+    hs_vals = [(d, c) for d, c in hs_rows if c is not None and c > 0]
+    if not hs_vals:
+        return [], [], []
+    hs_base = hs_vals[0][1]
+    hs_pcts = []
+    idx = -1
+    for d in dates:
+        while idx + 1 < len(hs_vals) and hs_vals[idx + 1][0] <= d:
+            idx += 1
+        if idx >= 0 and hs_base:
+            hs_pcts.append((hs_vals[idx][1] / hs_base - 1) * 100)
+        else:
+            hs_pcts.append(None)
+    # 裁剪到组合与基准均有值的连续区间
+    pairs = [(d, p, h) for d, p, h in zip(dates, port_pcts, hs_pcts) if p is not None and h is not None]
+    if len(pairs) < 2:
+        return [], [], []
+    dates, port_pcts, hs_pcts = zip(*pairs)
+    return list(dates), list(port_pcts), list(hs_pcts)
+
+
+def _sharpe_ratio(pcts):
+    """组合日收益年化夏普比率（无风险利率按 0）。"""
+    rets = [(pcts[i] - pcts[i - 1]) / 100 for i in range(1, len(pcts))]
+    if len(rets) < 2:
+        return None
+    mean = sum(rets) / len(rets)
+    var = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
+    std = var ** 0.5
+    if std == 0:
+        return None
+    return round(mean / std * (252 ** 0.5), 2)
+
+
+def _max_drawdown(pcts):
+    """组合累计收益曲线的最大峰谷回撤（%）。"""
+    peak = pcts[0]
+    mdd = 0.0
+    for v in pcts:
+        if v > peak:
+            peak = v
+        if peak - v > mdd:
+            mdd = peak - v
+    return round(mdd, 2)
+
+
 def _quality_curve_svg(points):
     """累计超额曲线 SVG（单线），points=[{cum_alpha,...}] 按时间序。返回 (path, baseline_y)。"""
     vals = [float(p["cum_alpha"]) for p in points if p.get("cum_alpha") is not None]
@@ -264,8 +376,7 @@ def _quality_curve_svg(points):
     return d, baseline_y
 
 
-@app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
+def _index_context() -> dict:
     today = datetime.now().strftime("%Y-%m-%d")
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -279,7 +390,8 @@ async def index(request: Request):
         if latest_rec_id is None:
             latest_rec_id = rec["id"]
         entry = {
-            "code": rec["code"], "name": rec["name"], "score": _display_score(rec["combo"], rec["score"]),
+            "code": rec["code"], "name": rec["name"],
+            "pred_alpha": rec["score"],
             "regime": rec["regime"] or "NEUTRAL", "reason": rec["reason"],
             "status": rec["status"], "date": rec["date"] or today, "return": rec["return"],
             "type": rec["type"] or "",
@@ -360,8 +472,14 @@ async def index(request: Request):
         ]
         # 赛道分析（context_json 合并行）
         sector_reasoning = mn.get("sector_reasoning") or ""
-        raw_regime = (mn.get("regime_label") or "neutral").upper()
-        regime_label = raw_regime if raw_regime in ("BULL", "BEAR") else "NEUTRAL"
+        # 大盘状态（LLM 可能输出 bullish/bearish/bull/bear 等变体，统一归一）
+        raw_regime = (mn.get("regime_label") or "").strip().lower()
+        if raw_regime.startswith("bull"):
+            regime_label = "BULL"
+        elif raw_regime.startswith("bear"):
+            regime_label = "BEAR"
+        else:
+            regime_label = "NEUTRAL"
     macro_data = {
         "news": "；".join(news_items),
         "news_items": news_items,
@@ -394,7 +512,12 @@ async def index(request: Request):
         code, first_date = c["code"], c["first_date"]
         name = c["name"] or ""
         rec_count = c["rec_count"]
-        status = c["status"] or "HOLD"
+        # 展示状态与基金详情一致：取 monitor_events 最新监控信号（无信号时回退推荐状态）
+        sig = _q1(
+            "SELECT signal FROM monitor_events WHERE code=? ORDER BY date DESC, id DESC LIMIT 1",
+            (code,),
+        )
+        status = sig[0] if sig else (c["status"] or "HOLD")
         exit_date = c["exit_date"] or ""
         # 首次推荐净值（优先读 recommend_log.entry_nav，缺失时查 fund_nav 当日净值，无则 --）
         first_nav = repo.get_entry_nav(code, first_date)
@@ -427,6 +550,7 @@ async def index(request: Request):
     nav_pcts, nav_dates, hs_pcts, hs_dates = _nav_chart(latest["code"]) if latest else ([], [], [], [])
     fund_svg, hs_svg, baseline_y = _make_dual_svg(nav_pcts, hs_pcts)
     period_ret = _period_returns(latest["code"]) if latest else {}
+    period_ret2 = _period_returns(latest_list[1]["code"]) if len(latest_list) > 1 else {}
 
     # 基金特征画像
     fund_features = None
@@ -521,7 +645,25 @@ async def index(request: Request):
 
     max_inflow = max((s.get("flow", 0) or 0 for s in flow_inflows), default=0)
     max_outflow = max((abs(s.get("flow", 0) or 0) for s in flow_outflows), default=0)
-    return templates.TemplateResponse(request, "index.html", {
+
+    # 等权组合累计收益序列（用于 Alpha 双线图 + 夏普/回撤）
+    _, port_pcts, port_hs_pcts = _portfolio_series()
+    portfolio_svg = ""
+    portfolio_hs_svg = ""
+    portfolio_baseline_y = 50
+    sharpe_ratio = None
+    max_drawdown = None
+    if port_pcts:
+        portfolio_svg, portfolio_hs_svg, portfolio_baseline_y = _make_dual_svg(port_pcts, port_hs_pcts)
+        sharpe_ratio = _sharpe_ratio(port_pcts)
+        max_drawdown = _max_drawdown(port_pcts)
+    # 最新一期质量度量（IC 与超额胜率，用于 Alpha 图浮动框）
+    latest_ic = None
+    latest_excess_win_rate = None
+    if quality_metrics:
+        latest_ic = quality_metrics[0].get("ic")
+        latest_excess_win_rate = quality_metrics[0].get("excess_win_rate")
+    return {
         "latest": latest,
         "latest_list": latest_list,
         "latest_rec_id": latest_rec_id or 0,
@@ -541,6 +683,7 @@ async def index(request: Request):
         "hs_svg": hs_svg,
         "baseline_y": baseline_y,
         "period_ret": period_ret,
+        "period_ret2": period_ret2,
         "fund_features": fund_features,
         "top_holdings": top_holdings,
         "top_holdings2": top_holdings2,
@@ -561,7 +704,24 @@ async def index(request: Request):
         "quality_metrics": quality_metrics,
         "quality_curve_svg": quality_curve_svg,
         "quality_curve_baseline": quality_curve_baseline,
-    })
+        "portfolio_svg": portfolio_svg,
+        "portfolio_hs_svg": portfolio_hs_svg,
+        "portfolio_baseline_y": portfolio_baseline_y,
+        "sharpe_ratio": sharpe_ratio,
+        "max_drawdown": max_drawdown,
+        "latest_ic": latest_ic,
+        "latest_excess_win_rate": latest_excess_win_rate,
+    }
+
+
+@app.get("/", response_class=HTMLResponse)
+async def index(request: Request):
+    return templates.TemplateResponse(request, "index.html", _index_context())
+
+
+@app.get("/v1", response_class=HTMLResponse)
+async def index_v1(request: Request):
+    return templates.TemplateResponse(request, "index_v1.html", _index_context())
 
 
 @app.get("/api/logs")
@@ -721,7 +881,7 @@ async def get_fund_detail(code: str):
 
     signal = _q1(
         "SELECT signal, logic_verdict, sector_risk, holding_risk, detail, date "
-        "FROM monitor_events WHERE code=? ORDER BY date DESC LIMIT 1",
+        "FROM monitor_events WHERE code=? ORDER BY date DESC, id DESC LIMIT 1",
         (code,),
     )
     current_signal = None
