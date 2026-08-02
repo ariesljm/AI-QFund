@@ -1,5 +1,7 @@
 """数据写入层：基金列表、净值、指数、持仓。"""
 
+import time
+
 from app.database import db_conn
 from app.utils.log import get_logger
 
@@ -112,3 +114,125 @@ def backfill_guard(failed, total, label, threshold=0.5):
         return False
     logger.info("开始补查 %d 只%s", len(failed), label)
     return True
+
+
+# ── 数据拉取失败记录 ──
+
+_FETCH_FAILURE_TABLE = """
+CREATE TABLE IF NOT EXISTS data_fetch_failures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fetch_type TEXT NOT NULL,
+    target TEXT NOT NULL,
+    stage TEXT DEFAULT '',
+    error TEXT,
+    attempts INTEGER DEFAULT 1,
+    status TEXT DEFAULT 'failed',
+    first_failed_at TEXT DEFAULT (datetime('now')),
+    last_failed_at TEXT,
+    recovered_at TEXT,
+    UNIQUE (fetch_type, target)
+)"""
+
+
+def record_failure(fetch_type: str, target: str, error: str = "",
+                   stage: str = "", attempts: int = 1) -> None:
+    """记录一次数据拉取失败（幂等：同一 (fetch_type, target) 累积更新，不重复插入）。"""
+    with db_conn() as conn:
+        conn.execute(_FETCH_FAILURE_TABLE)
+        row = conn.execute(
+            "SELECT status FROM data_fetch_failures WHERE fetch_type = ? AND target = ?",
+            (fetch_type, target),
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                "INSERT INTO data_fetch_failures "
+                "(fetch_type, target, stage, error, attempts, status, last_failed_at) "
+                "VALUES (?, ?, ?, ?, ?, 'failed', datetime('now'))",
+                (fetch_type, target, stage, error, attempts),
+            )
+        elif row[0] == "failed":
+            conn.execute(
+                "UPDATE data_fetch_failures SET error = ?, stage = ?, attempts = ?, "
+                "last_failed_at = datetime('now') WHERE fetch_type = ? AND target = ?",
+                (error, stage, attempts, fetch_type, target),
+            )
+        else:  # 曾恢复后再次失败：重置为 failed
+            conn.execute(
+                "UPDATE data_fetch_failures SET status = 'failed', error = ?, stage = ?, "
+                "attempts = ?, first_failed_at = datetime('now'), "
+                "last_failed_at = datetime('now'), recovered_at = NULL "
+                "WHERE fetch_type = ? AND target = ?",
+                (error, stage, attempts, fetch_type, target),
+            )
+
+
+def mark_recovered(fetch_type: str, target: str, note: str = "") -> None:
+    """标记失败已恢复（补查成功或确认无需重试的基金/股票）。"""
+    with db_conn() as conn:
+        conn.execute(_FETCH_FAILURE_TABLE)
+        conn.execute(
+            "UPDATE data_fetch_failures SET status = 'recovered', "
+            "recovered_at = datetime('now'), error = COALESCE(?, error) "
+            "WHERE fetch_type = ? AND target = ?",
+            (note or None, fetch_type, target),
+        )
+
+
+def list_failures(fetch_type: str | None = None, status: str | None = None,
+                  limit: int = 100) -> list[dict]:
+    """查询失败记录（调试/观察用），按最近失败时间倒序。"""
+    sql = (
+        "SELECT fetch_type, target, stage, error, attempts, status, "
+        "first_failed_at, last_failed_at, recovered_at FROM data_fetch_failures WHERE 1 = 1"
+    )
+    params: list = []
+    if fetch_type:
+        sql += " AND fetch_type = ?"
+        params.append(fetch_type)
+    if status:
+        sql += " AND status = ?"
+        params.append(status)
+    sql += " ORDER BY last_failed_at DESC LIMIT ?"
+    params.append(limit)
+    cols = ("fetch_type", "target", "stage", "error", "attempts", "status",
+            "first_failed_at", "last_failed_at", "recovered_at")
+    with db_conn() as conn:
+        conn.execute(_FETCH_FAILURE_TABLE)
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(zip(cols, r)) for r in rows]
+
+
+def run_backfill_rounds(fetch_type: str, failed: list, backfill_one, total: int,
+                        label: str = "", rounds: int = 2, delay: float = 30.0) -> list:
+    """对失败项执行多轮补查，并持久化失败/恢复记录。
+
+    - ``backfill_one(item)``：回调执行一次补查；正常返回视为处理完成（无论是否拿到数据，
+      由 mark_recovered 收尾），抛异常视为仍需重试（记录失败并保留）。
+    - 每轮前用 backfill_guard 做失败率保护（超阈值中止，避免加重数据源压力）。
+    - 同步函数；在异步全量下载中于补查阶段调用，该阶段无并发任务，阻塞可接受。
+    - 返回最终仍失败的目标列表（保持 failed 状态记录）。
+    """
+    remaining = list(failed)
+    for rnd in range(1, rounds + 1):
+        if not remaining:
+            break
+        if not backfill_guard(remaining, total, f"{label}第{rnd}轮"):
+            break
+        logger.info("%s补查第 %d 轮: %d 只", label, rnd, len(remaining))
+        still_failed = []
+        for item in remaining:
+            try:
+                backfill_one(item)
+                mark_recovered(fetch_type, item)
+            except Exception as e:
+                record_failure(fetch_type, item, str(e)[:200], stage=f"backfill{rnd}",
+                               attempts=rnd + 1)
+                still_failed.append(item)
+        remaining = still_failed
+        if rnd < rounds and remaining:
+            logger.info("%s仍有 %d 只失败，%.0f 秒后进入下一轮", label, len(remaining), delay)
+            time.sleep(delay)
+    if remaining:
+        logger.warning("%s补查 %d 轮后仍有 %d 只失败（已记入 data_fetch_failures）",
+                       label, rounds, len(remaining))
+    return remaining

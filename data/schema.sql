@@ -190,3 +190,18 @@ CREATE TABLE IF NOT EXISTS empty_recommendations (
     reasoning TEXT,
     created_at TEXT DEFAULT (datetime('now'))
 );
+
+-- 数据拉取失败记录（全量/增量下载失败追踪与重试恢复）
+CREATE TABLE IF NOT EXISTS data_fetch_failures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fetch_type TEXT NOT NULL,
+    target TEXT NOT NULL,
+    stage TEXT DEFAULT '',
+    error TEXT,
+    attempts INTEGER DEFAULT 1,
+    status TEXT DEFAULT 'failed',
+    first_failed_at TEXT DEFAULT (datetime('now')),
+    last_failed_at TEXT,
+    recovered_at TEXT,
+    UNIQUE (fetch_type, target)
+);

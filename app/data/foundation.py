@@ -17,7 +17,7 @@ import requests
 from app.database import db_conn, meta_get, meta_set, DB_PATH
 from app.data.fetchers import fetch as _push2_fetch, fetch_async
 from app.data.nav import async_update_nav_incremental, async_download_all_nav
-from app.data.store import save_fund_list, save_index_daily, backfill_guard
+from app.data.store import save_fund_list, save_index_daily, record_failure, run_backfill_rounds
 from app.features import calculator as _features
 from app.utils.log import get_logger
 
@@ -297,30 +297,34 @@ async def async_download_all_holdings(
                     total_done, len(all_codes), batch_rows, speed, eta,
                 )
 
-        if backfill_guard(all_failed, len(all_codes), "持仓拉取"):
+        if all_failed:
             for code in all_failed:
-                try:
-                    resp = requests.get(
-                        holdings_url,
-                        params={"type": "jjcc", "code": code, "topline": "10", "year": "", "month": ""},
-                        headers=_HOLDINGS_HEADERS, timeout=10,
+                record_failure("holdings", code, "持仓拉取失败", stage="primary")
+            logger.info("持仓拉取失败 %d 只，开始补查", len(all_failed))
+
+            def _backfill_one(code: str) -> None:
+                nonlocal total_rows, funds_with_holdings
+                resp = requests.get(
+                    holdings_url,
+                    params={"type": "jjcc", "code": code, "topline": "10", "year": "", "month": ""},
+                    headers=_HOLDINGS_HEADERS, timeout=10,
+                )
+                resp.raise_for_status()
+                report_date, holdings = _parse_holdings_html(resp.text)
+                if holdings and report_date and report_date != local_latest.get(code):
+                    conn.executemany(
+                        "INSERT OR REPLACE INTO fund_holdings "
+                        "(code, report_date, stock_code, stock_name, weight) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        [(code, report_date, h["stock_code"], h["stock_name"], h["weight"])
+                         for h in holdings],
                     )
-                    if resp.status_code == 200:
-                        text = resp.text
-                        report_date, holdings = _parse_holdings_html(text)
-                        if holdings and report_date and report_date != local_latest.get(code):
-                            conn.executemany(
-                                "INSERT OR REPLACE INTO fund_holdings "
-                                "(code, report_date, stock_code, stock_name, weight) "
-                                "VALUES (?, ?, ?, ?, ?)",
-                                [(code, report_date, h["stock_code"], h["stock_name"], h["weight"])
-                                 for h in holdings],
-                            )
-                            total_rows += len(holdings)
-                            funds_with_holdings += 1
-                            local_latest[code] = report_date
-                except Exception as e:
-                    logger.debug("补查基金 %s 失败: %s", code, str(e)[:120], exc_info=True)
+                    total_rows += len(holdings)
+                    funds_with_holdings += 1
+                    local_latest[code] = report_date
+
+            run_backfill_rounds("holdings", list(all_failed), _backfill_one,
+                                len(all_codes), label="持仓", rounds=2, delay=30)
             conn.commit()
 
     elapsed = time.monotonic() - start_time
@@ -502,28 +506,31 @@ def _fetch_industry_map() -> list[tuple[str, str, str]]:
     logger.info("首次行业查询完成: 成功 %d, 失败 %d", success, fail)
 
     failed = [s for s in all_stocks if s not in results]
-    if backfill_guard(failed, len(all_stocks), "行业映射"):
-        _headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://emweb.securities.eastmoney.com/"}
+    if failed:
         for sc in failed:
+            record_failure("industry_map", sc, "行业映射拉取失败", stage="primary")
+        _headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://emweb.securities.eastmoney.com/"}
+
+        def _backfill_one(sc: str) -> None:
             for url, params in _build_candidates(sc):
-                try:
-                    resp = requests.get(url, params=params, headers=_headers, timeout=10)
-                    if resp.status_code != 200:
-                        continue
-                    data = resp.json()
-                    items = data.get("jbzl", [])
-                    if items:
-                        item = items[0]
-                        em2016 = item.get("EM2016", "")
-                        if em2016:
-                            parts = em2016.split("-")
-                            industry = parts[1] if len(parts) > 1 else parts[0]
-                            results[sc] = (em2016, industry)
-                            break
-                except Exception as e:
-                    logger.debug("补查股票 %s 失败: %s", sc, str(e)[:120], exc_info=True)
-        recovered = len([s for s in failed if s in results])
-        logger.info("补查完成: 恢复 %d 只", recovered)
+                resp = requests.get(url, params=params, headers=_headers, timeout=10)
+                if resp.status_code != 200:
+                    continue
+                data = resp.json()
+                items = data.get("jbzl", [])
+                if items:
+                    item = items[0]
+                    em2016 = item.get("EM2016", "")
+                    if em2016:
+                        parts = em2016.split("-")
+                        industry = parts[1] if len(parts) > 1 else parts[0]
+                        results[sc] = (em2016, industry)
+                        return
+            # 候选接口均不可用或返回空：视为仍失败，交由 run_backfill_rounds 记录
+            raise RuntimeError("行业映射补查失败（候选接口均不可用或返回空）")
+
+        run_backfill_rounds("industry_map", failed, _backfill_one,
+                            len(all_stocks), label="行业映射", rounds=2, delay=30)
 
     _hk_unmapped = [s for s in all_stocks if len(s) == 5 and s not in results]
     if _hk_unmapped:

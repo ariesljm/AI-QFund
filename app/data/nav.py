@@ -10,7 +10,7 @@ from pathlib import Path
 
 from app.database import db_conn
 from app.data.fetchers import fetch, fetch_async
-from app.data.store import save_nav_batch, backfill_guard, NAV_RETENTION_DAYS
+from app.data.store import save_nav_batch, record_failure, run_backfill_rounds, NAV_RETENTION_DAYS
 from app.utils.log import get_logger
 
 try:
@@ -252,15 +252,18 @@ async def async_update_nav_incremental(concurrency: int = 5) -> int:
                 logger.info("增量净值批次写入 %d 条", batch_new)
 
         if all_failed:
-            if backfill_guard(all_failed, len(tasks_meta), "增量净值"):
-                for code in all_failed:
-                    try:
-                        navs = fetch_fund_nav(code)
-                        if navs:
-                            with db_conn() as conn:
-                                save_nav_batch(conn, code, navs)
-                    except Exception as e2:
-                        logger.debug("补查 %s 失败: %s", code, str(e2)[:80])
+            for code in all_failed:
+                record_failure("nav_incr", code, "增量净值拉取失败", stage="primary")
+            logger.info("增量净值失败 %d 只，开始补查", len(all_failed))
+
+            def _backfill_one(code: str) -> None:
+                navs = fetch_fund_nav(code)
+                if navs:
+                    with db_conn() as conn:
+                        save_nav_batch(conn, code, navs)
+
+            run_backfill_rounds("nav_incr", all_failed, _backfill_one,
+                                len(tasks_meta), label="增量净值", rounds=2, delay=30)
 
         ok_cnt = len(tasks_meta) - len(all_failed)
         logger.info("净值增量更新完成: 新增 %d 条, 成功 %d/%d 只, 失败 %d 只",
@@ -346,15 +349,18 @@ async def async_download_all_nav(concurrency: int = 30) -> int:
             )
 
         if all_failed:
-            if backfill_guard(all_failed, len(all_codes), "全量净值"):
-                for code in all_failed:
-                    try:
-                        navs = fetch_fund_nav(code)
-                        if navs:
-                            with db_conn() as conn:
-                                save_nav_batch(conn, code, navs)
-                    except Exception as e2:
-                        logger.debug("全量补查 %s 失败: %s", code, str(e2)[:80])
+            for code in all_failed:
+                record_failure("nav_full", code, "全量净值拉取失败", stage="primary")
+            logger.info("全量净值失败 %d 只，开始补查", len(all_failed))
+
+            def _backfill_one(code: str) -> None:
+                navs = fetch_fund_nav(code)
+                if navs:
+                    with db_conn() as conn:
+                        save_nav_batch(conn, code, navs)
+
+            run_backfill_rounds("nav_full", all_failed, _backfill_one,
+                                len(all_codes), label="全量净值", rounds=2, delay=30)
 
         elapsed = time.monotonic() - start_time
         logger.info(

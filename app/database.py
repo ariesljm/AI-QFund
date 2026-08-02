@@ -187,4 +187,20 @@ def _migrate(conn: sqlite3.Connection) -> None:
     )
     conn.commit()
 
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS data_fetch_failures ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "fetch_type TEXT NOT NULL, "
+        "target TEXT NOT NULL, "
+        "stage TEXT DEFAULT '', "
+        "error TEXT, "
+        "attempts INTEGER DEFAULT 1, "
+        "status TEXT DEFAULT 'failed', "
+        "first_failed_at TEXT DEFAULT (datetime('now')), "
+        "last_failed_at TEXT, "
+        "recovered_at TEXT, "
+        "UNIQUE (fetch_type, target))"
+    )
+    conn.commit()
+
     _migrate._done = True

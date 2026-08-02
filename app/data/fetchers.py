@@ -42,6 +42,17 @@ def _is_retryable(e: Exception) -> bool:
     return False
 
 
+def _short_url(url: str, limit: int = 90) -> str:
+    """压缩 URL 便于日志定位：取 host + 路径末尾（如 pingzhongdata/{code}.js），超长截断。"""
+    u = urlparse(url)
+    path = u.path or ""
+    key = path.rsplit("/", 1)[-1]
+    out = u.hostname or ""
+    if key:
+        out = f"{out}/{key}"
+    return out if len(out) <= limit else out[: limit - 1] + "…"
+
+
 _TLS_LIBS_LOADED = False
 _TLS_AVAILABLE = False
 
@@ -121,7 +132,8 @@ def fetch(
                 raise
             rate_limited = isinstance(e, requests.HTTPError) and e.response.status_code in (429, 514)
             delay = _retry_delay(attempt, rate_limited)
-            logger.warning("请求失败(第%d次重试), %.1f秒后重试: %s", attempt + 1, delay, str(e)[:120])
+            logger.warning("请求失败(%s, 第%d次重试), %.1f秒后重试: %s",
+                           _short_url(url), attempt + 1, delay, str(e)[:120])
             time.sleep(delay)
 
     raise last_error
@@ -220,7 +232,8 @@ async def fetch_async(
             if attempt == _MAX_RETRIES:
                 raise
             delay = _retry_delay(attempt)
-            logger.warning("异步请求失败(第%d次重试), %.1f秒后重试: %s", attempt + 1, delay, str(e)[:120], exc_info=True)
+            logger.warning("异步请求失败(%s, 第%d次重试), %.1f秒后重试: %s",
+                           _short_url(url), attempt + 1, delay, str(e)[:120], exc_info=True)
             await asyncio.sleep(delay)
         except aiohttp.ClientResponseError as e:
             if e.status in _RETRYABLE_HTTP_CODES:
@@ -229,7 +242,8 @@ async def fetch_async(
                     raise
                 rate_limited = e.status in (429, 514)
                 delay = _retry_delay(attempt, rate_limited)
-                logger.warning("异步请求 %d(第%d次重试), %.1f秒后重试", e.status, attempt + 1, delay)
+                logger.warning("异步请求 %d(%s, 第%d次重试), %.1f秒后重试",
+                               e.status, _short_url(url), attempt + 1, delay)
                 await asyncio.sleep(delay)
             else:
                 raise
@@ -238,6 +252,7 @@ async def fetch_async(
             if attempt == _MAX_RETRIES:
                 raise
             delay = _retry_delay(attempt)
-            logger.warning("异步请求异常(第%d次重试): %s", attempt + 1, str(e)[:120], exc_info=True)
+            logger.warning("异步请求异常(%s, 第%d次重试): %s",
+                           _short_url(url), attempt + 1, str(e)[:120], exc_info=True)
             await asyncio.sleep(delay)
     raise last_error or RuntimeError("unreachable")
