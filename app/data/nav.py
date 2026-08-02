@@ -10,7 +10,9 @@ from pathlib import Path
 
 from app.database import db_conn
 from app.data.fetchers import fetch, fetch_async
-from app.data.store import save_nav_batch, record_failure, run_backfill_rounds, NAV_RETENTION_DAYS
+from app.data.store import (save_nav_batch, record_failure, mark_recovered_batch,
+                            list_failures, cooldown_targets, run_backfill_rounds,
+                            NAV_RETENTION_DAYS)
 from app.utils.log import get_logger
 
 try:
@@ -184,6 +186,13 @@ def _plan_nav_tasks(
 
 
 async def async_update_nav_incremental(concurrency: int = 5) -> int:
+    pending = list_failures("nav_incr", status="failed")
+    if pending:
+        logger.info("净值增量：存在 %d 条待重试失败记录", len(pending))
+    cooldown = cooldown_targets("nav_incr")
+    if cooldown:
+        logger.info("净值增量：%d 只基金连续失败进入冷却期，本次跳过", len(cooldown))
+
     with db_conn() as conn:
         all_codes = [
             r[0] for r in conn.execute("SELECT code FROM fund_basic WHERE is_buyable = 1").fetchall()
@@ -192,6 +201,8 @@ async def async_update_nav_incremental(concurrency: int = 5) -> int:
             conn.execute("SELECT code, MAX(date) FROM fund_nav GROUP BY code").fetchall()
         )
         global_latest = conn.execute("SELECT MAX(date) FROM fund_nav").fetchone()[0]
+
+    all_codes = [c for c in all_codes if c not in cooldown]
 
     headers = {
         "User-Agent": (
@@ -234,22 +245,37 @@ async def async_update_nav_incremental(concurrency: int = 5) -> int:
         batch_size = 100
         total_new = 0
         all_failed: list[str] = []
+        success_codes: set[str] = set()
         for i in range(0, len(tasks_meta), batch_size):
             batch = tasks_meta[i: i + batch_size]
             coros = [_async_fetch_lsjz(code, start) for code, start in batch]
             results = await asyncio.gather(*coros)
 
             batch_new = 0
+            batch_failed = 0
             with db_conn() as conn:
                 for code, navs, failed in results:
                     if failed:
                         all_failed.append(code)
+                        batch_failed += 1
                     else:
                         n = save_nav_batch(conn, code, navs)
+                        success_codes.add(code)
                         batch_new += n
                         total_new += n
+            # 熔断：批次失败率异常高，疑似接口故障，提前中止避免白耗请求
+            if batch_failed / len(batch) > 0.5:
+                logger.error(
+                    "增量净值批次失败率 %.0f%%（%d/%d）超过 50%%，疑似接口故障，提前中止",
+                    batch_failed / len(batch) * 100, batch_failed, len(batch),
+                )
+                break
             if batch_new:
                 logger.info("增量净值批次写入 %d 条", batch_new)
+
+        # 本次成功的基金：清除失败记录，避免冷却逻辑误判为仍在失败
+        if success_codes:
+            mark_recovered_batch("nav_incr", sorted(success_codes))
 
         if all_failed:
             for code in all_failed:
@@ -285,11 +311,18 @@ async def async_update_nav_incremental(concurrency: int = 5) -> int:
 
 
 async def async_download_all_nav(concurrency: int = 30) -> int:
+    pending = list_failures("nav_full", status="failed")
+    if pending:
+        logger.info("全量净值：存在 %d 条待重试失败记录", len(pending))
+    cooldown = cooldown_targets("nav_full")
+    if cooldown:
+        logger.info("全量净值：%d 只基金连续失败进入冷却期，本次跳过", len(cooldown))
+
     with db_conn() as conn:
         all_codes = [
             r[0] for r in conn.execute("SELECT code FROM fund_basic WHERE is_buyable = 1").fetchall()
         ]
-
+    all_codes = [c for c in all_codes if c not in cooldown]
     if not all_codes:
         return 0
 
@@ -326,20 +359,31 @@ async def async_download_all_nav(concurrency: int = 30) -> int:
 
     async with aiohttp.ClientSession(connector=connector) as session:
         all_failed: list[str] = []
+        success_codes: set[str] = set()
         for i in range(0, len(all_codes), batch_size):
             batch = all_codes[i: i + batch_size]
             coros = [_fetch_one(code) for code in batch]
             results = await asyncio.gather(*coros)
 
             batch_new = 0
+            batch_failed = 0
             with db_conn() as conn:
                 for code, navs, failed in results:
                     if failed:
                         all_failed.append(code)
+                        batch_failed += 1
                         continue
                     n = save_nav_batch(conn, code, navs)
+                    success_codes.add(code)
                     batch_new += n
                     total_new += n
+            # 熔断：批次失败率异常高，疑似接口故障/被封，提前中止避免白耗请求
+            if batch_failed / len(batch) > 0.5:
+                logger.error(
+                    "全量净值批次失败率 %.0f%%（%d/%d）超过 50%%，疑似接口故障，提前中止",
+                    batch_failed / len(batch) * 100, batch_failed, len(batch),
+                )
+                break
             total_done += len(batch)
             elapsed = time.monotonic() - start_time
             speed = total_done / elapsed if elapsed > 0 else 0
@@ -347,6 +391,10 @@ async def async_download_all_nav(concurrency: int = 30) -> int:
                 "全量净值下载进度: %d/%d, speed=%.1f/s",
                 total_done, len(all_codes), speed,
             )
+
+        # 本次成功的基金：清除失败记录，避免冷却逻辑误判为仍在失败
+        if success_codes:
+            mark_recovered_batch("nav_full", sorted(success_codes))
 
         if all_failed:
             for code in all_failed:

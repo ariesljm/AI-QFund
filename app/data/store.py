@@ -1,6 +1,7 @@
 """数据写入层：基金列表、净值、指数、持仓。"""
 
 import time
+from datetime import datetime, timedelta, timezone
 
 from app.database import db_conn
 from app.utils.log import get_logger
@@ -135,34 +136,39 @@ CREATE TABLE IF NOT EXISTS data_fetch_failures (
 
 
 def record_failure(fetch_type: str, target: str, error: str = "",
-                   stage: str = "", attempts: int = 1) -> None:
-    """记录一次数据拉取失败（幂等：同一 (fetch_type, target) 累积更新，不重复插入）。"""
+                   stage: str = "", count_attempt: bool = True) -> None:
+    """记录一次数据拉取失败（幂等：同一 (fetch_type, target) 累积更新，不重复插入）。
+
+    ``attempts`` 表示"连续失败的运行周期数"（主循环失败时 +1，补查阶段失败不 +1，
+    避免把同一次运行内的多轮补查算作多次失败）；恢复后再次失败则重置为 1。
+    """
     with db_conn() as conn:
         conn.execute(_FETCH_FAILURE_TABLE)
         row = conn.execute(
-            "SELECT status FROM data_fetch_failures WHERE fetch_type = ? AND target = ?",
+            "SELECT status, attempts FROM data_fetch_failures WHERE fetch_type = ? AND target = ?",
             (fetch_type, target),
         ).fetchone()
         if row is None:
             conn.execute(
                 "INSERT INTO data_fetch_failures "
                 "(fetch_type, target, stage, error, attempts, status, last_failed_at) "
-                "VALUES (?, ?, ?, ?, ?, 'failed', datetime('now'))",
-                (fetch_type, target, stage, error, attempts),
+                "VALUES (?, ?, ?, ?, 1, 'failed', datetime('now'))",
+                (fetch_type, target, stage, error),
             )
         elif row[0] == "failed":
+            attempts = row[1] + 1 if count_attempt else row[1]
             conn.execute(
                 "UPDATE data_fetch_failures SET error = ?, stage = ?, attempts = ?, "
                 "last_failed_at = datetime('now') WHERE fetch_type = ? AND target = ?",
                 (error, stage, attempts, fetch_type, target),
             )
-        else:  # 曾恢复后再次失败：重置为 failed
+        else:  # 曾恢复后再次失败：重置为 failed，attempts 从 1 重新计数
             conn.execute(
                 "UPDATE data_fetch_failures SET status = 'failed', error = ?, stage = ?, "
-                "attempts = ?, first_failed_at = datetime('now'), "
+                "attempts = 1, first_failed_at = datetime('now'), "
                 "last_failed_at = datetime('now'), recovered_at = NULL "
                 "WHERE fetch_type = ? AND target = ?",
-                (error, stage, attempts, fetch_type, target),
+                (error, stage, fetch_type, target),
             )
 
 
@@ -176,6 +182,54 @@ def mark_recovered(fetch_type: str, target: str, note: str = "") -> None:
             "WHERE fetch_type = ? AND target = ?",
             (note or None, fetch_type, target),
         )
+
+
+def mark_recovered_batch(fetch_type: str, targets: list[str]) -> None:
+    """批量标记失败已恢复（主循环成功拉取后调用，避免冷却逻辑误判本次已成功的基金）。
+
+    对失败表中仍为 failed 的目标更新为 recovered；无记录或已 recovered 的目标为无害空操作。
+    """
+    if not targets:
+        return
+    with db_conn() as conn:
+        conn.execute(_FETCH_FAILURE_TABLE)
+        conn.executemany(
+            "UPDATE data_fetch_failures SET status = 'recovered', "
+            "recovered_at = datetime('now') "
+            "WHERE fetch_type = ? AND target = ? AND status = 'failed'",
+            [(fetch_type, t) for t in targets],
+        )
+
+
+def cooldown_targets(fetch_type: str, min_attempts: int = 3,
+                     cooldown_days: int = 7) -> set[str]:
+    """返回需冷却跳过的目标集合：连续失败次数达到阈值，且最近失败仍在冷却期内。
+
+    冷却期判断以 SQLite 存储的 UTC 时间为准（datetime('now')），与 Python 侧 UTC 对齐。
+    """
+    with db_conn() as conn:
+        conn.execute(_FETCH_FAILURE_TABLE)
+        rows = conn.execute(
+            "SELECT target, attempts, last_failed_at FROM data_fetch_failures "
+            "WHERE fetch_type = ? AND status = 'failed'",
+            (fetch_type,),
+        ).fetchall()
+    if not rows:
+        return set()
+    now_utc = datetime.now(timezone.utc)
+    cutoff = now_utc - timedelta(days=cooldown_days)
+    out: set[str] = set()
+    for target, attempts, last_failed_at in rows:
+        if attempts < min_attempts or not last_failed_at:
+            continue
+        try:
+            last = datetime.strptime(last_failed_at[:19], "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        if last >= cutoff:
+            out.add(target)
+    return out
 
 
 def list_failures(fetch_type: str | None = None, status: str | None = None,
@@ -226,7 +280,7 @@ def run_backfill_rounds(fetch_type: str, failed: list, backfill_one, total: int,
                 mark_recovered(fetch_type, item)
             except Exception as e:
                 record_failure(fetch_type, item, str(e)[:200], stage=f"backfill{rnd}",
-                               attempts=rnd + 1)
+                               count_attempt=False)
                 still_failed.append(item)
         remaining = still_failed
         if rnd < rounds and remaining:

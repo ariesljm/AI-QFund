@@ -17,7 +17,9 @@ import requests
 from app.database import db_conn, meta_get, meta_set, DB_PATH
 from app.data.fetchers import fetch as _push2_fetch, fetch_async
 from app.data.nav import async_update_nav_incremental, async_download_all_nav
-from app.data.store import save_fund_list, save_index_daily, record_failure, run_backfill_rounds
+from app.data.store import (save_fund_list, save_index_daily, record_failure,
+                            mark_recovered_batch, list_failures, cooldown_targets,
+                            run_backfill_rounds)
 from app.features import calculator as _features
 from app.utils.log import get_logger
 
@@ -253,15 +255,25 @@ async def async_download_all_holdings(
             latest_quarter, len(local_latest) - len(all_codes), len(all_codes),
         )
 
+    pending = list_failures("holdings", status="failed")
+    if pending:
+        logger.info("持仓：存在 %d 条待重试失败记录", len(pending))
+    cooldown = cooldown_targets("holdings")
+    if cooldown:
+        logger.info("持仓：%d 只基金连续失败进入冷却期，本次跳过", len(cooldown))
+        all_codes = [c for c in all_codes if c not in cooldown]
+
+    with db_conn() as conn:
         semaphore = asyncio.Semaphore(concurrency)
         connector = aiohttp.TCPConnector(limit=concurrency, ttl_dns_cache=300, enable_cleanup_closed=True)
         total_rows = 0
         total_done = 0
         funds_with_holdings = 0
-        all_failed: set[str] = set()
         start_time = time.monotonic()
 
         async with aiohttp.ClientSession(headers=_HOLDINGS_HEADERS, connector=connector, trust_env=False) as session:
+            all_failed: set[str] = set()
+            success_codes: set[str] = set()
             for i in range(0, len(all_codes), batch_size):
                 batch = all_codes[i: i + batch_size]
                 coros = [
@@ -271,9 +283,13 @@ async def async_download_all_holdings(
                 results = await asyncio.gather(*coros)
 
                 batch_rows = 0
+                batch_failed = 0
                 for code, report_date, holdings, failed in results:
                     if failed:
                         all_failed.add(code)
+                        batch_failed += 1
+                    else:
+                        success_codes.add(code)
                     if holdings and report_date and report_date != local_latest.get(code):
                         conn.executemany(
                             "INSERT OR REPLACE INTO fund_holdings "
@@ -289,6 +305,14 @@ async def async_download_all_holdings(
                 conn.commit()
                 total_rows += batch_rows
 
+                # 熔断：批次失败率异常高，疑似接口故障，提前中止避免白耗请求
+                if batch_failed / len(batch) > 0.5:
+                    logger.error(
+                        "持仓批次失败率 %.0f%%（%d/%d）超过 50%%，疑似接口故障，提前中止",
+                        batch_failed / len(batch) * 100, batch_failed, len(batch),
+                    )
+                    break
+
                 elapsed = time.monotonic() - start_time
                 speed = total_done / elapsed if elapsed > 0 else 0
                 eta = (len(all_codes) - total_done) / speed if speed > 0 else 0
@@ -296,6 +320,10 @@ async def async_download_all_holdings(
                     "进度 %d/%d (+%d 条), 速度 %.1f/s, ETA %.0fs",
                     total_done, len(all_codes), batch_rows, speed, eta,
                 )
+
+        # 本次成功的基金：清除失败记录，避免冷却逻辑误判为仍在失败
+        if success_codes:
+            mark_recovered_batch("holdings", sorted(success_codes))
 
         if all_failed:
             for code in all_failed:
@@ -453,12 +481,20 @@ def _fetch_hk_industry_push2(hk_stocks: list[str], results: dict[str, tuple[str,
 
 
 def _fetch_industry_map() -> list[tuple[str, str, str]]:
+    pending = list_failures("industry_map", status="failed")
+    if pending:
+        logger.info("行业映射：存在 %d 条待重试失败记录", len(pending))
+    cooldown = cooldown_targets("industry_map")
+    if cooldown:
+        logger.info("行业映射：%d 只股票连续失败进入冷却期，本次跳过", len(cooldown))
+
     with db_conn() as conn:
         all_stocks = [
             r[0] for r in conn.execute(
                 "SELECT DISTINCT stock_code FROM fund_holdings"
             ).fetchall()
         ]
+    all_stocks = [s for s in all_stocks if s not in cooldown]
     if not all_stocks:
         return []
     logger.info("需要查询 %d 只股票的行业分类...", len(all_stocks))
@@ -504,6 +540,10 @@ def _fetch_industry_map() -> list[tuple[str, str, str]]:
 
     asyncio.run(_run())
     logger.info("首次行业查询完成: 成功 %d, 失败 %d", success, fail)
+
+    # 本次成功的股票：清除失败记录，避免冷却逻辑误判为仍在失败
+    if results:
+        mark_recovered_batch("industry_map", list(results.keys()))
 
     failed = [s for s in all_stocks if s not in results]
     if failed:
