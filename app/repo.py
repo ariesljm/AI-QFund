@@ -217,6 +217,27 @@ def get_nav_history(code: str, limit: int = 60) -> list[tuple[str, float]]:
     return [(r[0], r[1]) for r in rows]
 
 
+def get_fund_nav_rows(code: str) -> list[tuple[str, float]]:
+    """单只基金全部净值序列（训练样本面板构建用）。"""
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT date, cum_nav FROM fund_nav WHERE code = ? ORDER BY date ASC",
+            (code,),
+        ).fetchall()
+    return [(r[0], r[1]) for r in rows]
+
+
+def get_train_fund_codes(min_bars: int, limit: int) -> list[str]:
+    """随机采样满足最小净值条数的基金代码（训练集构建）。"""
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT code FROM fund_nav GROUP BY code "
+            "HAVING COUNT(*) >= ? ORDER BY RANDOM() LIMIT ?",
+            (min_bars, limit),
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
 def get_nav_at_date(code: str, date: str) -> float | None:
     """指定日期的累计净值（追踪列表首次净值回退用）。"""
     with db() as conn:
@@ -401,15 +422,58 @@ def update_highest_nav(code: str, highest: float, statuses: tuple[str, ...]) -> 
 # ============================================================
 
 def get_index_series(code: str = "sh000300",
-                     columns: tuple[str, ...] = ("date", "close", "volume", "ma60")) -> list[tuple]:
-    """宽基指数日线序列（按日期升序），供特征/训练/回测共用。"""
+                     columns: tuple[str, ...] = ("date", "close", "volume", "ma60"),
+                     since: str | None = None) -> list[tuple]:
+    """宽基指数日线序列（按日期升序），供特征/训练/回测/Web 共用。"""
     cols = ", ".join(columns)
+    sql = f"SELECT {cols} FROM index_daily WHERE code = ?"
+    params: tuple = (code,)
+    if since:
+        sql += " AND date >= ?"
+        params = (code, since)
+    with db() as conn:
+        rows = conn.execute(sql + " ORDER BY date ASC", params).fetchall()
+    return rows
+
+
+def get_nav_rows_for_codes(codes: list[str]) -> list[tuple]:
+    """多只基金净值行 (code, date, cum_nav)，按日期升序（组合估值用）。"""
+    if not codes:
+        return []
+    placeholders = ",".join("?" * len(codes))
     with db() as conn:
         rows = conn.execute(
-            f"SELECT {cols} FROM index_daily WHERE code = ? ORDER BY date ASC",
-            (code,),
+            f"SELECT code, date, cum_nav FROM fund_nav "
+            f"WHERE code IN ({placeholders}) ORDER BY date ASC",
+            tuple(codes),
         ).fetchall()
     return rows
+
+
+def get_sector_heatmap(limit: int = 6) -> list[tuple]:
+    """行业热力图：平均 RBSA 权重与平均动量的 Top 行业。"""
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT rbsa_industry_1, AVG(rbsa_weight_1), AVG(momentum_20d) "
+            "FROM fund_features "
+            "WHERE rbsa_industry_1 IS NOT NULL AND rbsa_industry_1 != '' "
+            "GROUP BY rbsa_industry_1 ORDER BY AVG(rbsa_weight_1) DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return rows
+
+
+def count_recommendation_domain() -> dict[str, int]:
+    """推荐决策域各表行数（清除确认 dry-run 用）。"""
+    with db() as conn:
+        counts = {
+            "recommend_log": conn.execute("SELECT COUNT(*) FROM recommend_log").fetchone()[0],
+            "sector_selections": conn.execute("SELECT COUNT(*) FROM sector_selections").fetchone()[0],
+            "monitor_events": conn.execute("SELECT COUNT(*) FROM monitor_events").fetchone()[0],
+            "evolution_insights": conn.execute("SELECT COUNT(*) FROM evolution_insights").fetchone()[0],
+            "quality_metrics": conn.execute("SELECT COUNT(*) FROM quality_metrics").fetchone()[0],
+        }
+    return counts
 
 
 def get_market_regime() -> str:
@@ -483,6 +547,27 @@ def insert_monitor_event(code: str, date: str, signal: str, trailing: bool, drif
         )
 
 
+def get_latest_signal(code: str) -> str | None:
+    """持仓基金最新信号（监控事件读取 seam，Web 面板共用）。"""
+    with db() as conn:
+        row = conn.execute(
+            "SELECT signal FROM monitor_events WHERE code = ? ORDER BY date DESC, id DESC LIMIT 1",
+            (code,),
+        ).fetchone()
+    return row[0] if row else None
+
+
+def get_latest_monitor_event(code: str) -> tuple | None:
+    """持仓基金最新监控事件完整行 (signal, logic_verdict, sector_risk, holding_risk, detail, date)。"""
+    with db() as conn:
+        row = conn.execute(
+            "SELECT signal, logic_verdict, sector_risk, holding_risk, detail, date "
+            "FROM monitor_events WHERE code=? ORDER BY date DESC, id DESC LIMIT 1",
+            (code,),
+        ).fetchone()
+    return row if row else None
+
+
 def exit_position(code: str, sell_reason: str, return_rate: float | None,
                   statuses: tuple[str, ...], today: str) -> None:
     placeholders = ",".join("?" * len(statuses))
@@ -504,6 +589,41 @@ def get_active_insights(limit: int = 8) -> list[str]:
             (limit,),
         ).fetchall()
     return [r[0] for r in rows]
+
+
+def get_all_insights() -> list[str]:
+    """全部洞察文本（去重冲突判断用）。"""
+    with db() as conn:
+        rows = conn.execute("SELECT insight FROM evolution_insights").fetchall()
+    return [r[0] for r in rows]
+
+
+def insert_insight(insight: str, insight_type: str, created_date: str, active: int = 1) -> None:
+    """写入一条进化洞察。"""
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO evolution_insights (insight, insight_type, created_date, active) "
+            "VALUES (?, ?, ?, ?)",
+            (insight, insight_type, created_date, active),
+        )
+
+
+def list_active_insights() -> list[tuple]:
+    """活跃洞察（置信度衰减用），返回 (id, confidence, apply_count)。"""
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT id, confidence, apply_count FROM evolution_insights WHERE active = 1"
+        ).fetchall()
+    return list(rows)
+
+
+def update_insight_confidence(insight_id: int, confidence: float, active: int) -> None:
+    """更新洞察置信度与活跃状态。"""
+    with db() as conn:
+        conn.execute(
+            "UPDATE evolution_insights SET confidence = ?, active = ? WHERE id = ?",
+            (confidence, active, insight_id),
+        )
 
 
 def get_ranking_cfg() -> dict:
@@ -580,6 +700,17 @@ def get_fund_name(code: str) -> str | None:
     return row[0] if row else None
 
 
+def get_buyable_feature_stats() -> list[tuple]:
+    """可投基金核心特征快照（进化引擎排分自纠偏用）。"""
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT ff.code, ff.momentum_20d, ff.hurst_60d, ff.calmar "
+            "FROM fund_features ff JOIN fund_basic fb ON fb.code=ff.code "
+            "WHERE fb.is_buyable=1"
+        ).fetchall()
+    return list(rows)
+
+
 def get_latest_feature_date() -> str | None:
     """fund_features 最新特征日期（赛道中位动量对齐用）。"""
     with db() as conn:
@@ -626,6 +757,83 @@ def get_empty_recommendation(date_str: str | None = None) -> dict | None:
     if not row:
         return None
     return {"date": row[0], "reasoning": row[1] or ""}
+
+
+def insert_recommendation(date_str: str, code: str, name: str, rank: int, score: float,
+                          combo: float, regime: str, buy_reason: str, status: str = "HOLD",
+                          feature_snapshot: str | None = None, entry_nav: float | None = None) -> int:
+    """写入推荐记录，返回新行 id。status 覆盖 HOLD（正常）/REJECT（风控拦截）。"""
+    with db() as conn:
+        cur = conn.execute(
+            "INSERT INTO recommend_log "
+            "(recommend_date, code, name, rank, score, combo, regime, buy_reason, status, "
+            "feature_snapshot, entry_nav) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (date_str, code, name, rank, score, combo, regime, buy_reason, status,
+             feature_snapshot, entry_nav),
+        )
+        return cur.lastrowid
+
+
+def insert_sector_selection(date_str: str, log_id: int, recommended_sectors: list,
+                            risk_sectors: list, sector_reasoning: str, regime_label: str) -> None:
+    """写入当日赛道选择快照。"""
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO sector_selections (date, recommend_log_id, recommended_sectors, "
+            "risk_sectors, sector_reasoning, regime_label) VALUES (?, ?, ?, ?, ?, ?)",
+            (date_str, log_id,
+             _json.dumps(recommended_sectors, ensure_ascii=False),
+             _json.dumps(risk_sectors, ensure_ascii=False),
+             sector_reasoning, regime_label),
+        )
+
+
+def get_pending_sector_selections(month: str) -> list[tuple]:
+    """当月待结算的赛道选择，返回 (id, recommend_log_id)。"""
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT id, recommend_log_id FROM sector_selections "
+            "WHERE date LIKE ? AND (outcome = '待定' OR outcome IS NULL)",
+            (f"{month}%",),
+        ).fetchall()
+    return list(rows)
+
+
+def get_recommendation_by_id(log_id: int) -> tuple | None:
+    """按 id 读取推荐记录 (status, return_rate, recommend_date)。"""
+    with db() as conn:
+        row = conn.execute(
+            "SELECT status, return_rate, recommend_date FROM recommend_log WHERE id = ?",
+            (log_id,),
+        ).fetchone()
+    return row if row else None
+
+
+def update_sector_selection_outcome(ss_id: int, outcome: str, date: str, note: str) -> None:
+    """回填赛道选择的结算结果。"""
+    with db() as conn:
+        conn.execute(
+            "UPDATE sector_selections SET outcome=?, outcome_date=?, outcome_note=? WHERE id=?",
+            (outcome, date, note, ss_id),
+        )
+
+
+def get_monthly_cases(month: str) -> list[tuple]:
+    """当月推荐案例（赛道选择 + 推荐记录 + 监控信号链），供 LLM 元分析。"""
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT ss.id, ss.recommend_log_id, ss.recommended_sectors, ss.sector_reasoning, "
+            "ss.regime_label, ss.outcome, ss.outcome_note, rl.buy_reason, rl.code, rl.name, "
+            "me.signal, me.trigger_trailing, me.trigger_drift, me.trigger_sector_adv, "
+            "me.logic_verdict, me.sector_risk, me.holding_risk, me.detail "
+            "FROM sector_selections ss "
+            "LEFT JOIN recommend_log rl ON rl.id = ss.recommend_log_id "
+            "LEFT JOIN monitor_events me ON me.recommend_log_id = rl.id "
+            "WHERE ss.date LIKE ? AND ss.outcome != '待定' "
+            "ORDER BY ss.date DESC LIMIT 20",
+            (f"{month}%",),
+        ).fetchall()
+    return list(rows)
 
 
 # ============================================================
@@ -713,7 +921,9 @@ def clear_recommendations() -> dict:
     """
     counts: dict[str, int] = {}
     with db() as conn:
-        for table in ("recommend_log", "sector_selections", "monitor_events", "evolution_insights"):
+        # quality_metrics 同步清空：数据源 recommend_log 已删，历史质量度量失去统计依据
+        for table in ("recommend_log", "sector_selections", "monitor_events",
+                      "evolution_insights", "quality_metrics"):
             cur = conn.execute(f"DELETE FROM {table}")
             counts[table] = cur.rowcount
     last_reco = Path("data/last_recommendation.txt")

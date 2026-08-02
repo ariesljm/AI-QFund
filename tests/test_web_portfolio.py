@@ -28,18 +28,18 @@ HS_ROWS = [
 ]
 
 
-def _fake_q(sql, params=()):
-    """按 SQL 类型分发：fund_nav 返回净值，index_daily 返回指数。"""
-    if "fund_nav" in sql:
-        return FUND_NAV_ROWS
-    if "index_daily" in sql:
-        return HS_ROWS
-    return []
+def _fake_nav_rows(codes):
+    """按 code 过滤净值行（组合多基金查询）。"""
+    return [r for r in FUND_NAV_ROWS if r[0] in codes]
+
+
+def _fake_index_series(code="sh000300", columns=("date", "close", "volume", "ma60"), since=None):
+    return HS_ROWS
 
 
 @pytest.fixture
 def monkey_db(monkeypatch):
-    """隔离 DB：mock repo 查询与 _q，避免依赖本地数据库。"""
+    """隔离 DB：mock repo 查询，避免依赖本地数据库。"""
     def fake_tracking():
         return [
             {"code": "AAA", "name": "甲基金", "first_date": "2026-07-27",
@@ -54,7 +54,8 @@ def monkey_db(monkeypatch):
     monkeypatch.setattr(webapp.repo, "get_tracking_list", fake_tracking)
     monkeypatch.setattr(webapp.repo, "get_entry_nav", fake_entry)
     monkeypatch.setattr(webapp.repo, "get_nav_at_date", lambda code, date: None)
-    monkeypatch.setattr(webapp, "_q", _fake_q)
+    monkeypatch.setattr(webapp.repo, "get_nav_rows_for_codes", _fake_nav_rows)
+    monkeypatch.setattr(webapp.repo, "get_index_series", _fake_index_series)
 
 
 class TestPortfolioSeries:
@@ -85,7 +86,8 @@ class TestPortfolioSeries:
         monkeypatch.setattr(webapp.repo, "get_entry_nav", lambda code, date: 1.00)
         monkeypatch.setattr(webapp.repo, "get_nav_at_date", lambda code, date: None)
         # 净值仅到 7-31，晚于推荐日 8-01
-        monkeypatch.setattr(webapp, "_q", lambda sql, params=(): _fake_q(sql, params))
+        monkeypatch.setattr(webapp.repo, "get_nav_rows_for_codes", _fake_nav_rows)
+        monkeypatch.setattr(webapp.repo, "get_index_series", _fake_index_series)
 
         dates, port, hs = webapp._portfolio_series()
         # 8-01 为基线点，其后无净值 → 仅 1 个点，返回空

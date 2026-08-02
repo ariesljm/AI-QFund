@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
 import numpy as np
+import pandas as pd
 
 
 # ============================================================
@@ -208,7 +209,10 @@ class TestPrompts:
 # features — compute_fund_features（C3 公式单一来源）
 # ============================================================
 
-from app.features.calculator import compute_fund_features, combo_score, regime_combo_weights
+from app.features.calculator import compute_fund_features, combo_score, regime_combo_weights, score_frame
+import app.repo as repo
+from app.llm.macro_agent import MacroContext
+from app.engine import recommend as recommend_mod
 
 class TestComputeFundFeatures:
     def test_returns_seven_features(self):
@@ -272,7 +276,46 @@ class TestRegimeComboWeights:
                "calmar_weight": 0.1, "hurst_weight": 0.1}
         bear = regime_combo_weights("BEAR", cfg)
         assert bear["cal"] > cfg["calmar_weight"]
-        assert bear["rs"] < cfg["rel_strength_weight"]
+
+
+class _FakeModel:
+    def predict(self, X):
+        return np.full(len(X), 2.0)
+
+
+class TestScoreFrame:
+    def _cfg(self):
+        return {"model_weight": 0.5, "rel_strength_weight": 0.15,
+                "calmar_weight": 0.1, "hurst_weight": 0.1}
+
+    def _df(self):
+        rows = []
+        for code, mom in (("A", 5.0), ("B", 3.0)):
+            r = {c: 1.0 for c in repo.FEATURE_COLS}
+            r["code"] = code
+            r["momentum_20d"] = mom
+            r["calmar"] = 2.0
+            r["hurst_60d"] = 0.6
+            r["regime"] = "BULL"
+            rows.append(r)
+        return pd.DataFrame(rows)
+
+    def test_with_model_ranks_by_combo(self):
+        out = score_frame(self._df(), _FakeModel(), self._cfg(), idx_mom=1.0)
+        assert {"score", "score_norm", "rel_strength", "combo"} <= set(out.columns)
+        a = out[out["code"] == "A"]["combo"].iloc[0]
+        b = out[out["code"] == "B"]["combo"].iloc[0]
+        assert a > b  # rel_strength 更大者 combo 更高
+
+    def test_without_model_uses_05(self):
+        out = score_frame(self._df(), None, self._cfg(), idx_mom=0.0)
+        assert (out["score_norm"] == 0.5).all()
+        assert "combo" in out.columns
+
+    def test_regime_fallback_when_column_missing(self):
+        df = self._df().drop(columns=["regime"])
+        out = score_frame(df, _FakeModel(), self._cfg(), idx_mom=1.0, default_regime="BEAR")
+        assert "combo" in out.columns
 
 
 # ============================================================
@@ -318,3 +361,52 @@ class TestDefenseChain:
         """回归：monitor.update_highest_nav 不应被本地 2 参函数遮蔽。"""
         sig = inspect.signature(monitor_mod.update_highest_nav)
         assert len(sig.parameters) == 3, f"遮蔽 bug 复现: {sig}"
+
+
+class _FakeRankModel:
+    def predict(self, X):
+        return X["momentum_20d"].to_numpy()
+
+
+class TestRankWithinSectors:
+    """赛道覆盖回归：LLM 指定赛道即使 combo 排不进全局 top5，也必须出现在最终候选。
+
+    根因（2026-08-02）：_rank_within_sectors 每赛道取 top2 后按全局 combo 截断到 5，
+    高热度赛道（半导体 2648 只）因量化 combo 略低被整体挤出，run_recommendation
+    过滤 target_sectors 时误报"赛道无可投基金"。
+    """
+
+    def _row(self, code, sector, mom):
+        return {
+            "code": code, "name": f"基金{code}", "regime": "BULL",
+            "rbsa_industry_1": sector, "rbsa_weight_1": 50.0,
+            "rbsa_industry_2": "", "rbsa_weight_2": 0.0,
+            "rbsa_industry_3": "", "rbsa_weight_3": 0.0,
+            "hurst_60d": 0.6, "momentum_20d": mom, "calmar": 2.0,
+            "downside_vol": 1.0, "capture_up": 1.0, "capture_down": 1.0,
+            "bias_60d": 0.0,
+        }
+
+    def test_llm_top_sectors_not_dropped_from_candidates(self, monkeypatch):
+        """半导体/电源设备动量最低，但作为 LLM 指定赛道必须有候选。"""
+        sectors = ["半导体", "电源设备", "消费电子设备", "通信设备", "电子元件"]
+        data = (
+            [self._row("SC_A", "半导体", 3.0), self._row("SC_B", "半导体", 2.0)]
+            + [self._row("PD_A", "电源设备", 6.0), self._row("PD_B", "电源设备", 5.0)]
+            + [self._row("CE_A", "消费电子设备", 12.0), self._row("CE_B", "消费电子设备", 11.0)]
+            + [self._row("TX_A", "通信设备", 17.0), self._row("TX_B", "通信设备", 16.0)]
+            + [self._row("EL_A", "电子元件", 15.0), self._row("EL_B", "电子元件", 14.0)]
+        )
+        monkeypatch.setattr(recommend_mod.repo, "get_sector_candidates", lambda s: data)
+        monkeypatch.setattr(recommend_mod, "_index_momentum", lambda: 5.0)
+        monkeypatch.setattr(recommend_mod, "_get_market_regime", lambda: "BULL")
+        monkeypatch.setattr(recommend_mod, "_load_ranking_cfg", lambda: {
+            "model_weight": 0.5, "rel_strength_weight": 0.15,
+            "calmar_weight": 0.1, "hurst_weight": 0.1, "momentum_guard_pct": -15.0,
+        })
+        ctx = MacroContext(recommended_sectors=sectors, risk_sectors=[], date="2026-08-02")
+        finalists = recommend_mod._rank_within_sectors(ctx, _FakeRankModel())
+        got = {f["sector"] for f in finalists}
+        assert "半导体" in got, f"半导体被挤出候选: {got}"
+        assert "电源设备" in got, f"电源设备被挤出候选: {got}"
+        assert len(finalists) <= 5

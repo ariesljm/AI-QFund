@@ -5,6 +5,7 @@ import sqlite3
 import time
 
 import numpy as np
+import pandas as pd
 
 import app.repo as repo
 
@@ -126,6 +127,42 @@ def regime_combo_weights(regime: str, cfg: dict) -> dict:
         w_rs *= 0.7
         w_hurst *= 0.5
     return {"model": w_model, "rs": w_rs, "cal": w_cal, "hurst": w_hurst}
+
+
+def score_frame(df: pd.DataFrame, model, cfg: dict, idx_mom: float, *,
+                default_regime: str = "NEUTRAL",
+                rbsa_weight_col: str | None = None,
+                sector_rel_momentum_col: str | None = None,
+                sector_rel_calmar_col: str | None = None) -> pd.DataFrame:
+    """对特征 DataFrame 统一打分：预测 → 相对化 → 归一化 → combo。
+
+    主路径 / 降级路径 / 回测共用。model 为 None 时 score_norm 取 0.5（回测无模型场景）。
+    行内已有 regime 列时优先使用，否则回退 default_regime。
+    """
+    df = df.copy()
+    if model is not None:
+        X = df[repo.FEATURE_COLS].astype(float)
+        df["score"] = model.predict(X)
+        df = df[np.isfinite(df["score"])]
+        s_min, s_max = df["score"].min(), df["score"].max()
+        s_range = s_max - s_min if s_max > s_min else 1.0
+        df["score_norm"] = (df["score"] - s_min) / s_range
+    else:
+        df["score_norm"] = 0.5
+    df["rel_strength"] = df["momentum_20d"] - idx_mom
+    calmar_clipped = df["calmar"].clip(-5, 5)
+    if "regime" in df.columns and len(df) > 0 and pd.notna(df["regime"].iloc[0]):
+        regime = df["regime"].iloc[0]
+    else:
+        regime = default_regime
+    w = regime_combo_weights(regime, cfg)
+    df["combo"] = combo_score(
+        df["score_norm"], df["rel_strength"], calmar_clipped, df["hurst_60d"], w,
+        sector_rel_momentum=df[sector_rel_momentum_col] if sector_rel_momentum_col else 0.0,
+        sector_rel_calmar=df[sector_rel_calmar_col] if sector_rel_calmar_col else 0.0,
+        rbsa_weight=df[rbsa_weight_col] if rbsa_weight_col else 0.0,
+    )
+    return df
 
 
 def calc_rbsa(holdings: list[dict], industry_map: dict[str, str] | None = None) -> list[dict]:

@@ -12,7 +12,7 @@ from pathlib import Path
 import lightgbm as lgb
 
 from app.database import db_conn as _db_conn
-from app.features.calculator import compute_fund_features, combo_score, regime_combo_weights
+from app.features.calculator import compute_fund_features, score_frame
 import app.repo as repo
 
 FEATURE_COLS = repo.FEATURE_COLS
@@ -50,7 +50,6 @@ def _score_funds_at_date(nav_df: pd.DataFrame, idx_df: pd.DataFrame,
 
     regime = _regime_at_date(idx_df, bt_date)
     cfg = repo.get_ranking_cfg()
-    w = regime_combo_weights(regime, cfg)
 
     idx_recent = idx_close.iloc[max(0, idx_pos - 20): idx_pos + 1]
     idx_mom = (idx_recent.iloc[-1] / idx_recent.iloc[0] - 1) * 100 if len(idx_recent) >= 21 else 0.0
@@ -76,23 +75,7 @@ def _score_funds_at_date(nav_df: pd.DataFrame, idx_df: pd.DataFrame,
     if df.empty:
         return df
 
-    df["rel_strength"] = df["momentum_20d"] - idx_mom
-    calmar_clipped = df["calmar"].clip(-5, 5)
-
-    if model is not None:
-        X = df[FEATURE_COLS].astype(float)
-        df["score"] = model.predict(X)
-        df = df[np.isfinite(df["score"])]
-        s_min, s_max = df["score"].min(), df["score"].max()
-        s_range = s_max - s_min if s_max > s_min else 1.0
-        df["score_norm"] = (df["score"] - s_min) / s_range
-    else:
-        df["score_norm"] = 0.5
-
-    df["combo"] = combo_score(
-        df["score_norm"], df["rel_strength"], calmar_clipped, df["hurst_60d"], w,
-    )
-    return df
+    return score_frame(df, model, cfg, idx_mom, default_regime=regime)
 
 
 def _attach_forward_returns(df: pd.DataFrame, nav_df: pd.DataFrame,
@@ -234,7 +217,6 @@ def run_backtest(start_date: str | None = None, end_date: str | None = None) -> 
 
 if __name__ == "__main__":
     import sys
-    import log_utils  # noqa
     start = None
     end = None
     for i, arg in enumerate(sys.argv):

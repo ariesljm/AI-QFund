@@ -1,5 +1,6 @@
 """配置管理：TOML 配置加载、环境变量覆盖、运行时持久化。"""
 
+import copy
 import json
 import os as _os
 import re
@@ -14,6 +15,9 @@ logger = get_logger("config")
 DB_PATH = Path("data/qfund.db")
 SETTINGS_PATH = Path("config/settings.toml")
 
+# 配置缓存：单槽 module 级状态，由 save_settings 显式失效。
+_settings_cache: dict | None = None
+
 _ENV_OVERRIDE_MAP = {
     "LLM_BASE_URL": ("llm", "base_url"),
     "LLM_API_KEY": ("llm", "api_key"),
@@ -25,9 +29,9 @@ _ENV_OVERRIDE_MAP = {
 
 
 def load_settings():
-    cached = getattr(load_settings, '_cached', None)
-    if cached is not None:
-        return cached
+    global _settings_cache
+    if _settings_cache is not None:
+        return copy.deepcopy(_settings_cache)
     try:
         with open(SETTINGS_PATH, "rb") as f:
             settings = _tomllib.load(f)
@@ -51,11 +55,13 @@ def load_settings():
                 settings.setdefault(section, {})[name] = json.loads(value)
     except Exception:
         pass
-    load_settings._cached = settings
-    return settings
+    _settings_cache = settings
+    # 返回副本，调用方变异（如 web 层剔除密码）不会污染缓存。
+    return copy.deepcopy(settings)
 
 
 def save_settings(settings: dict) -> bool:
+    global _settings_cache
     toml_ok = False
     try:
         text = SETTINGS_PATH.read_text(encoding="utf-8")
@@ -95,6 +101,6 @@ def save_settings(settings: dict) -> bool:
                              (f"settings:{section}:{key}", json.dumps(value, ensure_ascii=False)))
         conn.commit()
         conn.close()
-    save_settings._cached = None
+    _settings_cache = None
     logger.info("配置已保存: %s", {k: list(v.keys()) for k, v in settings.items()})
     return True

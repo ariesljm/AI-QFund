@@ -101,7 +101,6 @@ def monitor_logic_prompt(
     regime_label: str,
     sector_reasoning: str,
     holdings_text: str,
-    matched_text: str,
     news_summary: str,
 ) -> str:
     lines = [
@@ -119,9 +118,6 @@ def monitor_logic_prompt(
         "",
         f"【该基金当前重仓股】",
         holdings_text,
-        "",
-        f"【该基金持仓股在今日新闻中的提及】",
-        matched_text,
         "",
         "【今日财经新闻全文】",
         news_summary,
@@ -230,13 +226,6 @@ def final_pick_prompt(
         if holdings:
             hds = [f"{h['stock_name']}({h['industry']},权重{h['weight']:.1f}%)" for h in holdings]
             lines.append(f"  重仓股: {', '.join(hds)}")
-        matched = c.get("matched_news", [])
-        if matched:
-            for m in matched:
-                lines.append(
-                    f"  ⚡ 新闻匹配: 持仓股 {m['stock_name']} 出现在今日新闻 "
-                    f"[等级={m['level']}] \"{m['title'][:50]}\""
-                )
         rd = c.get("report_date")
         months = c.get("holdings_months")
         smm = c.get("sector_median_mom")
@@ -254,12 +243,11 @@ def final_pick_prompt(
     lines += [
         "",
         "【任务指令】",
-        "基于以上所有信息（赛道推论、重仓股、新闻匹配、进化规则），",
+        "基于以上所有信息（赛道推论、重仓股、进化规则），",
         "从候选中选出最有潜力的一只基金。重点考虑：",
-        "1. 基金重仓股与今日新闻的匹配程度（利好>利空）",
-        "2. 基金所在赛道是否被宏观定论认可",
-        "3. 赛道内相对强弱和量化指标",
-        "4. 是否重复历史教训中提到的失败模式",
+        "1. 基金所在赛道是否被宏观定论认可",
+        "2. 赛道内相对强弱和量化指标",
+        "3. 是否重复历史教训中提到的失败模式",
         "",
         "【严格要求】选定理由必须：",
         "1. 用普通投资者能看懂的中文，禁止使用任何英文术语、缩写、专业词汇",

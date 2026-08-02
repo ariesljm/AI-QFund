@@ -10,11 +10,11 @@
 运行：uv run python monitor.py
 """
 
-import json
-from app.utils.log import get_logger
 import time
 from datetime import datetime
 from dataclasses import dataclass
+
+from app.utils.log import get_logger
 
 import numpy as np
 
@@ -24,7 +24,7 @@ from app.repo import (get_nav_since, get_latest_nav, get_latest_features,
                       get_holdings, get_rbsa_weight_at_date,
                       get_holding_log_id, insert_monitor_event, exit_position)
 from app.llm.macro_agent import build_macro_context
-from app.llm.client import call_llm
+from app.llm.client import call_llm, parse_llm_json
 from app.llm.prompts import monitor_logic_prompt
 
 logger = get_logger("monitor")
@@ -235,17 +235,6 @@ def _check_logic_enhanced(code: str, buy_reason: str, sector: str,
         f"{h['stock_name']}({h['industry'] or '其他'},{h['weight']:.1f}%)" for h in hold_rows
     ) if hold_rows else "无持仓数据"
 
-    matched_lines = []
-    for h in hold_rows:
-        stock_name = h["stock_name"]
-        for s in ctx.cls_stock_mentions:
-            if s["name"] == stock_name:
-                matched_lines.append(
-                    f"  {stock_name}: 等级={s['level']} \"{s['title'][:60]}\""
-                )
-                break
-    matched_text = "\n".join(matched_lines) if matched_lines else "无匹配"
-
     prompt = monitor_logic_prompt(
         buy_reason=buy_reason,
         sector=sector,
@@ -254,7 +243,6 @@ def _check_logic_enhanced(code: str, buy_reason: str, sector: str,
         regime_label=ctx.regime_label,
         sector_reasoning=ctx.sector_reasoning,
         holdings_text=holdings_text,
-        matched_text=matched_text,
         news_summary=ctx.news_brief or ctx.news_summary,
     )
 
@@ -265,21 +253,20 @@ def _check_logic_enhanced(code: str, buy_reason: str, sector: str,
             "sector_risk": False, "holding_risk": False,
             "reason": "LLM 未配置或调用失败，保守维持",
         }
-    try:
-        result = json.loads(content)
-        return {
-            "logic_verdict": result.get("logic_verdict", "维持"),
-            "signal_hint": result.get("signal_hint", "HOLD"),
-            "sector_risk": bool(result.get("sector_risk", False)),
-            "holding_risk": bool(result.get("holding_risk", False)),
-            "reason": result.get("reason", ""),
-        }
-    except Exception as e:
+    result = parse_llm_json(content)
+    if not isinstance(result, dict):
         return {
             "logic_verdict": "维持", "signal_hint": "HOLD",
             "sector_risk": False, "holding_risk": False,
-            "reason": f"LLM 解析失败({e})，保守维持",
+            "reason": "LLM 解析失败，保守维持",
         }
+    return {
+        "logic_verdict": result.get("logic_verdict", "维持"),
+        "signal_hint": result.get("signal_hint", "HOLD"),
+        "sector_risk": bool(result.get("sector_risk", False)),
+        "holding_risk": bool(result.get("holding_risk", False)),
+        "reason": result.get("reason", ""),
+    }
 
 
 def _log_monitor_event(code: str, signal: str, logic: dict,

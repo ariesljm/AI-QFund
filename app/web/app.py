@@ -21,6 +21,11 @@ import json
 from app.database import get_db as _get_db, db_conn
 from app.config import load_settings as _load_settings, save_settings as _save_settings, SETTINGS_PATH
 from app.pipeline import run as run_full_pipeline
+from app.engine.valuation import (portfolio_series as _portfolio_series,
+                                  period_returns as _period_returns,
+                                  sharpe_ratio as _sharpe_ratio,
+                                  max_drawdown as _max_drawdown,
+                                  alpha_series as _alpha_series)
 import app.repo as repo
 
 logger = logging.getLogger("web")
@@ -117,66 +122,15 @@ app = FastAPI(title="AI Quant Terminal", lifespan=lifespan)
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
-def _q(sql: str, params: tuple = ()):
-    with db_conn() as conn:
-        r = conn.execute(sql, params).fetchall()
-    return r
-
-
-def _q1(sql: str, params: tuple = ()):
-    with db_conn() as conn:
-        r = conn.execute(sql, params).fetchone()
-    return r
-
-
 def _display_score(combo, raw_score):
     if combo is not None:
         return min(max(int(combo * 10 + 50), 0), 100)
     return min(max(int((raw_score or 0) * 500 + 50), 0), 100) if raw_score else 0
 
 
-def _period_returns(code):
-    """计算基金多周期收益率及同期沪深300收益。"""
-    rows = _q(
-        "SELECT date, cum_nav FROM fund_nav WHERE code=? ORDER BY date DESC LIMIT 250",
-        (code,),
-    )
-    if not rows or not rows[0][1]:
-        return {}
-    rows.reverse()
-    dates = [r[0] for r in rows]
-    navs = [r[1] or 0 for r in rows]
-    latest_nav = navs[-1]
-    # 周≈5交易日，月≈22，季≈66，半年≈126
-    periods = {"1周": 5, "1月": 22, "3月": 66, "6月": 126}
-    hs_rows = _q(
-        "SELECT date, close FROM index_daily WHERE code='sh000300' "
-        "AND date >= ? ORDER BY date ASC",
-        (dates[0],),
-    )
-    hs_map = {r[0]: r[1] for r in hs_rows}
-    result = {}
-    for label, lookback in periods.items():
-        idx = max(0, len(navs) - 1 - lookback)
-        old_nav = navs[idx]
-        result[label] = round((latest_nav / old_nav - 1) * 100, 2) if old_nav else None
-        old_date = dates[idx]
-        old_hs = hs_map.get(old_date)
-        latest_hs = hs_map.get(dates[-1])
-        if old_hs and latest_hs:
-            result[label + "_hs"] = round((latest_hs / old_hs - 1) * 100, 2)
-        else:
-            result[label + "_hs"] = None
-    return result
-
-
 def _nav_chart(code):
     """返回近3个月基金净值+沪深300数据，用于双线走势图。"""
-    rows = _q(
-        "SELECT date, cum_nav FROM fund_nav WHERE code=? ORDER BY date DESC LIMIT 65",
-        (code,),
-    )
-    rows = list(reversed(rows))
+    rows = repo.get_nav_history(code, 65)
     if not rows:
         return [], [], [], []
     # 基金净值归一化为收益率
@@ -184,11 +138,7 @@ def _nav_chart(code):
     nav_pcts = [round(((r[1] or 0) / base_nav - 1) * 100, 2) for r in rows]
     dates = [r[0] for r in rows]
     # 沪深300同日期
-    hs_rows = _q(
-        "SELECT date, close FROM index_daily WHERE code='sh000300' "
-        "AND date >= ? ORDER BY date ASC",
-        (dates[0],),
-    )
+    hs_rows = repo.get_index_series("sh000300", ("date", "close"), dates[0])
     hs_map = {r[0]: r[1] for r in hs_rows}
     hs_pcts = []
     hs_dates = []
@@ -235,118 +185,6 @@ def _make_dual_svg(pcts, hs_pcts):
             d += f" C {mx:.1f},{y0:.1f} {mx:.1f},{y1:.1f} {x1:.1f},{y1:.1f}"
         return d
     return _smooth_path(pcts), _smooth_path(hs_pcts), baseline_y
-
-
-def _portfolio_series():
-    """等权买入持有组合的每日累计收益序列 + 同期沪深300累计收益序列。
-
-    对每只被推荐基金，从首次推荐日起的累计净值收益率为其贡献；
-    已离场（EXIT + exit_date）基金截至离场日截断；
-    每日组合收益 = 当日所有已入场且未离场基金累计收益率的等权平均。
-    返回 (dates, port_pcts, hs_pcts)；有效点不足2个时返回空。
-    """
-    tracks = repo.get_tracking_list()
-    if not tracks:
-        return [], [], []
-    today = datetime.now().strftime("%Y-%m-%d")
-    funds = []
-    min_date = None
-    for t in tracks:
-        fd = t["first_date"]
-        if not fd:
-            continue
-        entry = repo.get_entry_nav(t["code"], fd)
-        if entry is None:
-            entry = repo.get_nav_at_date(t["code"], fd)
-        if entry is None or entry <= 0:
-            continue
-        funds.append({"code": t["code"], "fd": fd, "end": t["exit_date"] or today, "entry": entry})
-        if min_date is None or fd < min_date:
-            min_date = fd
-    if not funds or not min_date:
-        return [], [], []
-    placeholders = ",".join("?" * len(funds))
-    rows = _q(
-        f"SELECT code, date, cum_nav FROM fund_nav "
-        f"WHERE code IN ({placeholders}) ORDER BY date ASC",
-        tuple(f["code"] for f in funds),
-    )
-    nav_by_fund = {}
-    date_set = set()
-    for code, d, nav in rows:
-        if nav is None or nav <= 0:
-            continue
-        nav_by_fund.setdefault(code, {})[d] = nav
-        date_set.add(d)
-    # 推荐日当天无净值时，以入场净值作为基线点（组合曲线从 0% 起步）
-    for f in funds:
-        if f["fd"] not in nav_by_fund.get(f["code"], {}):
-            nav_by_fund.setdefault(f["code"], {})[f["fd"]] = f["entry"]
-            date_set.add(f["fd"])
-    dates = sorted(date_set)
-    if len(dates) < 2:
-        return [], [], []
-    # 每日组合累计收益率（等权平均，离场基金截断到 end）
-    port_pcts = []
-    for d in dates:
-        vals = []
-        for f in funds:
-            if d < f["fd"] or d > f["end"]:
-                continue
-            nav = nav_by_fund.get(f["code"], {}).get(d)
-            if nav is None:
-                continue
-            vals.append((nav / f["entry"] - 1) * 100)
-        port_pcts.append(sum(vals) / len(vals) if vals else None)
-    # 沪深300同期序列（相对首个可用 close，交易日向前取最近值）
-    hs_rows = _q(
-        "SELECT date, close FROM index_daily WHERE code='sh000300' AND date >= ? ORDER BY date ASC",
-        (min_date,),
-    )
-    hs_vals = [(d, c) for d, c in hs_rows if c is not None and c > 0]
-    if not hs_vals:
-        return [], [], []
-    hs_base = hs_vals[0][1]
-    hs_pcts = []
-    idx = -1
-    for d in dates:
-        while idx + 1 < len(hs_vals) and hs_vals[idx + 1][0] <= d:
-            idx += 1
-        if idx >= 0 and hs_base:
-            hs_pcts.append((hs_vals[idx][1] / hs_base - 1) * 100)
-        else:
-            hs_pcts.append(None)
-    # 裁剪到组合与基准均有值的连续区间
-    pairs = [(d, p, h) for d, p, h in zip(dates, port_pcts, hs_pcts) if p is not None and h is not None]
-    if len(pairs) < 2:
-        return [], [], []
-    dates, port_pcts, hs_pcts = zip(*pairs)
-    return list(dates), list(port_pcts), list(hs_pcts)
-
-
-def _sharpe_ratio(pcts):
-    """组合日收益年化夏普比率（无风险利率按 0）。"""
-    rets = [(pcts[i] - pcts[i - 1]) / 100 for i in range(1, len(pcts))]
-    if len(rets) < 2:
-        return None
-    mean = sum(rets) / len(rets)
-    var = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
-    std = var ** 0.5
-    if std == 0:
-        return None
-    return round(mean / std * (252 ** 0.5), 2)
-
-
-def _max_drawdown(pcts):
-    """组合累计收益曲线的最大峰谷回撤（%）。"""
-    peak = pcts[0]
-    mdd = 0.0
-    for v in pcts:
-        if v > peak:
-            peak = v
-        if peak - v > mdd:
-            mdd = peak - v
-    return round(mdd, 2)
 
 
 def _quality_curve_svg(points):
@@ -489,12 +327,7 @@ def _index_context() -> dict:
     }
 
     # 行业热力图
-    sectors = _q(
-        "SELECT rbsa_industry_1, AVG(rbsa_weight_1), AVG(momentum_20d) "
-        "FROM fund_features "
-        "WHERE rbsa_industry_1 IS NOT NULL AND rbsa_industry_1 != '' "
-        "GROUP BY rbsa_industry_1 ORDER BY AVG(rbsa_weight_1) DESC LIMIT 6"
-    )
+    sectors = repo.get_sector_heatmap()
     sector_list = [
         {"name": s[0], "weight": round(s[1] or 0, 1), "momentum": round(s[2] or 0, 1)}
         for s in sectors
@@ -507,17 +340,12 @@ def _index_context() -> dict:
     # 追踪监控列表
     candidates = repo.get_tracking_list()
     candidate_list = []
-    today_str = datetime.now().strftime("%Y-%m-%d")
     for c in candidates:
         code, first_date = c["code"], c["first_date"]
         name = c["name"] or ""
         rec_count = c["rec_count"]
         # 展示状态与基金详情一致：取 monitor_events 最新监控信号（无信号时回退推荐状态）
-        sig = _q1(
-            "SELECT signal FROM monitor_events WHERE code=? ORDER BY date DESC, id DESC LIMIT 1",
-            (code,),
-        )
-        status = sig[0] if sig else (c["status"] or "HOLD")
+        status = repo.get_latest_signal(code) or (c["status"] or "HOLD")
         exit_date = c["exit_date"] or ""
         # 首次推荐净值（优先读 recommend_log.entry_nav，缺失时查 fund_nav 当日净值，无则 --）
         first_nav = repo.get_entry_nav(code, first_date)
@@ -591,7 +419,6 @@ def _index_context() -> dict:
 
     # 超额阿尔法（系统运行以来累计超额收益 = total_return - 同期沪深300涨幅）
     alpha = None
-    alpha_pcts = []
     start_date = repo.get_first_reco_date()
     if start_date and total_return is not None:
         hs300_start = repo.get_index_close("sh000300", start_date)
@@ -600,23 +427,7 @@ def _index_context() -> dict:
             hs300_pct = round((hs300_now / hs300_start - 1) * 100, 2)
             alpha = round(total_return - hs300_pct, 2)
     # 逐基金alpha贡献（按推荐日期排序，用于alpha曲线）
-    # 对已平仓基金用 exit_date 截断持有期，避免基准延伸至今日
-    sorted_candidates = sorted(candidate_list, key=lambda x: x["first_date"] or "")
-    cum_alpha = 0.0
-    for c in sorted_candidates:
-        if c["return"] is not None and c["first_date"]:
-            hs_start = repo.get_index_close("sh000300", c["first_date"])
-            end_str = c["exit_date"] or today_str
-            hs_end = repo.get_index_close("sh000300", end_str)
-            if hs_start and hs_end:
-                hs_ret = (hs_end / hs_start - 1) * 100
-                fund_ret = c["return"]
-                if c.get("exit_date") and c["status"] == "EXIT":
-                    end_nav = repo.get_nav_at_or_before(c["code"], end_str)
-                    if end_nav and c["first_nav"] and c["first_nav"] > 0:
-                        fund_ret = round((end_nav / c["first_nav"] - 1) * 100, 2)
-                cum_alpha += fund_ret - hs_ret
-                alpha_pcts.append(round(cum_alpha, 2))
+    alpha_pcts = _alpha_series(candidate_list)
     # alpha曲线SVG（自动缩放）
     alpha_svg = ""
     alpha_baseline_y = 50
@@ -812,21 +623,12 @@ async def clear_recommendations(body: dict | None = None):
     """
     if _pipeline.status.get("state") == "running":
         return {"status": "error", "message": "管线运行中，请稍后再试"}
-    from app.repo import clear_recommendations as _clear
-    from app.database import db_conn as _db_conn
     body = body or {}
     dry_run = bool(body.get("dry_run"))
     if dry_run:
-        with _db_conn() as conn:
-            counts = {
-                "recommend_log": conn.execute("SELECT COUNT(*) FROM recommend_log").fetchone()[0],
-                "sector_selections": conn.execute("SELECT COUNT(*) FROM sector_selections").fetchone()[0],
-                "monitor_events": conn.execute("SELECT COUNT(*) FROM monitor_events").fetchone()[0],
-                "evolution_insights": conn.execute("SELECT COUNT(*) FROM evolution_insights").fetchone()[0],
-            }
-        return {"status": "ok", "dry_run": True, "deleted": counts}
+        return {"status": "ok", "dry_run": True, "deleted": repo.count_recommendation_domain()}
     try:
-        counts = _clear()
+        counts = repo.clear_recommendations()
         return {"status": "ok", "deleted": counts}
     except Exception as e:
         logger.error("清除推荐数据失败: %s", e)
@@ -879,11 +681,7 @@ async def get_fund_detail(code: str):
         for r in repo.get_nav_history(code, 90)
     ]
 
-    signal = _q1(
-        "SELECT signal, logic_verdict, sector_risk, holding_risk, detail, date "
-        "FROM monitor_events WHERE code=? ORDER BY date DESC, id DESC LIMIT 1",
-        (code,),
-    )
+    signal = repo.get_latest_monitor_event(code)
     current_signal = None
     if signal:
         detail = signal[4] or ""

@@ -17,7 +17,7 @@ import numpy as np
 
 from app.utils.log import get_logger
 from app.database import db_conn
-from app.llm.client import call_llm
+from app.llm.client import call_llm_json
 from app.llm.prompts import evolution_analysis_prompt
 from app.engine.quality import compute_quality_metrics
 import app.repo as repo
@@ -41,12 +41,7 @@ def _apply_ranking_weights(weights: dict) -> bool:
 
 
 def _review_ranking_all() -> list[str]:
-    with db_conn() as conn:
-        rows = conn.execute(
-            "SELECT ff.code, ff.momentum_20d, ff.hurst_60d, ff.calmar "
-            "FROM fund_features ff JOIN fund_basic fb ON fb.code=ff.code "
-            "WHERE fb.is_buyable=1"
-        ).fetchall()
+    rows = repo.get_buyable_feature_stats()
     if len(rows) < 200:
         return []
 
@@ -133,53 +128,42 @@ def apply_param_adjustment(metrics: dict) -> str | None:
 
 def _settle_outcomes(month: str) -> int:
     """更新 sector_selections 的 outcome 字段。"""
-    with db_conn() as conn:
-        rows = conn.execute(
-            "SELECT id, recommend_log_id FROM sector_selections "
-            "WHERE date LIKE ? AND (outcome = '待定' OR outcome IS NULL)",
-            (f"{month}%",),
-        ).fetchall()
-        settled = 0
-        today = datetime.now().strftime("%Y-%m-%d")
+    rows = repo.get_pending_sector_selections(month)
+    settled = 0
+    today = datetime.now().strftime("%Y-%m-%d")
 
-        for ss_id, log_id in rows:
-            if not log_id:
+    for ss_id, log_id in rows:
+        if not log_id:
+            continue
+        log = repo.get_recommendation_by_id(log_id)
+        if not log:
+            continue
+        status, ret, reco_date = log
+
+        if status in ("EXIT", "HOLD", "BUY_MORE", "WARNING"):
+            reco_dt = datetime.strptime(reco_date, "%Y-%m-%d")
+            days = (datetime.now() - reco_dt).days
+            if days < _OUTCOME_DAYS_THRESHOLD and status != "EXIT":
                 continue
-            log = conn.execute(
-                "SELECT status, return_rate, recommend_date FROM recommend_log WHERE id = ?",
-                (log_id,),
-            ).fetchone()
-            if not log:
-                continue
-            status, ret, reco_date = log
 
-            if status in ("EXIT", "HOLD", "BUY_MORE", "WARNING"):
-                reco_dt = datetime.strptime(reco_date, "%Y-%m-%d")
-                days = (datetime.now() - reco_dt).days
-                if days < _OUTCOME_DAYS_THRESHOLD and status != "EXIT":
-                    continue
+        outcome, note = "平", ""
+        if status == "EXIT":
+            if ret is not None:
+                if ret > 0.02:
+                    outcome, note = "胜", f"退出时收益 {ret*100:+.2f}%"
+                elif ret < -0.05:
+                    outcome, note = "负", f"退出时亏损 {ret*100:.2f}%"
+                else:
+                    outcome, note = "平", f"退出时收益 {ret*100:+.2f}%"
+        else:
+            if ret is not None:
+                if ret > 0.02:
+                    outcome, note = "胜", f"运行{days}日收益 {ret*100:+.2f}%"
+                elif ret < -0.05:
+                    outcome, note = "负", f"运行{days}日亏损 {ret*100:.2f}%"
 
-            outcome, note = "平", ""
-            if status == "EXIT":
-                if ret is not None:
-                    if ret > 0.02:
-                        outcome, note = "胜", f"退出时收益 {ret*100:+.2f}%"
-                    elif ret < -0.05:
-                        outcome, note = "负", f"退出时亏损 {ret*100:.2f}%"
-                    else:
-                        outcome, note = "平", f"退出时收益 {ret*100:+.2f}%"
-            else:
-                if ret is not None:
-                    if ret > 0.02:
-                        outcome, note = "胜", f"运行{days}日收益 {ret*100:+.2f}%"
-                    elif ret < -0.05:
-                        outcome, note = "负", f"运行{days}日亏损 {ret*100:.2f}%"
-
-            conn.execute(
-                "UPDATE sector_selections SET outcome=?, outcome_date=?, outcome_note=? WHERE id=?",
-                (outcome, today, note, ss_id),
-            )
-            settled += 1
+        repo.update_sector_selection_outcome(ss_id, outcome, today, note)
+        settled += 1
 
     logger.info("月度结算: %d 条 sector_selections 已更新 outcome", settled)
     return settled
@@ -189,19 +173,7 @@ def _settle_outcomes(month: str) -> int:
 
 def _collect_cases(month: str) -> tuple[list[dict], list[dict], list[dict]]:
     """收集当月推荐案例（含回填 outcome 后的结果 + 监控信号链）。"""
-    with db_conn() as conn:
-        rows = conn.execute(
-            "SELECT ss.id, ss.recommend_log_id, ss.recommended_sectors, ss.sector_reasoning, "
-            "ss.regime_label, ss.outcome, ss.outcome_note, rl.buy_reason, rl.code, rl.name, "
-            "me.signal, me.trigger_trailing, me.trigger_drift, me.trigger_sector_adv, "
-            "me.logic_verdict, me.sector_risk, me.holding_risk, me.detail "
-            "FROM sector_selections ss "
-            "LEFT JOIN recommend_log rl ON rl.id = ss.recommend_log_id "
-            "LEFT JOIN monitor_events me ON me.recommend_log_id = rl.id "
-            "WHERE ss.date LIKE ? AND ss.outcome != '待定' "
-            "ORDER BY ss.date DESC LIMIT 20",
-            (f"{month}%",),
-        ).fetchall()
+    rows = repo.get_monthly_cases(month)
 
     successes, failures, neutrals = [], [], []
     for r in rows:
@@ -239,18 +211,12 @@ def _batch_llm_analyze(successes: list, failures: list, neutrals: list | None = 
         neutrals = []
     prompt = evolution_analysis_prompt(successes, failures, neutrals)
 
-    content = call_llm(prompt, temperature=0.3, max_tokens=1536)
-    if content is None:
-        logger.warning("LLM 不可用，跳过大分析")
-        return []
-    try:
-        result = json.loads(content)
-        if isinstance(result, list):
-            return result
-        if isinstance(result, dict) and "insight" in result:
-            return [result]
-    except Exception as e:
-        logger.warning("LLM 结果解析失败: %s", str(e)[:120], exc_info=True)
+    result = call_llm_json(prompt, temperature=0.3, max_tokens=1536, fallback=None)
+    if isinstance(result, list):
+        return result
+    if isinstance(result, dict) and "insight" in result:
+        return [result]
+    logger.warning("LLM 不可用或返回无法解析，跳过洞察分析")
     return []
 
 
@@ -276,19 +242,12 @@ def _insight_conflicts(new_insight: str, existing: list) -> bool:
 
 def _save_insight(insight: dict, degraded: bool = False) -> bool:
     """入库洞察；质量下行（degraded）时以非活跃状态入库（待审），不自动启用。"""
-    with db_conn() as conn:
-        existing = [r[0] for r in conn.execute(
-            "SELECT insight FROM evolution_insights"
-        ).fetchall()]
-        if _insight_conflicts(insight["insight"], existing):
-            return False
-        active = 0 if degraded else 1
-        conn.execute(
-            "INSERT INTO evolution_insights (insight, insight_type, created_date, active) "
-            "VALUES (?, ?, ?, ?)",
-            (insight["insight"], insight.get("type", "sector"),
-             datetime.now().strftime("%Y-%m-%d"), active),
-        )
+    existing = repo.get_all_insights()
+    if _insight_conflicts(insight["insight"], existing):
+        return False
+    active = 0 if degraded else 1
+    repo.insert_insight(insight["insight"], insight.get("type", "sector"),
+                        datetime.now().strftime("%Y-%m-%d"), active)
     logger.info("新洞察入库: [%s] %s (active=%s)",
                 insight.get("type", "?"), insight["insight"][:60], active)
     return True
@@ -298,19 +257,13 @@ def _save_insight(insight: dict, degraded: bool = False) -> bool:
 
 def _decay_insights() -> int:
     """降低旧洞察置信度，长期无用则标记非活跃。"""
-    with db_conn() as conn:
-        rows = conn.execute(
-            "SELECT id, confidence, apply_count FROM evolution_insights WHERE active = 1"
-        ).fetchall()
-        decayed = 0
-        for rid, conf, cnt in rows:
-            new_conf = float(conf) * 0.95
-            active = 1 if new_conf > 0.2 else 0
-            conn.execute(
-                "UPDATE evolution_insights SET confidence = ?, active = ? WHERE id = ?",
-                (new_conf, active, rid),
-            )
-            decayed += 1
+    rows = repo.list_active_insights()
+    decayed = 0
+    for rid, conf, cnt in rows:
+        new_conf = float(conf) * 0.95
+        active = 1 if new_conf > 0.2 else 0
+        repo.update_insight_confidence(rid, new_conf, active)
+        decayed += 1
     logger.info("置信度衰减: %d 条洞察已更新", decayed)
     return decayed
 
@@ -318,12 +271,7 @@ def _decay_insights() -> int:
 # ── 主入口 ─────────────────────────────────────────────────
 
 def _save_self_fix(fix: str) -> None:
-    with db_conn() as conn:
-        conn.execute(
-            "INSERT INTO evolution_insights (insight, insight_type, created_date) "
-            "VALUES (?, 'ranking', ?)",
-            (fix, datetime.now().strftime("%Y-%m-%d")),
-        )
+    repo.insert_insight(fix, "ranking", datetime.now().strftime("%Y-%m-%d"), active=1)
     logger.info("排分自纠偏: %s", fix[:60])
 
 
@@ -351,17 +299,22 @@ def run_evolve(month: str | None = None) -> None:
     #    度量先于元分析执行，质量下行信号可供洞察采纳判断使用）
     degraded = False
     try:
-        start, end = _month_bounds(month)
-        with db_conn() as conn:
-            metrics = compute_quality_metrics(conn, start, end)
-        metrics["computed_date"] = datetime.now().strftime("%Y-%m-%d")
-        repo.save_quality_metrics(metrics)
-        logger.info("推荐质量度量已入库: 区间 %s~%s, IC=%s, 超额胜率=%s",
-                    start, end, metrics.get("ic"), metrics.get("excess_win_rate"))
-        adjustment = apply_param_adjustment(metrics)
-        degraded = adjustment is not None
-        if adjustment:
-            logger.info("度量反哺: %s", adjustment)
+        # 当月尚未结束时不计算质量度量：forward 20 日窗口未走完，
+        # 月初运行只会产生样本为 0 的空行；历史月份需传入 month 参数补算
+        if month == datetime.now().strftime("%Y-%m"):
+            logger.info("本月 %s 尚未结束，跳过质量度量（历史月份可运行 evolve YYYY-MM 补算）", month)
+        else:
+            start, end = _month_bounds(month)
+            with db_conn() as conn:
+                metrics = compute_quality_metrics(conn, start, end)
+            metrics["computed_date"] = datetime.now().strftime("%Y-%m-%d")
+            repo.save_quality_metrics(metrics)
+            logger.info("推荐质量度量已入库: 区间 %s~%s, IC=%s, 超额胜率=%s",
+                        start, end, metrics.get("ic"), metrics.get("excess_win_rate"))
+            adjustment = apply_param_adjustment(metrics)
+            degraded = adjustment is not None
+            if adjustment:
+                logger.info("度量反哺: %s", adjustment)
     except Exception as e:
         logger.warning("推荐质量度量失败: %s", str(e)[:120], exc_info=True)
 

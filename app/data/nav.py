@@ -3,7 +3,6 @@
 import asyncio
 import json
 import re
-import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -245,6 +244,7 @@ async def async_update_nav_incremental(concurrency: int = 5) -> int:
         batch_size = 100
         total_new = 0
         all_failed: list[str] = []
+        no_update_codes: list[str] = []
         success_codes: set[str] = set()
         for i in range(0, len(tasks_meta), batch_size):
             batch = tasks_meta[i: i + batch_size]
@@ -260,9 +260,14 @@ async def async_update_nav_incremental(concurrency: int = 5) -> int:
                         batch_failed += 1
                     else:
                         n = save_nav_batch(conn, code, navs)
-                        success_codes.add(code)
-                        batch_new += n
-                        total_new += n
+                        if n == 0:
+                            # 接口确认无新数据（停更/滞后发布/无净值页）：计入失败累计，
+                            # 连续 3 个周期后进入冷却，避免每次运行对注定拉不到的基金反复重试
+                            no_update_codes.append(code)
+                        else:
+                            success_codes.add(code)
+                            batch_new += n
+                            total_new += n
             # 熔断：批次失败率异常高，疑似接口故障，提前中止避免白耗请求
             if batch_failed / len(batch) > 0.5:
                 logger.error(
@@ -276,6 +281,13 @@ async def async_update_nav_incremental(concurrency: int = 5) -> int:
         # 本次成功的基金：清除失败记录，避免冷却逻辑误判为仍在失败
         if success_codes:
             mark_recovered_batch("nav_incr", sorted(success_codes))
+
+        # 确认无新数据的基金：记录失败（累计冷却次数），不计入熔断失败率、不触发补查
+        if no_update_codes:
+            for code in no_update_codes:
+                record_failure("nav_incr", code, "接口确认无新数据", stage="no_update")
+            logger.info("净值增量：%d 只基金接口确认无新数据，已累计失败次数（满 3 次进入冷却）",
+                        len(no_update_codes))
 
         if all_failed:
             for code in all_failed:
@@ -292,8 +304,8 @@ async def async_update_nav_incremental(concurrency: int = 5) -> int:
                                 len(tasks_meta), label="增量净值", rounds=2, delay=30)
 
         ok_cnt = len(tasks_meta) - len(all_failed)
-        logger.info("净值增量更新完成: 新增 %d 条, 成功 %d/%d 只, 失败 %d 只",
-                    total_new, ok_cnt, len(tasks_meta), len(all_failed))
+        logger.info("净值增量更新完成: 新增 %d 条, 成功 %d 只, 无新数据 %d 只, 失败 %d 只",
+                    total_new, len(success_codes), len(no_update_codes), len(all_failed))
         if total_new == 0 and ok_cnt > 100:
             # 探测接口最新净值日期：若比本地最新还新却没写入，才是真异常；
             # 周末/停更基金导致的 0 条属正常，不应告警。
@@ -359,6 +371,7 @@ async def async_download_all_nav(concurrency: int = 30) -> int:
 
     async with aiohttp.ClientSession(connector=connector) as session:
         all_failed: list[str] = []
+        no_update_codes: list[str] = []
         success_codes: set[str] = set()
         for i in range(0, len(all_codes), batch_size):
             batch = all_codes[i: i + batch_size]
@@ -374,9 +387,14 @@ async def async_download_all_nav(concurrency: int = 30) -> int:
                         batch_failed += 1
                         continue
                     n = save_nav_batch(conn, code, navs)
-                    success_codes.add(code)
-                    batch_new += n
-                    total_new += n
+                    if n == 0:
+                        # 接口确认无净值数据（已终止/无净值页）：计入失败累计，
+                        # 连续 3 个周期后进入冷却，避免每次运行反复重试
+                        no_update_codes.append(code)
+                    else:
+                        success_codes.add(code)
+                        batch_new += n
+                        total_new += n
             # 熔断：批次失败率异常高，疑似接口故障/被封，提前中止避免白耗请求
             if batch_failed / len(batch) > 0.5:
                 logger.error(
@@ -396,6 +414,13 @@ async def async_download_all_nav(concurrency: int = 30) -> int:
         if success_codes:
             mark_recovered_batch("nav_full", sorted(success_codes))
 
+        # 确认无净值数据的基金：记录失败（累计冷却次数），不计入熔断失败率、不触发补查
+        if no_update_codes:
+            for code in no_update_codes:
+                record_failure("nav_full", code, "接口无净值数据", stage="no_update")
+            logger.info("全量净值：%d 只基金确认无净值数据，已累计失败次数（满 3 次进入冷却）",
+                        len(no_update_codes))
+
         if all_failed:
             for code in all_failed:
                 record_failure("nav_full", code, "全量净值拉取失败", stage="primary")
@@ -412,8 +437,8 @@ async def async_download_all_nav(concurrency: int = 30) -> int:
 
         elapsed = time.monotonic() - start_time
         logger.info(
-            "全量净值更新完成: 新增 %d 条, 失败 %d/%d 只, 耗时 %.1f 秒",
-            total_new, len(all_failed), len(all_codes), elapsed,
+            "全量净值更新完成: 新增 %d 条, 无数据 %d 只, 失败 %d/%d 只, 耗时 %.1f 秒",
+            total_new, len(no_update_codes), len(all_failed), len(all_codes), elapsed,
         )
         if total_new == 0 and len(all_codes) > 100:
             logger.error(
@@ -454,9 +479,13 @@ def fetch_fund_nav(code: str, settings: dict | None = None) -> list[dict]:
     return nav_list
 
 
-def fetch_fund_nav_incremental(code: str, conn: sqlite3.Connection, settings: dict | None = None) -> int:
+def fetch_fund_nav_incremental(code: str, settings: dict | None = None) -> int:
     """增量拉取单只基金净值（走 save_nav_batch 统一过滤+修剪），返回新增条数。"""
     navs = fetch_fund_nav(code, settings)
     if not navs:
         return 0
-    return save_nav_batch(conn, code, navs)
+    with db_conn() as conn:
+        n = save_nav_batch(conn, code, navs)
+        if n:
+            conn.commit()
+        return n

@@ -1,5 +1,7 @@
 """统一 LLM 调用接口，包含重试逻辑。"""
 
+import json
+import re
 import time
 from app.utils.log import get_logger
 from app.config import load_settings
@@ -67,3 +69,29 @@ def call_llm(
                 logger.error("LLM 调用三次重试均失败: %s", str(e)[:200])
                 return None
     return None
+
+
+def parse_llm_json(content: str | None):
+    """剥离 markdown 代码围栏后解析 JSON；内容为空或解析失败返回 None。"""
+    if not content:
+        return None
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip(), flags=re.IGNORECASE)
+    try:
+        return json.loads(cleaned)
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
+def call_llm_json(
+    prompt: str,
+    system_prompt: str = "",
+    temperature: float = 0.2,
+    max_tokens: int = 1024,
+    fallback=None,
+):
+    """调用 LLM 并把返回解析为 JSON；调用失败或解析失败统一返回 fallback。"""
+    content = call_llm(prompt, system_prompt=system_prompt, temperature=temperature, max_tokens=max_tokens)
+    parsed = parse_llm_json(content)
+    if parsed is None:
+        return fallback
+    return parsed

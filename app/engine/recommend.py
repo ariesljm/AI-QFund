@@ -16,12 +16,10 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-from app.features.calculator import (compute_fund_features, combo_score,
-                                     regime_combo_weights as _regime_combo_weights)
+from app.features.calculator import (compute_fund_features, score_frame)
 from app.llm.macro_agent import build_macro_context, MacroContext
-from app.database import db_conn
 from app.data.nav import fetch_fund_nav_incremental
-from app.llm.client import call_llm
+from app.llm.client import call_llm, parse_llm_json
 from app.llm.prompts import final_pick_prompt, final_pick_system_prompt
 import app.repo as repo
 
@@ -65,54 +63,44 @@ def prepare_lgb_training_data() -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, 
     idx_rows = repo.get_index_series("sh000300", ("date", "close", "volume"))
     if not idx_rows:
         raise RuntimeError("沪深300指数数据缺失，无法准备训练数据")
-    with db_conn() as conn:
-        idx_df = pd.DataFrame(idx_rows, columns=["date", "close", "volume"])
-        idx_df["date"] = pd.to_datetime(idx_df["date"])
-        idx_df = idx_df.set_index("date").sort_index()
-        idx_close = idx_df["close"]
-        idx_vol = idx_df["volume"]
-        idx_ret_fwd = idx_close.shift(-_FORWARD_WINDOW) / idx_close - 1.0
+    idx_df = pd.DataFrame(idx_rows, columns=["date", "close", "volume"])
+    idx_df["date"] = pd.to_datetime(idx_df["date"])
+    idx_df = idx_df.set_index("date").sort_index()
+    idx_close = idx_df["close"]
+    idx_vol = idx_df["volume"]
+    idx_ret_fwd = idx_close.shift(-_FORWARD_WINDOW) / idx_close - 1.0
 
-        fund_codes = [
-            r[0] for r in conn.execute(
-                "SELECT code FROM fund_nav GROUP BY code "
-                "HAVING COUNT(*) >= ? ORDER BY RANDOM() LIMIT ?",
-                (60 + _FORWARD_WINDOW, _MAX_TRAIN_FUNDS),
-            ).fetchall()
-        ]
-        if not fund_codes:
-            logger.warning("训练集为空")
-            empty = pd.DataFrame(columns=FEATURE_COLS)
-            return empty, pd.Series(dtype=float, name="alpha_20d"), empty, pd.Series(dtype=float, name="alpha_20d")
+    fund_codes = repo.get_train_fund_codes(60 + _FORWARD_WINDOW, _MAX_TRAIN_FUNDS)
+    if not fund_codes:
+        logger.warning("训练集为空")
+        empty = pd.DataFrame(columns=FEATURE_COLS)
+        return empty, pd.Series(dtype=float, name="alpha_20d"), empty, pd.Series(dtype=float, name="alpha_20d")
 
-        # 面板采样：每只基金沿时间轴每 _STEP 天取一个样本
-        _STEP = 20
-        samples = []
-        for code in fund_codes:
-            rows = conn.execute(
-                "SELECT date, cum_nav FROM fund_nav WHERE code=? ORDER BY date ASC",
-                (code,),
-            ).fetchall()
-            dates = [pd.Timestamp(r[0]) for r in rows]
-            navs = [r[1] for r in rows]
-            if len(dates) < 60 + _FORWARD_WINDOW:
+    # 面板采样：每只基金沿时间轴每 _STEP 天取一个样本
+    _STEP = 20
+    samples = []
+    for code in fund_codes:
+        rows = repo.get_fund_nav_rows(code)
+        dates = [pd.Timestamp(r[0]) for r in rows]
+        navs = [r[1] for r in rows]
+        if len(dates) < 60 + _FORWARD_WINDOW:
+            continue
+        navs_arr = np.array(navs, dtype=float)
+        max_pos = len(dates) - 1 - _FORWARD_WINDOW
+        for pos in range(60, max_pos + 1, _STEP):
+            d = dates[pos]
+            if d not in idx_ret_fwd.index or pd.isna(idx_ret_fwd[d]):
                 continue
-            navs_arr = np.array(navs, dtype=float)
-            max_pos = len(dates) - 1 - _FORWARD_WINDOW
-            for pos in range(60, max_pos + 1, _STEP):
-                d = dates[pos]
-                if d not in idx_ret_fwd.index or pd.isna(idx_ret_fwd[d]):
-                    continue
-                y = navs_arr[pos + _FORWARD_WINDOW] / navs_arr[pos] - 1.0 - idx_ret_fwd[d]
-                idx_pos = idx_close.index.get_indexer([d])[0]
-                if idx_pos < 0 or idx_pos < 60:
-                    continue
-                idx_closes_w = idx_close.iloc[idx_pos - 59: idx_pos + 1].to_numpy(dtype=float)
-                idx_vols_w = idx_vol.iloc[idx_pos - 59: idx_pos + 1].to_numpy(dtype=float)
-                feat = compute_fund_features(navs_arr[:pos + 1], idx_closes_w, idx_vols_w)
-                if feat is None or any(pd.isna(v) for v in feat.values()):
-                    continue
-                samples.append((d, feat, y))
+            y = navs_arr[pos + _FORWARD_WINDOW] / navs_arr[pos] - 1.0 - idx_ret_fwd[d]
+            idx_pos = idx_close.index.get_indexer([d])[0]
+            if idx_pos < 0 or idx_pos < 60:
+                continue
+            idx_closes_w = idx_close.iloc[idx_pos - 59: idx_pos + 1].to_numpy(dtype=float)
+            idx_vols_w = idx_vol.iloc[idx_pos - 59: idx_pos + 1].to_numpy(dtype=float)
+            feat = compute_fund_features(navs_arr[:pos + 1], idx_closes_w, idx_vols_w)
+            if feat is None or any(pd.isna(v) for v in feat.values()):
+                continue
+            samples.append((d, feat, y))
 
     if not samples:
         logger.warning("训练集为空")
@@ -280,23 +268,13 @@ def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> list[dict]:
     cfg = _load_ranking_cfg()
     df = df[df["momentum_20d"] >= cfg["momentum_guard_pct"]]
 
-    X = df[FEATURE_COLS].astype(float)
-    df["score"] = model.predict(X)
-    df = df[np.isfinite(df["score"])]
-
     idx_mom = _index_momentum()
-    df["rel_strength"] = df["momentum_20d"] - idx_mom
-    calmar_clipped = df["calmar"].clip(-5, 5)
-    score_min, score_max = df["score"].min(), df["score"].max()
-    score_range = score_max - score_min if score_max > score_min else 1.0
-    df["score_norm"] = (df["score"] - score_min) / score_range
-    regime = df["regime"].iloc[0] if "regime" in df.columns and len(df) > 0 and pd.notna(df["regime"].iloc[0]) else _get_market_regime()
-    w = _regime_combo_weights(regime, cfg)
-    df["combo"] = combo_score(
-        df["score_norm"], df["rel_strength"], calmar_clipped, df["hurst_60d"], w,
-        sector_rel_momentum=df["sector_rel_momentum"],
-        sector_rel_calmar=df["sector_rel_calmar"],
-        rbsa_weight=df["rbsa_weight"],
+    df = score_frame(
+        df, model, cfg, idx_mom,
+        default_regime=_get_market_regime(),
+        sector_rel_momentum_col="sector_rel_momentum",
+        sector_rel_calmar_col="sector_rel_calmar",
+        rbsa_weight_col="rbsa_weight",
     )
 
     top_per_sector = []
@@ -304,7 +282,23 @@ def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> list[dict]:
         sdf = df[df["sector"] == sector].sort_values("combo", ascending=False)
         top_per_sector.extend(sdf.head(2).to_dict("records"))
 
-    top_per_sector = sorted(top_per_sector, key=lambda x: x["combo"], reverse=True)[:5]
+    top_per_sector = sorted(top_per_sector, key=lambda x: x["combo"], reverse=True)
+    # 每赛道保底 top1，保证 LLM 指定赛道在最终候选中必有代表；
+    # 否则高热度赛道可能因量化 combo 略低被全局 topN 整体挤出，导致下游误判"赛道无可投基金"
+    covered = set()
+    picks = []
+    for sector in sectors:
+        first = next((t for t in top_per_sector if t["sector"] == sector), None)
+        if first:
+            picks.append(first)
+            covered.add(sector)
+    for t in top_per_sector:
+        if len(picks) >= 5:
+            break
+        if t["sector"] not in covered:
+            picks.append(t)
+            covered.add(t["sector"])
+    top_per_sector = picks
     if not top_per_sector:
         return rank_funds(model)
 
@@ -337,25 +331,12 @@ def rank_funds(model: lgb.Booster) -> list[dict]:
     df = df.dropna(subset=FEATURE_COLS)
     if df.empty:
         return []
-
-    X = df[FEATURE_COLS].astype(float)
-    df = df.copy()
-    df["score"] = model.predict(X)
-    df = df[np.isfinite(df["score"])]
+    df = df[df["momentum_20d"] >= guard]
 
     idx_mom = _index_momentum()
-    df["rel_strength"] = df["momentum_20d"] - idx_mom
-    df = df[df["momentum_20d"] >= guard]
-    calmar_clipped = df["calmar"].clip(-5, 5)
-    score_min, score_max = df["score"].min(), df["score"].max()
-    score_range = score_max - score_min if score_max > score_min else 1.0
-    df["score_norm"] = (df["score"] - score_min) / score_range
-    regime = df["regime"].iloc[0] if "regime" in df.columns and len(df) > 0 and pd.notna(df["regime"].iloc[0]) else _get_market_regime()
-    w = _regime_combo_weights(regime, cfg)
-    df["combo"] = combo_score(
-        df["score_norm"], df["rel_strength"], calmar_clipped, df["hurst_60d"], w,
-        rbsa_weight=df["rbsa_weight_1"],
-    )
+    df = score_frame(df, model, cfg, idx_mom,
+                     default_regime=_get_market_regime(),
+                     rbsa_weight_col="rbsa_weight_1")
     top = df.sort_values("combo", ascending=False).head(10)
     candidates = []
     for _, r in top.iterrows():
@@ -383,13 +364,6 @@ def _llm_final_pick(candidates: list[dict], ctx: MacroContext, insights: list) -
 
     for c in candidates:
         c["holdings"] = repo.get_holdings(c["code"], 5)
-        matched = []
-        for h in c["holdings"]:
-            for s in ctx.cls_stock_mentions:
-                if s["code"] == h["stock_code"] or s["name"] == h["stock_name"]:
-                    matched.append({"stock_name": h["stock_name"], "stock_code": h["stock_code"], **s})
-                    break
-        c["matched_news"] = matched
 
         report_date = repo.get_latest_holdings_date(c["code"])
         c["report_date"] = report_date
@@ -437,12 +411,7 @@ def _llm_final_pick(candidates: list[dict], ctx: MacroContext, insights: list) -
 
 
 def _parse_llm_result(content: str, valid_codes: dict) -> dict | None:
-    import re
-    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip(), flags=re.IGNORECASE)
-    try:
-        parsed = json.loads(cleaned)
-    except (json.JSONDecodeError, ValueError):
-        return None
+    parsed = parse_llm_json(content)
     if not isinstance(parsed, dict):
         return None
     result = {str(k).strip(". "): v for k, v in parsed.items()}
@@ -490,32 +459,53 @@ def _save_recommendation(date_str: str, selected: dict, candidates: list[dict],
                            vetoed: list, regime: str, feature_snapshot: str = "",
                            clear: bool = False) -> int:
     """入库推荐记录，返回新插入行的 id。"""
-    with db_conn() as conn:
-        rank = next(
-            (i + 1 for i, c in enumerate(candidates) if c["code"] == selected["selected_code"]), 1)
-        score = next(
-            (c["score"] for c in candidates if c["code"] == selected["selected_code"]), None)
-        combo = next(
-            (c["combo"] for c in candidates if c["code"] == selected["selected_code"]), None)
-        veto_json = json.dumps(vetoed, ensure_ascii=False)
-        reason = selected.get("reason", "")
-        if vetoed:
-            reason = reason + " | 否决记录: " + veto_json
-        real_name = repo.get_fund_name(selected["selected_code"]) or selected["selected_name"]
-        entry_nav = repo.get_latest_nav(selected["selected_code"])
-        conn.execute(
-            "INSERT INTO recommend_log "
-            "(recommend_date, code, name, rank, score, combo, regime, buy_reason, status, feature_snapshot, entry_nav) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'HOLD', ?, ?)",
-            (date_str, selected["selected_code"], real_name,
-             rank, score, combo, regime, reason, feature_snapshot, entry_nav),
-        )
-        new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-        logger.info("推荐入库: %s %s (排名%d, 分数%.4f, id=%d)",
-                    selected["selected_code"], real_name, rank, score or 0.0, new_id)
+    rank = next(
+        (i + 1 for i, c in enumerate(candidates) if c["code"] == selected["selected_code"]), 1)
+    score = next(
+        (c["score"] for c in candidates if c["code"] == selected["selected_code"]), None)
+    combo = next(
+        (c["combo"] for c in candidates if c["code"] == selected["selected_code"]), None)
+    veto_json = json.dumps(vetoed, ensure_ascii=False)
+    reason = selected.get("reason", "")
+    if vetoed:
+        reason = reason + " | 否决记录: " + veto_json
+    real_name = repo.get_fund_name(selected["selected_code"]) or selected["selected_name"]
+    entry_nav = repo.get_latest_nav(selected["selected_code"])
+    new_id = repo.insert_recommendation(
+        date_str, selected["selected_code"], real_name, rank, score, combo, regime,
+        reason, status="HOLD", feature_snapshot=feature_snapshot, entry_nav=entry_nav,
+    )
+    logger.info("推荐入库: %s %s (排名%d, 分数%.4f, id=%d)",
+                selected["selected_code"], real_name, rank, score or 0.0, new_id)
     _dump_recommendation(date_str, selected["selected_code"], real_name, rank, score,
                           regime, candidates, vetoed, clear=clear)
     return new_id
+
+
+def _get_or_train_model(retrain: bool) -> lgb.Booster | None:
+    """准备推荐模型：到期重训或加载现有；无可用时返回 None（跳过本次推荐）。"""
+    if retrain or not MODEL_PATH.exists() or _retrain_due(repo.get_model_last_trained()):
+        logger.info("=== 准备训练数据并训练 LightGBM ===")
+        try:
+            X_train, y_train, X_val, y_val = prepare_lgb_training_data()
+            if len(X_train) == 0:
+                if MODEL_PATH.exists():
+                    logger.warning("训练样本为空，回退使用现有模型")
+                    return lgb.Booster(model_file=str(MODEL_PATH))
+                logger.warning("训练样本为空且无现有模型，跳过本次推荐")
+                return None
+            model = train_lgb_model(X_train, y_train, X_val, y_val)
+            repo.set_model_last_trained(datetime.now().strftime("%Y-%m-%d"))
+            return model
+        except Exception as e:
+            logger.error("模型重训失败: %s", e, exc_info=True)
+            if not MODEL_PATH.exists():
+                logger.warning("无可用模型，跳过本次推荐")
+                return None
+            logger.warning("回退使用现有模型")
+            return lgb.Booster(model_file=str(MODEL_PATH))
+    logger.info("=== 加载已保存模型 ===")
+    return lgb.Booster(model_file=str(MODEL_PATH))
 
 
 def run_recommendation(retrain: bool = False, force: bool = False) -> None:
@@ -526,30 +516,9 @@ def run_recommendation(retrain: bool = False, force: bool = False) -> None:
     date_str = datetime.now().strftime("%Y-%m-%d")
     insights = _load_insights()
 
-    if retrain or not MODEL_PATH.exists() or _retrain_due(repo.get_model_last_trained()):
-        logger.info("=== 准备训练数据并训练 LightGBM ===")
-        try:
-            X_train, y_train, X_val, y_val = prepare_lgb_training_data()
-            if len(X_train) == 0:
-                if MODEL_PATH.exists():
-                    logger.warning("训练样本为空，回退使用现有模型")
-                    model = lgb.Booster(model_file=str(MODEL_PATH))
-                else:
-                    logger.warning("训练样本为空且无现有模型，跳过本次推荐")
-                    return
-            else:
-                model = train_lgb_model(X_train, y_train, X_val, y_val)
-                repo.set_model_last_trained(datetime.now().strftime("%Y-%m-%d"))
-        except Exception as e:
-            logger.error("模型重训失败: %s", e, exc_info=True)
-            if not MODEL_PATH.exists():
-                logger.warning("无可用模型，跳过本次推荐")
-                return
-            logger.warning("回退使用现有模型")
-            model = lgb.Booster(model_file=str(MODEL_PATH))
-    else:
-        logger.info("=== 加载已保存模型 ===")
-        model = lgb.Booster(model_file=str(MODEL_PATH))
+    model = _get_or_train_model(retrain)
+    if model is None:
+        return
 
     logger.info("=== LLM 宏观分析 + 选赛道 ===")
     ctx = build_macro_context(date_str, force=force)
@@ -603,15 +572,12 @@ def run_recommendation(retrain: bool = False, force: bool = False) -> None:
         if sel_momentum is not None and sel_momentum < guard:
             logger.warning("风控拦截 [%s]: %s 近20日动量 %.1f%% 低于阈值 %.0f%%",
                            sector, selected["selected_code"], sel_momentum, guard)
-            with db_conn() as conn:
-                conn.execute(
-                    "INSERT INTO recommend_log "
-                    "(recommend_date, code, name, rank, score, combo, regime, buy_reason, status) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'REJECT')",
-                    (date_str, selected["selected_code"], selected["selected_name"],
-                     0, 0.0, 0.0, llm_regime,
-                     f"风控拦截: 20日动量{sel_momentum:.1f}% 低于阈值{guard:.0f}%"),
-                )
+            repo.insert_recommendation(
+                date_str, selected["selected_code"], selected["selected_name"],
+                0, 0.0, 0.0, llm_regime,
+                f"风控拦截: 20日动量{sel_momentum:.1f}% 低于阈值{guard:.0f}%",
+                status="REJECT",
+            )
             logger.info("风控拦截已入库: %s", selected["selected_code"])
             continue
 
@@ -626,11 +592,9 @@ def run_recommendation(retrain: bool = False, force: bool = False) -> None:
             "sector_rel_calmar": sel_features.get("sector_rel_calmar", 0),
         }, ensure_ascii=False)
 
-        with db_conn() as conn:
-            new_rows = fetch_fund_nav_incremental(selected["selected_code"], conn)
-            if new_rows:
-                conn.commit()
-                logger.info("净值同步: %s 新增 %d 条", selected["selected_code"], new_rows)
+        new_rows = fetch_fund_nav_incremental(selected["selected_code"])
+        if new_rows:
+            logger.info("净值同步: %s 新增 %d 条", selected["selected_code"], new_rows)
 
         saved_id = _save_recommendation(
             date_str, selected, sector_candidates, vetoed, llm_regime, feature_snapshot,
@@ -645,15 +609,10 @@ def run_recommendation(retrain: bool = False, force: bool = False) -> None:
 
 def _write_sector_selection(date_str: str, ctx: MacroContext,
                             log_id: int, sector_name: str | None = None) -> None:
-    with db_conn() as conn:
-        conn.execute(
-            "INSERT INTO sector_selections (date, recommend_log_id, recommended_sectors, "
-            "risk_sectors, sector_reasoning, regime_label) VALUES (?, ?, ?, ?, ?, ?)",
-            (date_str, log_id,
-             json.dumps(ctx.recommended_sectors, ensure_ascii=False),
-             json.dumps(ctx.risk_sectors, ensure_ascii=False),
-             ctx.sector_reasoning, ctx.regime_label),
-        )
+    repo.insert_sector_selection(
+        date_str, log_id, ctx.recommended_sectors, ctx.risk_sectors,
+        ctx.sector_reasoning, ctx.regime_label,
+    )
 
 
 if __name__ == "__main__":

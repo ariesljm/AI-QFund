@@ -954,7 +954,7 @@ async function doClearRecommendations() {
         if (d.status !== 'ok') { alert(d.message || '请求失败'); return; }
         var del = d.deleted || {};
         var rec = del.recommend_log || 0;
-        var total = rec + (del.sector_selections || 0) + (del.monitor_events || 0) + (del.evolution_insights || 0);
+        var total = rec + (del.sector_selections || 0) + (del.monitor_events || 0) + (del.evolution_insights || 0) + (del.quality_metrics || 0);
         if (!confirm('将永久删除 ' + rec + ' 条推荐记录及关联数据（共 ' + total + ' 条），此操作不可恢复。确定继续吗？')) return;
         var r2 = await fetch('/api/clear-recommendations', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({dry_run:false}) });
         var d2 = await r2.json();

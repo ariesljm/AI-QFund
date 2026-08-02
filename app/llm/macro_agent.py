@@ -7,14 +7,12 @@ import json
 import logging
 import time
 from app.utils.log import get_logger
-import re as _re
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 
-from app.llm.client import call_llm
+from app.llm.client import call_llm, parse_llm_json
 from app.llm.prompts import (sector_selection_prompt, sector_selection_system_prompt,
                              news_brief_prompt)
-from app.database import db_conn as _db_conn  # 保留用于 ensure_column/迁移
 import app.repo as repo
 from app.data.fetchers import fetch as _fetch
 from app.features.sector import is_industry_code, is_industry_name
@@ -33,7 +31,6 @@ class MacroContext:
     risk_sectors: list[str] = field(default_factory=list)
     sector_reasoning: str = ""
     regime_label: str = "neutral"
-    cls_stock_mentions: list[dict] = field(default_factory=list)
     date: str = ""
     top_flows: list[dict] = field(default_factory=list)
     top_outflows: list[dict] = field(default_factory=list)
@@ -46,7 +43,6 @@ def build_macro_context(date_str: str | None = None, force: bool = False) -> Mac
     force=True 时跳过缓存，强制实时抓取新闻+LLM 重新选赛道。
     板块行情一次性抓取，供资金流与新闻复用，避免同一接口重复请求。
     """
-    _ensure_column()
     date_str = date_str or datetime.now().strftime("%Y-%m-%d")
 
     if not force:
@@ -71,14 +67,6 @@ def build_macro_context(date_str: str | None = None, force: bool = False) -> Mac
 
 
 # ── DB 缓存 ──
-
-def _ensure_column():
-    with _db_conn() as conn:
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(macro_news)").fetchall()}
-        if "context_json" not in cols:
-            conn.execute("ALTER TABLE macro_news ADD COLUMN context_json TEXT")
-            conn.commit()
-
 
 def _load_cache(date_str: str) -> MacroContext | None:
     d = repo.get_cached_context(date_str)
@@ -320,9 +308,10 @@ def _suggest_sectors(date_str: str, news: dict, flow: dict,
     if content is None:
         raise RuntimeError("LLM赛道选择调用失败，无法完成宏观分析")
 
-    cleaned = _re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip(), flags=_re.IGNORECASE)
     try:
-        parsed = json.loads(cleaned)
+        parsed = parse_llm_json(content)
+        if parsed is None:
+            raise RuntimeError("LLM 未返回可解析 JSON")
         available = _load_available_sectors()
         avail_set = set(available)
 
@@ -349,7 +338,6 @@ def _suggest_sectors(date_str: str, news: dict, flow: dict,
             risk_sectors=risk_valid,
             sector_reasoning=parsed.get("reasoning", ""),
             regime_label=parsed.get("regime_label", "neutral"),
-            cls_stock_mentions=[],
             date=date_str,
             top_flows=flow_top,
             top_outflows=flow_out,

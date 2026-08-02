@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import openai
 
 import app.llm.client as client_mod
-from app.llm.client import call_llm
+from app.llm.client import call_llm, call_llm_json, parse_llm_json
 
 
 class _FakeMsg:
@@ -75,3 +75,33 @@ class TestCallLlmEmptyRetry:
         state = _install_fake(monkeypatch, ["ok", ""])
         assert call_llm("p", max_tokens=100) == "ok"
         assert state["i"] == 1
+
+
+class TestParseLlmJson:
+    def test_plain_json(self):
+        assert parse_llm_json('{"a": 1}') == {"a": 1}
+
+    def test_strips_markdown_fences(self):
+        assert parse_llm_json('```json\n{"a": 1}\n```') == {"a": 1}
+        assert parse_llm_json('```\n{"a": 1}\n```') == {"a": 1}
+
+    def test_empty_returns_none(self):
+        assert parse_llm_json(None) is None
+        assert parse_llm_json("   ") is None
+
+    def test_invalid_returns_none(self):
+        assert parse_llm_json("not json") is None
+
+
+class TestCallLlmJson:
+    def test_valid_returns_dict(self, monkeypatch):
+        _install_fake(monkeypatch, ['{"ok": 1}'])
+        assert call_llm_json("p", max_tokens=100) == {"ok": 1}
+
+    def test_call_failure_returns_fallback(self, monkeypatch):
+        _install_fake(monkeypatch, ["", "", ""])
+        assert call_llm_json("p", max_tokens=100, fallback=[]) == []
+
+    def test_parse_failure_returns_fallback(self, monkeypatch):
+        _install_fake(monkeypatch, ["not json"])
+        assert call_llm_json("p", max_tokens=100, fallback=[]) == []
