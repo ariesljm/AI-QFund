@@ -424,6 +424,30 @@ def get_market_regime() -> str:
     return "BULL" if row[0] > row[1] else "BEAR"
 
 
+def get_market_technical_summary() -> str:
+    """沪深300最新技术面快照（收盘/涨跌/EMA60/趋势），供 LLM regime 判定注入 prompt。
+
+    返回空串表示数据不足，调用方据此跳过技术面段落。
+    """
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT date, close, ma60 FROM index_daily WHERE code='sh000300' "
+            "AND close IS NOT NULL ORDER BY date DESC LIMIT 6"
+        ).fetchall()
+    if not rows or not rows[0][2]:
+        return ""
+    latest_date, close, ma60 = rows[0]
+    prev_close = rows[1][1] if len(rows) > 1 and rows[1][1] else close
+    chg = (close - prev_close) / prev_close * 100 if prev_close else 0.0
+    pos = "上方" if close > ma60 else "下方"
+    trend = " / ".join(f"{r[1]:,.0f}" for r in reversed(rows))
+    return (
+        f"最新交易日 {latest_date} 沪深300：收盘 {close:,.2f} 点（较上交易日 {chg:+.2f}%），"
+        f"EMA60={ma60:,.2f} 点，收盘价位于 EMA60 {pos}；"
+        f"近6个交易日收盘点 {trend}"
+    )
+
+
 def get_rbsa_weight_at_date(code: str, date: str) -> float | None:
     """指定日期的 rbsa_weight_1（监控风格漂移对比买入时点用）。"""
     with db() as conn:

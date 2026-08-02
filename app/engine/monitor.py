@@ -255,7 +255,7 @@ def _check_logic_enhanced(code: str, buy_reason: str, sector: str,
         sector_reasoning=ctx.sector_reasoning,
         holdings_text=holdings_text,
         matched_text=matched_text,
-        news_summary=ctx.news_summary,
+        news_summary=ctx.news_brief or ctx.news_summary,
     )
 
     content = call_llm(prompt, temperature=0.1, max_tokens=512)

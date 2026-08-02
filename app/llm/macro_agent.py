@@ -12,7 +12,8 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 
 from app.llm.client import call_llm
-from app.llm.prompts import sector_selection_prompt, sector_selection_system_prompt
+from app.llm.prompts import (sector_selection_prompt, sector_selection_system_prompt,
+                             news_brief_prompt)
 from app.database import db_conn as _db_conn  # 保留用于 ensure_column/迁移
 import app.repo as repo
 from app.data.fetchers import fetch as _fetch
@@ -27,6 +28,7 @@ _EM_NEWS_URL = "https://np-listapi.eastmoney.com/comm/web/getNewsByColumns"
 @dataclass(frozen=True)
 class MacroContext:
     news_summary: str = ""
+    news_brief: str = ""
     recommended_sectors: list[str] = field(default_factory=list)
     risk_sectors: list[str] = field(default_factory=list)
     sector_reasoning: str = ""
@@ -58,7 +60,9 @@ def build_macro_context(date_str: str | None = None, force: bool = False) -> Mac
 
     news = _fetch_news(date_str, sectors)
 
-    ctx = _suggest_sectors(date_str, news, flow)
+    news_brief = _summarize_news(news.get("summary", ""))
+
+    ctx = _suggest_sectors(date_str, news, flow, news_brief)
     if not ctx.recommended_sectors:
         # 空赛道是合法决策（空推荐日）：仅缓存当日，按日期隔离不污染后续
         logger.info("LLM 显式判定今日无合适赛道，作为空推荐日处理")
@@ -288,10 +292,25 @@ def _build_sector_prompt(date_str: str, news: dict, flow: dict) -> str:
         news_summary=news.get("summary", ""),
         flow_summary=flow.get("summary"),
         lessons=lessons or None,
+        market_tech=repo.get_market_technical_summary() or None,
     )
 
 
-def _suggest_sectors(date_str: str, news: dict, flow: dict) -> MacroContext:
+def _summarize_news(news_summary: str) -> str:
+    """用 LLM 把今日新闻压缩为精炼摘要；失败或为空时回退原文，不阻塞主流程。"""
+    if not news_summary or not news_summary.strip():
+        return news_summary
+    try:
+        content = call_llm(news_brief_prompt(news_summary), temperature=0.1, max_tokens=512)
+        if content and content.strip():
+            return content.strip()
+    except Exception as e:
+        logger.warning("新闻摘要生成失败，回退原文: %s", str(e)[:120])
+    return news_summary
+
+
+def _suggest_sectors(date_str: str, news: dict, flow: dict,
+                     news_brief: str = "") -> MacroContext:
     prompt = _build_sector_prompt(date_str, news, flow)
     system_prompt = sector_selection_system_prompt()
     content = call_llm(prompt, system_prompt=system_prompt, max_tokens=2048)
@@ -325,6 +344,7 @@ def _suggest_sectors(date_str: str, news: dict, flow: dict) -> MacroContext:
 
         ctx = MacroContext(
             news_summary=news.get("summary", ""),
+            news_brief=news_brief or news.get("summary", ""),
             recommended_sectors=rec_valid,
             risk_sectors=risk_valid,
             sector_reasoning=parsed.get("reasoning", ""),

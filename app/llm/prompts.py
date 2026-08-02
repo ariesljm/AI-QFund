@@ -12,6 +12,7 @@ def sector_selection_prompt(
     news_summary: str,
     flow_summary: str | None = None,
     lessons: str | None = None,
+    market_tech: str | None = None,
 ) -> str:
     lines = [
         f"你是专业的宏观分析师。基于 {date_str} 的多源数据，"
@@ -38,6 +39,18 @@ def sector_selection_prompt(
         "【财经新闻】",
         news_summary or "无数据",
     ]
+    if market_tech:
+        lines += [
+            "",
+            "【大盘技术面】（判定 regime_label 的主要依据）",
+            market_tech,
+            "",
+            "【regime_label 判定标准（必须遵守）】",
+            "- 收盘价高于 EMA60 且趋势向上 → bullish",
+            "- 收盘价低于 EMA60 或趋势向下 → bearish",
+            "- 数据缺失或方向不明 → neutral",
+            "- 必须以【大盘技术面】数据为准；政策/新闻利好只能辅助参考，不得单凭新闻判定 bullish",
+        ]
     if flow_summary:
         lines += ["", "【资金流向】", flow_summary]
     if lessons:
@@ -62,6 +75,22 @@ def sector_selection_prompt(
 
 def sector_selection_system_prompt() -> str:
     return "你是量化宏观分析师。只输出纯 JSON 对象，禁止 markdown。"
+
+
+def news_brief_prompt(news_summary: str) -> str:
+    lines = [
+        "你是财经新闻摘要员。把下方的今日财经新闻压缩为精炼摘要，供基金监控判读。",
+        "",
+        "【要求】",
+        "1. 保留：涉及的行业/板块名、公司/股票名、政策事件",
+        "2. 标注每条新闻对相关行业的利好/利空/中性倾向",
+        "3. 控制在 200 字以内，保留最关键信息",
+        "4. 新闻较多时按重要程度取舍，宁可少而准",
+        "",
+        "【今日财经新闻】",
+        news_summary or "无数据",
+    ]
+    return "\n".join(lines)
 
 
 def monitor_logic_prompt(
@@ -110,7 +139,8 @@ def monitor_logic_prompt(
         "- 若该基金所属赛道出现在回避赛道中，或新闻对该赛道有明确利空 → 赛道风险",
         "- 若持仓股在今日新闻中有明确利空 → 持仓风险",
         "- 任一风险推断买入逻辑断裂 → 断裂",
-        "- 若该基金赛道仍在推荐赛道中、持仓股有正面新闻 → BUY_MORE",
+        "- 仅当出现显著加仓理由（持仓股重大利好、回调至强支撑、基本面明显改善等）→ BUY_MORE",
+        "- 赛道仍在推荐中、持仓有正面催化但无新增加仓理由 → HOLD（逻辑维持）",
         "- 赛道方向中性但持仓无异常 → HOLD",
     ]
     return "\n".join(lines)
