@@ -34,7 +34,9 @@ def _daily_data_steps() -> list[int]:
     return [1, 2, 3, 7]
 
 
-def run(force: bool = False) -> None:
+def run(force: bool = False, today: datetime | None = None) -> None:
+    """管线全流程编排；today 可注入（测试用），缺省取当前日期。"""
+    today = today or datetime.now()
     cid = uuid.uuid4().hex[:12]
     set_correlation_id(cid)
     logger.info_event("pipeline_start", "管线启动", extra={"correlation_id": cid, "force": force})
@@ -47,7 +49,7 @@ def run(force: bool = False) -> None:
         ("推荐引擎", lambda: run_recommendation(force=force)),
         ("监控引擎", lambda: run_monitor()),
     ]
-    if datetime.now().day == 1:
+    if today.day == 1:
         from app.engine.evolve import run_evolve
         phases.append(("进化引擎", lambda: run_evolve()))
 

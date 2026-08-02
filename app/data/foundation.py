@@ -16,6 +16,7 @@ import requests
 
 from app.database import db_conn, meta_get, meta_set, DB_PATH
 from app.data.fetchers import fetch as _push2_fetch, fetch_async
+from app.data.ingest import run_batched_fetch
 from app.data.nav import async_update_nav_incremental, async_download_all_nav
 from app.data.store import (save_fund_list, save_index_daily, record_failure,
                             mark_recovered_batch, list_failures, cooldown_targets,
@@ -267,31 +268,26 @@ async def async_download_all_holdings(
         semaphore = asyncio.Semaphore(concurrency)
         connector = aiohttp.TCPConnector(limit=concurrency, ttl_dns_cache=300, enable_cleanup_closed=True)
         total_rows = 0
-        total_done = 0
         funds_with_holdings = 0
         start_time = time.monotonic()
 
         async with aiohttp.ClientSession(headers=_HOLDINGS_HEADERS, connector=connector, trust_env=False) as session:
-            all_failed: set[str] = set()
-            success_codes: set[str] = set()
-            for i in range(0, len(all_codes), batch_size):
-                batch = all_codes[i: i + batch_size]
-                coros = [
-                    _async_fetch_holdings_one(session, c, holdings_url, semaphore)
-                    for c in batch
-                ]
-                results = await asyncio.gather(*coros)
+            async def _fetch_holdings(session_, code):
+                code_, report_date, holdings, failed = await _async_fetch_holdings_one(
+                    session_, code, holdings_url, semaphore)
+                return code_, (report_date, holdings), failed
 
+            def _save_holdings_batch(conn_, results):
+                nonlocal total_rows, funds_with_holdings
                 batch_rows = 0
-                batch_failed = 0
-                for code, report_date, holdings, failed in results:
+                outcome = {"new_count": 0, "success": set(), "no_update": [], "failed": []}
+                for code, (report_date, holdings), failed in results:
                     if failed:
-                        all_failed.add(code)
-                        batch_failed += 1
-                    else:
-                        success_codes.add(code)
+                        outcome["failed"].append(code)
+                        continue
+                    outcome["success"].add(code)
                     if holdings and report_date and report_date != local_latest.get(code):
-                        conn.executemany(
+                        conn_.executemany(
                             "INSERT OR REPLACE INTO fund_holdings "
                             "(code, report_date, stock_code, stock_name, weight) "
                             "VALUES (?, ?, ?, ?, ?)",
@@ -301,36 +297,12 @@ async def async_download_all_holdings(
                         batch_rows += len(holdings)
                         funds_with_holdings += 1
                         local_latest[code] = report_date
-                    total_done += 1
-                conn.commit()
+                conn_.commit()
+                outcome["new_count"] = batch_rows
                 total_rows += batch_rows
+                return outcome
 
-                # 熔断：批次失败率异常高，疑似接口故障，提前中止避免白耗请求
-                if batch_failed / len(batch) > 0.5:
-                    logger.error(
-                        "持仓批次失败率 %.0f%%（%d/%d）超过 50%%，疑似接口故障，提前中止",
-                        batch_failed / len(batch) * 100, batch_failed, len(batch),
-                    )
-                    break
-
-                elapsed = time.monotonic() - start_time
-                speed = total_done / elapsed if elapsed > 0 else 0
-                eta = (len(all_codes) - total_done) / speed if speed > 0 else 0
-                logger.info(
-                    "进度 %d/%d (+%d 条), 速度 %.1f/s, ETA %.0fs",
-                    total_done, len(all_codes), batch_rows, speed, eta,
-                )
-
-        # 本次成功的基金：清除失败记录，避免冷却逻辑误判为仍在失败
-        if success_codes:
-            mark_recovered_batch("holdings", sorted(success_codes))
-
-        if all_failed:
-            for code in all_failed:
-                record_failure("holdings", code, "持仓拉取失败", stage="primary")
-            logger.info("持仓拉取失败 %d 只，开始补查", len(all_failed))
-
-            def _backfill_one(code: str) -> None:
+            def _backfill_holdings(code):
                 nonlocal total_rows, funds_with_holdings
                 resp = requests.get(
                     holdings_url,
@@ -351,8 +323,12 @@ async def async_download_all_holdings(
                     funds_with_holdings += 1
                     local_latest[code] = report_date
 
-            run_backfill_rounds("holdings", list(all_failed), _backfill_one,
-                                len(all_codes), label="持仓", rounds=2, delay=30)
+            await run_batched_fetch(
+                session, fetch_type="holdings", label="持仓",
+                targets=all_codes, batch_size=batch_size, conn=conn,
+                fetch_one=_fetch_holdings, handle_batch=_save_holdings_batch,
+                backfill_one=_backfill_holdings, primary_note="持仓拉取失败",
+            )
             conn.commit()
 
     elapsed = time.monotonic() - start_time

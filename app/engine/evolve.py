@@ -11,21 +11,17 @@ import json
 import re
 import time
 from datetime import datetime, timedelta
-from pathlib import Path
 
 import numpy as np
 
 from app.utils.log import get_logger
-from app.database import db_conn
 from app.llm.client import call_llm_json
 from app.llm.prompts import evolution_analysis_prompt
 from app.engine.quality import compute_quality_metrics
+from app import domain
 import app.repo as repo
 
 logger = get_logger("evolve")
-
-_RANKING_CFG_PATH = Path("config/settings.toml")
-_OUTCOME_DAYS_THRESHOLD = 20
 
 
 # ── 排序自纠偏（保留）──────────────────────────────────────
@@ -68,11 +64,8 @@ def _review_ranking_all() -> list[str]:
         fixes.append(f"相对强弱区分度不足(Top10-Bottom10={spread:.1f}pp)")
 
     if fixes:
-        new = {
-            "model_weight": 0.5, "rel_strength_weight": 0.3,
-            "calmar_weight": 0.1, "hurst_weight": 0.05,
-            "momentum_guard_pct": -15.0,
-        }
+        new = dict(domain.DEFAULT_RANKING_CFG)
+        new.update({"rel_strength_weight": 0.3, "hurst_weight": 0.05})
         _apply_ranking_weights(new)
     return fixes
 
@@ -140,14 +133,14 @@ def _settle_outcomes(month: str) -> int:
             continue
         status, ret, reco_date = log
 
-        if status in ("EXIT", "HOLD", "BUY_MORE", "WARNING"):
+        if status in (domain.SIGNAL_EXIT, domain.SIGNAL_HOLD, domain.SIGNAL_BUY_MORE, domain.SIGNAL_WARNING):
             reco_dt = datetime.strptime(reco_date, "%Y-%m-%d")
             days = (datetime.now() - reco_dt).days
-            if days < _OUTCOME_DAYS_THRESHOLD and status != "EXIT":
+            if days < domain.FORWARD_DAYS and status != domain.SIGNAL_EXIT:
                 continue
 
         outcome, note = "平", ""
-        if status == "EXIT":
+        if status == domain.SIGNAL_EXIT:
             if ret is not None:
                 if ret > 0.02:
                     outcome, note = "胜", f"退出时收益 {ret*100:+.2f}%"
@@ -305,8 +298,7 @@ def run_evolve(month: str | None = None) -> None:
             logger.info("本月 %s 尚未结束，跳过质量度量（历史月份可运行 evolve YYYY-MM 补算）", month)
         else:
             start, end = _month_bounds(month)
-            with db_conn() as conn:
-                metrics = compute_quality_metrics(conn, start, end)
+            metrics = compute_quality_metrics(start, end)
             metrics["computed_date"] = datetime.now().strftime("%Y-%m-%d")
             repo.save_quality_metrics(metrics)
             logger.info("推荐质量度量已入库: 区间 %s~%s, IC=%s, 超额胜率=%s",

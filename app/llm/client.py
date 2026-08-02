@@ -88,10 +88,21 @@ def call_llm_json(
     temperature: float = 0.2,
     max_tokens: int = 1024,
     fallback=None,
+    validator=None,
 ):
-    """调用 LLM 并把返回解析为 JSON；调用失败或解析失败统一返回 fallback。"""
+    """调用 LLM 并把返回解析为 JSON；调用失败或解析失败统一返回 fallback。
+
+    validator 可选：对解析结果做语义校验，返回清洗后的结果；返回 None 或抛异常视为无效。
+    """
     content = call_llm(prompt, system_prompt=system_prompt, temperature=temperature, max_tokens=max_tokens)
     parsed = parse_llm_json(content)
     if parsed is None:
         return fallback
+    if validator is not None:
+        try:
+            parsed = validator(parsed)
+        except Exception:
+            return fallback
+        if parsed is None:
+            return fallback
     return parsed

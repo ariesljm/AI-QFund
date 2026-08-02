@@ -5,7 +5,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import collections
+import json
 import logging
+import re
 import threading
 import time
 from datetime import datetime
@@ -16,8 +18,6 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-import json
-
 from app.database import get_db as _get_db, db_conn
 from app.config import load_settings as _load_settings, save_settings as _save_settings, SETTINGS_PATH
 from app.pipeline import run as run_full_pipeline
@@ -27,6 +27,7 @@ from app.engine.valuation import (portfolio_series as _portfolio_series,
                                   max_drawdown as _max_drawdown,
                                   alpha_series as _alpha_series)
 import app.repo as repo
+from app import domain
 
 logger = logging.getLogger("web")
 
@@ -122,10 +123,193 @@ app = FastAPI(title="AI Quant Terminal", lifespan=lifespan)
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
-def _display_score(combo, raw_score):
-    if combo is not None:
-        return min(max(int(combo * 10 + 50), 0), 100)
-    return min(max(int((raw_score or 0) * 500 + 50), 0), 100) if raw_score else 0
+def _macro_summary(mn):
+    """宏观摘要解析：新闻列表/领涨领跌/资金流向/赛道分析/大盘状态归一。"""
+    news_items = ["暂无快讯"]
+    sector_gainers = sector_losers = []
+    flow_inflows = []
+    flow_outflows = []
+    sector_reasoning = ""
+    regime_label = "NEUTRAL"
+    if mn:
+        text = mn.get("news_summary") or ""
+        lines = text.split("\n")
+        seen = set()
+        items = []
+        for seg in lines:
+            seg = seg.strip()
+            if not seg or len(seg) < 6 or seg.startswith(("http", "www")):
+                continue
+            title = seg.split("：", 1)[0].strip()
+            if not title:
+                continue
+            dedup = title[:100] if len(title) > 100 else title
+            if dedup in seen:
+                continue
+            seen.add(dedup)
+            items.append(title)
+        if items:
+            news_items = items
+        top_gainers = mn.get("top_gainers") or ""
+        top_losers = mn.get("top_losers") or ""
+        # 领涨/领跌行业（各取前3，带幅度强度）
+        if top_gainers:
+            raw_g = re.findall(r"([^(]+)\(([^)]+)\)", top_gainers)[:9]
+            if raw_g:
+                g = [(n.strip("、 "), float(p.replace("%", ""))) for n, p in raw_g]
+                m = len(g)
+                sector_gainers = [
+                    {"name": n, "pct": f"{v:+.2f}%", "s": 1 - i / (m - 1) if m > 1 else 0.5}
+                    for i, (n, v) in enumerate(g)
+                ]
+        if top_losers:
+            raw_l = re.findall(r"([^(]+)\(([^)]+)\)", top_losers)[:3]
+            if raw_l:
+                l = [(n.strip("、 "), float(p.replace("%", ""))) for n, p in raw_l]
+                l.sort(key=lambda x: x[1])
+                if l:
+                    m = len(l)
+                    sector_losers = [
+                        {"name": n, "pct": f"{v:+.2f}%", "s": 1 - i / (m - 1) if m > 1 else 0.5}
+                        for i, (n, v) in enumerate(l)
+                    ]
+                    sector_losers.reverse()  # 左浅右深：跌幅从小到大排列
+        # 资金流向（flow_json 合并行）
+        flow_inflows = mn.get("flow_inflows") or []
+        flow_outflows = [
+            {**s, "abs": abs(s.get("flow", 0) or 0)}
+            for s in (mn.get("flow_outflows") or [])
+        ]
+        # 赛道分析（context_json 合并行）
+        sector_reasoning = mn.get("sector_reasoning") or ""
+        # 大盘状态（LLM 可能输出 bullish/bearish/bull/bear 等变体，统一归一）
+        regime_label = domain.normalize_regime_label(mn.get("regime_label"))
+    macro_data = {
+        "news": "；".join(news_items),
+        "news_items": news_items,
+        "top_gainers": [],
+        "top_losers": [],
+        "etf_net_flow": "",
+    }
+    max_inflow = max((s.get("flow", 0) or 0 for s in flow_inflows), default=0)
+    max_outflow = max((abs(s.get("flow", 0) or 0) for s in flow_outflows), default=0)
+    return {
+        "macro": macro_data,
+        "sector_gainers": sector_gainers,
+        "sector_losers": sector_losers,
+        "flow_inflows": flow_inflows,
+        "flow_outflows": flow_outflows,
+        "max_inflow": max_inflow,
+        "max_outflow": max_outflow,
+        "sector_reasoning": sector_reasoning,
+        "regime_label": regime_label,
+    }
+
+
+def _candidate_summary(candidates):
+    """追踪监控列表 → 展示项 + 累计收益/命中率统计。"""
+    candidate_list = []
+    for c in candidates:
+        code, first_date = c["code"], c["first_date"]
+        name = c["name"] or ""
+        rec_count = c["rec_count"]
+        # 展示状态与基金详情一致：取 monitor_events 最新监控信号（无信号时回退推荐状态）
+        status = repo.get_latest_signal(code) or (c["status"] or "HOLD")
+        exit_date = c["exit_date"] or ""
+        # 首次推荐净值（优先读 recommend_log.entry_nav，缺失时查 fund_nav 当日净值，无则 --）
+        first_nav = repo.get_entry_nav(code, first_date)
+        if first_nav is None:
+            first_nav = repo.get_nav_at_date(code, first_date)
+        # 当前净值（取最新盘后净值，今日无则自动回退到前一日）
+        cur_nav = repo.get_latest_nav(code) if first_nav is not None else None
+        # 累计收益
+        ret = None
+        if first_nav and cur_nav and first_nav > 0:
+            ret = round((cur_nav / first_nav - 1) * 100, 2)
+        candidate_list.append({
+            "code": code, "name": name,
+            "first_date": first_date or "",
+            "first_nav": round(first_nav, 4) if first_nav else None,
+            "cur_nav": round(cur_nav, 4) if cur_nav else None,
+            "return": ret,
+            "rec_count": rec_count,
+            "status": status,
+            "exit_date": exit_date,
+            "type": "",
+        })
+    # 累计收益总和
+    total_return = round(sum(c["return"] for c in candidate_list if c["return"] is not None), 2) if candidate_list else 0
+    rec_count = len(candidate_list)
+    hit_count = sum(1 for c in candidate_list if c["return"] is not None and c["return"] > 0)
+    hit_rate = round(hit_count / rec_count * 100, 1) if rec_count > 0 else 0
+    return candidate_list, total_return, rec_count, hit_rate
+
+
+def _fund_profile_block(code):
+    """基金特征画像 + 十大持仓（最新推荐 / 次新推荐复用）。"""
+    fund_features = None
+    feat = repo.get_latest_features(code)
+    if feat:
+        fund_features = {
+            "hurst": feat["hurst_60d"],
+            "momentum": round(feat["momentum_20d"] or 0, 2) if feat["momentum_20d"] is not None else None,
+            "calmar": round(feat["calmar"] or 0, 2) if feat["calmar"] is not None else None,
+            "downside_vol": round(feat["downside_vol"] or 0, 2) if feat["downside_vol"] is not None else None,
+            "capture_up": round(feat["capture_up"] or 0, 1) if feat["capture_up"] is not None else None,
+            "capture_down": round(feat["capture_down"] or 0, 1) if feat["capture_down"] is not None else None,
+            "bias": round(feat["bias_60d"] or 0, 2) if feat["bias_60d"] is not None else None,
+            "top_industry": feat["rbsa_industry_1"] or "",
+            "top_industry_weight": round(feat["rbsa_weight_1"] or 0, 1),
+        }
+    top_holdings = [
+        {"code": h["stock_code"], "name": h["stock_name"], "weight": h["weight"],
+         "industry": h["industry"] or ""}
+        for h in repo.get_holdings(code, 10)
+    ]
+    return fund_features, top_holdings
+
+
+def _alpha_curve_svg(alpha_pcts):
+    """逐基金 alpha 贡献曲线 SVG（自动缩放）。返回 (svg, baseline_y)。"""
+    if not alpha_pcts:
+        return "", 50
+    a_min, a_max = min(alpha_pcts), max(alpha_pcts)
+    a_range = a_max - a_min or 1
+    a_pad = a_range * 0.1
+    a_min -= a_pad
+    a_max += a_pad
+    a_range = a_max - a_min or 1
+
+    def _ay(v):
+        return 90 - (v - a_min) / a_range * 80
+
+    baseline_y = _ay(0)
+    if len(alpha_pcts) == 1:
+        y = _ay(alpha_pcts[0])
+        return f"M 0,{y:.1f} L 200,{y:.1f}", baseline_y
+    n = len(alpha_pcts)
+    pts = [(i / (n - 1) * 200, _ay(v)) for i, v in enumerate(alpha_pcts)]
+    d = f"M {pts[0][0]:.1f},{pts[0][1]:.1f}"
+    for i in range(len(pts) - 1):
+        x0, y0 = pts[i]
+        x1, y1 = pts[i + 1]
+        mx = (x0 + x1) / 2
+        d += f" C {mx:.1f},{y0:.1f} {mx:.1f},{y1:.1f} {x1:.1f},{y1:.1f}"
+    return d, baseline_y
+
+
+def _alpha_block(candidate_list, total_return):
+    """超额阿尔法（跑赢沪深300）+ 逐基金 alpha 贡献曲线。"""
+    alpha = None
+    start_date = repo.get_first_reco_date()
+    if start_date and total_return is not None:
+        hs300_start = repo.get_index_close("sh000300", start_date)
+        hs300_now = repo.get_index_close("sh000300")
+        if hs300_start and hs300_now:
+            hs300_pct = round((hs300_now / hs300_start - 1) * 100, 2)
+            alpha = round(total_return - hs300_pct, 2)
+    alpha_svg, alpha_baseline_y = _alpha_curve_svg(_alpha_series(candidate_list))
+    return alpha, alpha_svg, alpha_baseline_y
 
 
 def _nav_chart(code):
@@ -239,13 +423,17 @@ def _index_context() -> dict:
             latest = entry
 
     # 宏观摘要（从 macro_news 取管线已入库的快讯，与 LLM 分析数据源一致）
-    import re as _re
-    news_items = ["暂无快讯"]
-    sector_gainers = sector_losers = []
-    flow_inflows = []
-    flow_outflows = []
-    sector_reasoning = ""
-    regime_label = "NEUTRAL"
+    mn = repo.get_latest_macro_news()
+    macro = _macro_summary(mn)
+    macro_data = macro["macro"]
+    sector_gainers = macro["sector_gainers"]
+    sector_losers = macro["sector_losers"]
+    flow_inflows = macro["flow_inflows"]
+    flow_outflows = macro["flow_outflows"]
+    max_inflow = macro["max_inflow"]
+    max_outflow = macro["max_outflow"]
+    sector_reasoning = macro["sector_reasoning"]
+    regime_label = macro["regime_label"]
     empty_today = None
     _empty_reco = repo.get_empty_recommendation(today)
     if _empty_reco:
@@ -257,74 +445,6 @@ def _index_context() -> dict:
         _pts = quality_metrics[0].get("points") or []
         if len(_pts) >= 2:
             quality_curve_svg, quality_curve_baseline = _quality_curve_svg(_pts)
-    mn = repo.get_latest_macro_news()
-    if mn:
-        text = mn.get("news_summary") or ""
-        lines = text.split("\n")
-        seen = set()
-        items = []
-        for seg in lines:
-            seg = seg.strip()
-            if not seg or len(seg) < 6 or seg.startswith(("http", "www")):
-                continue
-            title = seg.split("：", 1)[0].strip()
-            if not title:
-                continue
-            dedup = title[:100] if len(title) > 100 else title
-            if dedup in seen:
-                continue
-            seen.add(dedup)
-            items.append(title)
-        if items:
-            news_items = items
-        top_gainers = mn.get("top_gainers") or ""
-        top_losers = mn.get("top_losers") or ""
-        etf_net_flow = mn.get("etf_net_flow") or ""
-        # 领涨/领跌行业（各取前3，带幅度强度）
-        if top_gainers:
-            raw_g = _re.findall(r"([^(]+)\(([^)]+)\)", top_gainers)[:9]
-            if raw_g:
-                g = [(n.strip("、 "), float(p.replace("%", ""))) for n, p in raw_g]
-                m = len(g)
-                sector_gainers = [
-                    {"name": n, "pct": f"{v:+.2f}%", "s": 1 - i / (m - 1) if m > 1 else 0.5}
-                    for i, (n, v) in enumerate(g)
-                ]
-        if top_losers:
-            raw_l = _re.findall(r"([^(]+)\(([^)]+)\)", top_losers)[:3]
-            if raw_l:
-                l = [(n.strip("、 "), float(p.replace("%", ""))) for n, p in raw_l]
-                l.sort(key=lambda x: x[1])
-                if l:
-                    m = len(l)
-                    sector_losers = [
-                        {"name": n, "pct": f"{v:+.2f}%", "s": 1 - i / (m - 1) if m > 1 else 0.5}
-                        for i, (n, v) in enumerate(l)
-                    ]
-                    sector_losers.reverse()  # 左浅右深：跌幅从小到大排列
-        # 资金流向（flow_json 合并行）
-        flow_inflows = mn.get("flow_inflows") or []
-        flow_outflows = [
-            {**s, "abs": abs(s.get("flow", 0) or 0)}
-            for s in (mn.get("flow_outflows") or [])
-        ]
-        # 赛道分析（context_json 合并行）
-        sector_reasoning = mn.get("sector_reasoning") or ""
-        # 大盘状态（LLM 可能输出 bullish/bearish/bull/bear 等变体，统一归一）
-        raw_regime = (mn.get("regime_label") or "").strip().lower()
-        if raw_regime.startswith("bull"):
-            regime_label = "BULL"
-        elif raw_regime.startswith("bear"):
-            regime_label = "BEAR"
-        else:
-            regime_label = "NEUTRAL"
-    macro_data = {
-        "news": "；".join(news_items),
-        "news_items": news_items,
-        "top_gainers": [],
-        "top_losers": [],
-        "etf_net_flow": "",
-    }
 
     # 行业热力图
     sectors = repo.get_sector_heatmap()
@@ -337,42 +457,8 @@ def _index_context() -> dict:
     fund_pool, pool_by_type = repo.get_fund_pool_stats()
     pool_types = [{"type": t["type"], "count": t["count"]} for t in pool_by_type]
 
-    # 追踪监控列表
-    candidates = repo.get_tracking_list()
-    candidate_list = []
-    for c in candidates:
-        code, first_date = c["code"], c["first_date"]
-        name = c["name"] or ""
-        rec_count = c["rec_count"]
-        # 展示状态与基金详情一致：取 monitor_events 最新监控信号（无信号时回退推荐状态）
-        status = repo.get_latest_signal(code) or (c["status"] or "HOLD")
-        exit_date = c["exit_date"] or ""
-        # 首次推荐净值（优先读 recommend_log.entry_nav，缺失时查 fund_nav 当日净值，无则 --）
-        first_nav = repo.get_entry_nav(code, first_date)
-        if first_nav is None:
-            first_nav = repo.get_nav_at_date(code, first_date)
-        # 当前净值（取最新盘后净值，今日无则自动回退到前一日）
-        cur_nav = repo.get_latest_nav(code) if first_nav is not None else None
-        # 累计收益
-        ret = None
-        if first_nav and cur_nav and first_nav > 0:
-            ret = round((cur_nav / first_nav - 1) * 100, 2)
-        candidate_list.append({
-            "code": code, "name": name,
-            "first_date": first_date or "",
-            "first_nav": round(first_nav, 4) if first_nav else None,
-            "cur_nav": round(cur_nav, 4) if cur_nav else None,
-            "return": ret,
-            "rec_count": rec_count,
-            "status": status,
-            "exit_date": exit_date,
-            "type": "",
-        })
-    # 累计收益总和
-    total_return = round(sum(c["return"] for c in candidate_list if c["return"] is not None), 2) if candidate_list else 0
-    rec_count = len(candidate_list)
-    hit_count = sum(1 for c in candidate_list if c["return"] is not None and c["return"] > 0)
-    hit_rate = round(hit_count / rec_count * 100, 1) if rec_count > 0 else 0
+    # 追踪监控列表 + 累计收益/命中率
+    candidate_list, total_return, rec_count, hit_rate = _candidate_summary(repo.get_tracking_list())
 
     # 净值图表（近3个月双线走势）
     nav_pcts, nav_dates, hs_pcts, hs_dates = _nav_chart(latest["code"]) if latest else ([], [], [], [])
@@ -380,82 +466,15 @@ def _index_context() -> dict:
     period_ret = _period_returns(latest["code"]) if latest else {}
     period_ret2 = _period_returns(latest_list[1]["code"]) if len(latest_list) > 1 else {}
 
-    # 基金特征画像
-    fund_features = None
-    if latest:
-        feat = repo.get_latest_features(latest["code"])
-        if feat:
-            fund_features = {
-                "hurst": feat["hurst_60d"],
-                "momentum": round(feat["momentum_20d"] or 0, 2) if feat["momentum_20d"] is not None else None,
-                "calmar": round(feat["calmar"] or 0, 2) if feat["calmar"] is not None else None,
-                "downside_vol": round(feat["downside_vol"] or 0, 2) if feat["downside_vol"] is not None else None,
-                "capture_up": round(feat["capture_up"] or 0, 1) if feat["capture_up"] is not None else None,
-                "capture_down": round(feat["capture_down"] or 0, 1) if feat["capture_down"] is not None else None,
-                "bias": round(feat["bias_60d"] or 0, 2) if feat["bias_60d"] is not None else None,
-                "top_industry": feat["rbsa_industry_1"] or "",
-                "top_industry_weight": round(feat["rbsa_weight_1"] or 0, 1),
-            }
-
-    # 持仓透视
-    top_holdings = []
-    if latest:
-        top_holdings = [
-            {"code": h["stock_code"], "name": h["stock_name"], "weight": h["weight"],
-             "industry": h["industry"] or ""}
-            for h in repo.get_holdings(latest["code"], 10)
-        ]
-
-    top_holdings2 = []
-    if len(latest_list) > 1:
-        top_holdings2 = [
-            {"code": h["stock_code"], "name": h["stock_name"], "weight": h["weight"],
-             "industry": h["industry"] or ""}
-            for h in repo.get_holdings(latest_list[1]["code"], 10)
-        ]
+    # 基金特征画像 + 十大持仓（最新 / 次新推荐）
+    fund_features, top_holdings = _fund_profile_block(latest["code"]) if latest else (None, [])
+    top_holdings2 = _fund_profile_block(latest_list[1]["code"])[1] if len(latest_list) > 1 else []
 
     # 运行天数
     uptime_days = repo.get_uptime_days()
 
-    # 超额阿尔法（系统运行以来累计超额收益 = total_return - 同期沪深300涨幅）
-    alpha = None
-    start_date = repo.get_first_reco_date()
-    if start_date and total_return is not None:
-        hs300_start = repo.get_index_close("sh000300", start_date)
-        hs300_now = repo.get_index_close("sh000300")
-        if hs300_start and hs300_now:
-            hs300_pct = round((hs300_now / hs300_start - 1) * 100, 2)
-            alpha = round(total_return - hs300_pct, 2)
-    # 逐基金alpha贡献（按推荐日期排序，用于alpha曲线）
-    alpha_pcts = _alpha_series(candidate_list)
-    # alpha曲线SVG（自动缩放）
-    alpha_svg = ""
-    alpha_baseline_y = 50
-    if len(alpha_pcts) >= 1:
-        a_min, a_max = min(alpha_pcts), max(alpha_pcts)
-        a_range = a_max - a_min or 1
-        a_pad = a_range * 0.1
-        a_min -= a_pad
-        a_max += a_pad
-        a_range = a_max - a_min or 1
-        def _ay(v): return 90 - (v - a_min) / a_range * 80
-        alpha_baseline_y = _ay(0)
-        if len(alpha_pcts) == 1:
-            y = _ay(alpha_pcts[0])
-            alpha_svg = f"M 0,{y:.1f} L 200,{y:.1f}"
-        else:
-            n = len(alpha_pcts)
-            pts = [(i / (n - 1) * 200, _ay(v)) for i, v in enumerate(alpha_pcts)]
-            d = f"M {pts[0][0]:.1f},{pts[0][1]:.1f}"
-            for i in range(len(pts) - 1):
-                x0, y0 = pts[i]
-                x1, y1 = pts[i + 1]
-                mx = (x0 + x1) / 2
-                d += f" C {mx:.1f},{y0:.1f} {mx:.1f},{y1:.1f} {x1:.1f},{y1:.1f}"
-            alpha_svg = d
-
-    max_inflow = max((s.get("flow", 0) or 0 for s in flow_inflows), default=0)
-    max_outflow = max((abs(s.get("flow", 0) or 0) for s in flow_outflows), default=0)
+    # 超额阿尔法 + 逐基金 alpha 贡献曲线
+    alpha, alpha_svg, alpha_baseline_y = _alpha_block(candidate_list, total_return)
 
     # 等权组合累计收益序列（用于 Alpha 双线图 + 夏普/回撤）
     _, port_pcts, port_hs_pcts = _portfolio_series()
@@ -667,7 +686,7 @@ async def get_fund_detail(code: str):
         "combo": rec["combo"],
         "regime": rec["regime"] or "NEUTRAL",
         "status": rec["status"] or "HOLD",
-        "display_score": _display_score(rec["combo"], rec["score"]),
+        "display_score": domain.display_score(rec["combo"], rec["score"]),
     }
 
     top_holdings = [
@@ -684,13 +703,8 @@ async def get_fund_detail(code: str):
     signal = repo.get_latest_monitor_event(code)
     current_signal = None
     if signal:
-        detail = signal[4] or ""
-        try:
-            import json
-            detail_obj = json.loads(detail)
-            reason = detail_obj.get("reason", detail)
-        except Exception:
-            reason = detail
+        # monitor 写入的是 "; " 拼接的纯文本原因，无需（也无法）按 JSON 解析
+        reason = signal[4] or ""
         current_signal = {
             "signal": signal[0],
             "logic_verdict": signal[1] or "",

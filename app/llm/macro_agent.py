@@ -15,7 +15,7 @@ from app.llm.prompts import (sector_selection_prompt, sector_selection_system_pr
                              news_brief_prompt)
 import app.repo as repo
 from app.data.fetchers import fetch as _fetch
-from app.features.sector import is_industry_code, is_industry_name
+from app.features.sector import is_industry_code
 
 logger = get_logger("macro_agent")
 
@@ -162,7 +162,7 @@ def _load_board_sectors() -> list[dict]:
         b for b in allbk
         if not _is_pseudo_sector(b.get('n', '') or '')
         and is_industry_code(b.get('c', '') or '')
-        and is_industry_name(b.get('n', '') or '')
+        and bool((b.get('n') or '').strip())
     ]
 
 

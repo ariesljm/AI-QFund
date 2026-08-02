@@ -11,8 +11,8 @@ from pathlib import Path
 
 import lightgbm as lgb
 
-from app.database import db_conn as _db_conn
 from app.features.calculator import compute_fund_features, score_frame
+from app import domain
 import app.repo as repo
 
 FEATURE_COLS = repo.FEATURE_COLS
@@ -30,11 +30,9 @@ _MAX_BT_FUNDS = 2000
 def _regime_at_date(idx_df: pd.DataFrame, date: pd.Timestamp) -> str:
     row = idx_df.loc[idx_df.index <= date]
     if len(row) == 0:
-        return "NEUTRAL"
+        return domain.REGIME_NEUTRAL
     last = row.iloc[-1]
-    if last["ma60"] and last["ma60"] > 0:
-        return "BULL" if last["close"] > last["ma60"] else "BEAR"
-    return "NEUTRAL"
+    return domain.regime_from_close_ma60(last["close"], last["ma60"])
 
 
 def _score_funds_at_date(nav_df: pd.DataFrame, idx_df: pd.DataFrame,
@@ -45,8 +43,8 @@ def _score_funds_at_date(nav_df: pd.DataFrame, idx_df: pd.DataFrame,
     idx_pos = idx_close.index.get_indexer([bt_date])[0]
     if idx_pos < 0 or idx_pos < 60:
         return pd.DataFrame()
-    idx_closes_w = idx_close.iloc[idx_pos - 59: idx_pos + 1].to_numpy(dtype=float)
-    idx_vols_w = idx_vol.iloc[idx_pos - 59: idx_pos + 1].to_numpy(dtype=float)
+    idx_closes_w = idx_close.iloc[domain.index_window_slice(idx_pos)].to_numpy(dtype=float)
+    idx_vols_w = idx_vol.iloc[domain.index_window_slice(idx_pos)].to_numpy(dtype=float)
 
     regime = _regime_at_date(idx_df, bt_date)
     cfg = repo.get_ranking_cfg()
@@ -117,20 +115,14 @@ def _attach_forward_returns(df: pd.DataFrame, nav_df: pd.DataFrame,
 
 def run_backtest(start_date: str | None = None, end_date: str | None = None) -> dict:
     """回测：沿时间轴滑动，计算推荐组合 vs 基准的表现。"""
-    with _db_conn() as conn:
-        idx_rows = conn.execute(
-            "SELECT date, close, volume, ma60 FROM index_daily "
-            "WHERE code='sh000300' ORDER BY date ASC"
-        ).fetchall()
-        if not idx_rows:
-            raise RuntimeError("指数数据缺失")
-        idx_df = pd.DataFrame(idx_rows, columns=["date", "close", "volume", "ma60"])
-        idx_df["date"] = pd.to_datetime(idx_df["date"])
-        idx_df = idx_df.set_index("date").sort_index()
+    idx_rows = repo.get_index_series("sh000300", columns=("date", "close", "volume", "ma60"))
+    if not idx_rows:
+        raise RuntimeError("指数数据缺失")
+    idx_df = pd.DataFrame(idx_rows, columns=["date", "close", "volume", "ma60"])
+    idx_df["date"] = pd.to_datetime(idx_df["date"])
+    idx_df = idx_df.set_index("date").sort_index()
 
-        nav_rows = conn.execute(
-            "SELECT code, date, cum_nav FROM fund_nav ORDER BY code, date ASC"
-        ).fetchall()
+    nav_rows = repo.get_all_nav_rows()
     nav_df = pd.DataFrame(nav_rows, columns=["code", "date", "cum_nav"])
     nav_df["date"] = pd.to_datetime(nav_df["date"])
 

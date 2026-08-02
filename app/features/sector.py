@@ -20,9 +20,3 @@ def is_industry_code(code: str) -> bool:
     except ValueError:
         return False
     return any(low <= num <= high for low, high in INDUSTRY_CODE_RANGES)
-
-
-def is_industry_name(name: str) -> bool:
-    if not name or not name.strip():
-        return False
-    return True

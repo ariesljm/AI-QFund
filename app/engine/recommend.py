@@ -21,6 +21,7 @@ from app.llm.macro_agent import build_macro_context, MacroContext
 from app.data.nav import fetch_fund_nav_incremental
 from app.llm.client import call_llm, parse_llm_json
 from app.llm.prompts import final_pick_prompt, final_pick_system_prompt
+from app import domain
 import app.repo as repo
 
 logger = get_logger("recommend")
@@ -473,7 +474,7 @@ def _save_recommendation(date_str: str, selected: dict, candidates: list[dict],
     entry_nav = repo.get_latest_nav(selected["selected_code"])
     new_id = repo.insert_recommendation(
         date_str, selected["selected_code"], real_name, rank, score, combo, regime,
-        reason, status="HOLD", feature_snapshot=feature_snapshot, entry_nav=entry_nav,
+        reason, status=domain.SIGNAL_HOLD, feature_snapshot=feature_snapshot, entry_nav=entry_nav,
     )
     logger.info("推荐入库: %s %s (排名%d, 分数%.4f, id=%d)",
                 selected["selected_code"], real_name, rank, score or 0.0, new_id)
@@ -522,8 +523,7 @@ def run_recommendation(retrain: bool = False, force: bool = False) -> None:
 
     logger.info("=== LLM 宏观分析 + 选赛道 ===")
     ctx = build_macro_context(date_str, force=force)
-    llm_regime = ctx.regime_label.upper()
-    llm_regime = "BULL" if llm_regime.startswith("BULL") else "BEAR" if llm_regime.startswith("BEAR") else "NEUTRAL"
+    llm_regime = domain.normalize_regime_label(ctx.regime_label)
     logger.info("选定赛道: %s | 回避: %s | 大盘: %s",
                 ctx.recommended_sectors, ctx.risk_sectors, ctx.regime_label)
 
@@ -576,7 +576,7 @@ def run_recommendation(retrain: bool = False, force: bool = False) -> None:
                 date_str, selected["selected_code"], selected["selected_name"],
                 0, 0.0, 0.0, llm_regime,
                 f"风控拦截: 20日动量{sel_momentum:.1f}% 低于阈值{guard:.0f}%",
-                status="REJECT",
+                status=domain.SIGNAL_REJECT,
             )
             logger.info("风控拦截已入库: %s", selected["selected_code"])
             continue

@@ -1,7 +1,6 @@
 """特征计算模块：Hurst、动量、卡玛、RBSA、大盘状态机。"""
 
 from app.utils.log import get_logger
-import sqlite3
 import time
 
 import numpy as np
@@ -180,23 +179,17 @@ def calc_rbsa(holdings: list[dict], industry_map: dict[str, str] | None = None) 
     return [{"industry": ind, "weight": w} for ind, w in sorted_industries[:3]]
 
 
-def calc_features(code: str, conn: sqlite3.Connection,
+def calc_features(code: str, conn=None,
                   idx_closes: np.ndarray | None = None,
                   idx_volumes: np.ndarray | None = None) -> dict:
-    cur = conn.execute(
-        "SELECT date, cum_nav FROM fund_nav WHERE code = ? ORDER BY date ASC",
-        (code,),
-    )
-    rows = cur.fetchall()
+    rows = repo.get_fund_nav_rows(code, conn)
     if len(rows) < 60:
         logger.warning("基金 %s 净值数据不足 (%d 天)，跳过特征计算", code, len(rows))
         return {}
     dates = [r[0] for r in rows]
     navs = np.array([r[1] for r in rows], dtype=float)
     if idx_closes is None:
-        idx_rows = conn.execute(
-            "SELECT date, close, volume FROM index_daily WHERE code = 'sh000300' ORDER BY date ASC",
-        ).fetchall()
+        idx_rows = repo.get_index_rows(conn=conn)
         idx_volumes = np.array([r[2] for r in idx_rows], dtype=float) if idx_rows else np.array([])
         idx_closes = np.array([r[1] for r in idx_rows], dtype=float) if idx_rows else np.array([])
     feat = compute_fund_features(navs, idx_closes, idx_volumes)
@@ -223,31 +216,16 @@ def calc_all_features(batch_commit: int = 500) -> int:
     from app.database import db_conn
 
     with db_conn() as conn:
-        all_codes = [
-            r[0] for r in conn.execute(
-                "SELECT code FROM fund_basic WHERE is_buyable = 1"
-            ).fetchall()
-        ]
+        all_codes = repo.get_buyable_codes()
         total = len(all_codes)
         # 预加载全局不变的数据，避免逐基金/逐持仓重复查询（N+1）
-        industry_map = dict(
-            conn.execute(
-                "SELECT stock_code, industry_name FROM stock_industry_map"
-            ).fetchall()
-        )
-        idx_rows = conn.execute(
-            "SELECT date, close, volume FROM index_daily WHERE code = 'sh000300' ORDER BY date ASC",
-        ).fetchall()
+        industry_map = repo.get_industry_map()
+        idx_rows = repo.get_index_rows(conn=conn)
         idx_volumes = np.array([r[2] for r in idx_rows], dtype=float) if idx_rows else np.array([])
         idx_closes = np.array([r[1] for r in idx_rows], dtype=float) if idx_rows else np.array([])
         rbsa_data: dict[str, list[dict]] = {}
-        cur_r = conn.execute(
-            "SELECT code, stock_code, stock_name, weight FROM fund_holdings "
-            "WHERE report_date IN "
-            "(SELECT MAX(report_date) FROM fund_holdings GROUP BY code)"
-        )
         _rbsa_buf: dict[str, list[dict]] = {}
-        for code, sc, sn, w in cur_r.fetchall():
+        for code, sc, sn, w in repo.get_latest_holdings_rows():
             _rbsa_buf.setdefault(code, []).append({"stock_code": sc, "stock_name": sn, "weight": w})
         for code, holdings in _rbsa_buf.items():
             top = calc_rbsa(holdings, industry_map)
@@ -257,30 +235,16 @@ def calc_all_features(batch_commit: int = 500) -> int:
         # 大盘状态机：沪深300 close vs MA60 → BULL/BEAR（repo 单一来源）
         regime = repo.get_market_regime()
         logger.info("大盘状态机: %s", regime)
-        feature_dates = dict(
-            conn.execute("SELECT code, date FROM fund_features").fetchall()
-        )
-        nav_latest = dict(
-            conn.execute("SELECT code, MAX(date) FROM fund_nav GROUP BY code").fetchall()
-        )
+        feature_dates = repo.get_feature_dates_map()
+        nav_latest = repo.get_nav_latest_dates()
         holdings_need_rbsa = set()
-        cur_e = conn.execute(
-            "SELECT code FROM fund_features "
-            "WHERE (rbsa_industry_1 IS NULL OR rbsa_industry_1 = '' OR rbsa_industry_1 = '其他')"
-            "   OR (rbsa_industry_2 IS NULL OR rbsa_industry_2 = '')"
-            "   OR (rbsa_industry_3 IS NULL OR rbsa_industry_3 = '')"
-        )
-        for (c,) in cur_e.fetchall():
+        for c in repo.get_codes_missing_rbsa():
             if c in rbsa_data:
                 holdings_need_rbsa.add(c)
         # 行业映射更新后，强制重算已过期RBSA
-        im_row = conn.execute("SELECT value FROM meta WHERE key = 'industry_map_updated'").fetchone()
-        industry_map_date = im_row[0] if im_row else None
+        industry_map_date = repo.get_meta("industry_map_updated")
         if industry_map_date:
-            stale = conn.execute(
-                "SELECT code FROM fund_features WHERE date < ?", (industry_map_date,)
-            ).fetchall()
-            for (c,) in stale:
+            for c in repo.get_feature_codes_before(industry_map_date):
                 if c in rbsa_data and c not in holdings_need_rbsa:
                     holdings_need_rbsa.add(c)
         skip_codes = {
@@ -303,31 +267,14 @@ def calc_all_features(batch_commit: int = 500) -> int:
             done += 1
             if features:
                 top = rbsa_data.get(code, [])
-                rbsa_industry_1 = top[0]["industry"] if len(top) > 0 else ""
-                rbsa_weight_1 = top[0]["weight"] if len(top) > 0 else 0.0
-                rbsa_industry_2 = top[1]["industry"] if len(top) > 1 else ""
-                rbsa_weight_2 = top[1]["weight"] if len(top) > 1 else 0.0
-                rbsa_industry_3 = top[2]["industry"] if len(top) > 2 else ""
-                rbsa_weight_3 = top[2]["weight"] if len(top) > 2 else 0.0
-                conn.execute(
-                    "INSERT OR REPLACE INTO fund_features "
-                    "(code, date, regime, hurst_60d, momentum_20d, calmar, downside_vol, "
-                    "capture_up, capture_down, bias_60d, "
-                    "rbsa_industry_1, rbsa_weight_1, "
-                    "rbsa_industry_2, rbsa_weight_2, "
-                    "rbsa_industry_3, rbsa_weight_3) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        features["code"], features["date"], regime,
-                        features.get("hurst_60d"), features.get("momentum_20d"),
-                        features.get("calmar"), features.get("downside_vol"),
-                        features.get("capture_up"), features.get("capture_down"),
-                        features.get("bias_60d"),
-                        rbsa_industry_1, rbsa_weight_1,
-                        rbsa_industry_2, rbsa_weight_2,
-                        rbsa_industry_3, rbsa_weight_3,
-                    ),
-                )
+                features["regime"] = regime
+                features["rbsa_industry_1"] = top[0]["industry"] if len(top) > 0 else ""
+                features["rbsa_weight_1"] = top[0]["weight"] if len(top) > 0 else 0.0
+                features["rbsa_industry_2"] = top[1]["industry"] if len(top) > 1 else ""
+                features["rbsa_weight_2"] = top[1]["weight"] if len(top) > 1 else 0.0
+                features["rbsa_industry_3"] = top[2]["industry"] if len(top) > 2 else ""
+                features["rbsa_weight_3"] = top[2]["weight"] if len(top) > 2 else 0.0
+                repo.save_fund_features(conn, features)
                 saved += 1
             if saved % batch_commit == 0:
                 conn.commit()
@@ -335,13 +282,7 @@ def calc_all_features(batch_commit: int = 500) -> int:
                 speed = done / elapsed if elapsed > 0 else 0
                 logger.info("特征计算进度: %d/%d, speed=%.1f/s", done, total, speed)
         # 修剪：每只基金仅保留最近 N 行特征快照，防止历史快照无限累积
-        conn.execute(
-            "DELETE FROM fund_features WHERE rowid IN ("
-            "  SELECT rowid FROM ("
-            "    SELECT rowid, ROW_NUMBER() OVER (PARTITION BY code ORDER BY date DESC) rk"
-            "    FROM fund_features) WHERE rk > ?)",
-            (_FEATURE_RETENTION_ROWS,),
-        )
+        repo.trim_fund_features(conn, _FEATURE_RETENTION_ROWS)
         conn.commit()
     elapsed = time.monotonic() - start_time
     logger.info("特征计算完成: %d/%d 只基金入库, 耗时 %.1f 秒", saved, total, elapsed)

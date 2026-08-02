@@ -410,3 +410,68 @@ class TestRankWithinSectors:
         assert "半导体" in got, f"半导体被挤出候选: {got}"
         assert "电源设备" in got, f"电源设备被挤出候选: {got}"
         assert len(finalists) <= 5
+
+
+# ============================================================
+# LLM 最终定论解析 + 持仓上下文构建（候选4 胶水收敛后的测试缺口）
+# ============================================================
+
+from app.engine.recommend import _parse_llm_result
+from app.llm.context import build_holdings_text
+
+
+class TestParseLlmResult:
+    """推荐终定 LLM 返回解析：selected_code 必须在候选池内才算有效。"""
+
+    def test_valid_selection(self):
+        parsed = _parse_llm_result(
+            '{"selected_code": "000001", "selected_name": "基金A", '
+            '"reason": "理由", "vetoed": ["000002"]}',
+            {"000001": "基金A", "000002": "基金B"},
+        )
+        assert parsed == {
+            "selected_code": "000001", "selected_name": "基金A",
+            "reason": "理由", "vetoed": ["000002"],
+        }
+
+    def test_invalid_code_returns_none(self):
+        """LLM 返回池外 code → 无效（防止幻觉选错基金）。"""
+        parsed = _parse_llm_result(
+            '{"selected_code": "999999", "selected_name": "幻觉基金"}',
+            {"000001": "基金A"},
+        )
+        assert parsed is None
+
+    def test_invalid_json_returns_none(self):
+        assert _parse_llm_result("not json", {"000001": "基金A"}) is None
+
+    def test_non_dict_returns_none(self):
+        assert _parse_llm_result("[1, 2, 3]", {"000001": "基金A"}) is None
+
+    def test_missing_selected_code_returns_none(self):
+        assert _parse_llm_result('{"reason": "无推荐"}', {"000001": "基金A"}) is None
+
+
+class TestBuildHoldingsText:
+    """持仓上下文格式单一来源：recommend/monitor 共用同一文本。"""
+
+    def test_with_holdings(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.llm.context.repo.get_holdings",
+            lambda code, limit: [
+                {"stock_name": "贵州茅台", "industry": "白酒", "weight": 12.5},
+                {"stock_name": "宁德时代", "industry": "电池", "weight": 8.0},
+            ],
+        )
+        assert build_holdings_text("000001", 5) == "贵州茅台(白酒,12.5%)；宁德时代(电池,8.0%)"
+
+    def test_industry_fallback_other(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.llm.context.repo.get_holdings",
+            lambda code, limit: [{"stock_name": "某股", "industry": "", "weight": 1.5}],
+        )
+        assert build_holdings_text("000002", 5) == "某股(其他,1.5%)"
+
+    def test_empty_holdings(self, monkeypatch):
+        monkeypatch.setattr("app.llm.context.repo.get_holdings", lambda code, limit: [])
+        assert build_holdings_text("000003", 5) == "无持仓数据"

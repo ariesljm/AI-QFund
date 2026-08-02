@@ -78,8 +78,7 @@ class TestComputeQualityMetricsDB:
         monkeypatch.setattr(db_mod, "DB_PATH", tmp_path / "test.db")
         with db_mod.db_conn() as conn:
             self._seed(conn)
-        with db_mod.db_conn() as conn:
-            m = quality.compute_quality_metrics(conn, "2026-01-01", "2026-01-31")
+        m = quality.compute_quality_metrics("2026-01-01", "2026-01-31")
         assert m["sample_count"] == 2
         assert m["ic"] == 1.0          # 高预测分基金实现更高超额（预测有效）
         assert m["excess_win_rate"] == 0.5

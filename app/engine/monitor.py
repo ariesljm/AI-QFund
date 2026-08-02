@@ -21,17 +21,19 @@ import numpy as np
 from app.repo import (get_nav_since, get_latest_nav, get_latest_features,
                       get_momentum_in_sector, get_reco_date_of, get_entry,
                       get_holding_codes, update_status, update_highest_nav,
-                      get_holdings, get_rbsa_weight_at_date,
+                      get_rbsa_weight_at_date,
                       get_holding_log_id, insert_monitor_event, exit_position)
 from app.llm.macro_agent import build_macro_context
-from app.llm.client import call_llm, parse_llm_json
+from app.llm.client import call_llm_json
+from app.llm.context import build_holdings_text
 from app.llm.prompts import monitor_logic_prompt
+from app import domain
 
 logger = get_logger("monitor")
 
 _DRIFT_THRESHOLD = 0.15
 _ATR_MULTIPLE = 2.0
-_HOLD_STATES = ("HOLD", "BUY_MORE", "WARNING")
+_HOLD_STATES = domain.HOLDING_STATES
 
 
 # ───────────────────────────────────────────
@@ -87,7 +89,7 @@ class TrailingStopRule(DefenseRule):
 
     def check(self, ctx: DefenseContext):
         exit_triggered, reason = check_trailing_stop(ctx.code, ctx.highest, ctx.atr, ctx.navs)
-        return DefenseResult(signal="EXIT", reason=reason, trailing=True) if exit_triggered else None
+        return DefenseResult(signal=domain.SIGNAL_EXIT, reason=reason, trailing=True) if exit_triggered else None
 
 
 class StyleDriftRule(DefenseRule):
@@ -98,7 +100,7 @@ class StyleDriftRule(DefenseRule):
 
     def check(self, ctx: DefenseContext):
         exit_triggered, reason = check_style_drift(ctx.code)
-        return DefenseResult(signal="EXIT", reason=reason, drift=True) if exit_triggered else None
+        return DefenseResult(signal=domain.SIGNAL_EXIT, reason=reason, drift=True) if exit_triggered else None
 
 
 class SectorAdvantageRule(DefenseRule):
@@ -109,7 +111,7 @@ class SectorAdvantageRule(DefenseRule):
 
     def check(self, ctx: DefenseContext):
         lost, reason = check_sector_advantage(ctx.code, ctx.sector)
-        return DefenseResult(signal="WARNING", reason=reason, sector_adv=True) if lost else None
+        return DefenseResult(signal=domain.SIGNAL_WARNING, reason=reason, sector_adv=True) if lost else None
 
 
 class LogicVerificationRule(DefenseRule):
@@ -121,15 +123,15 @@ class LogicVerificationRule(DefenseRule):
     def check(self, ctx: DefenseContext):
         logic = _check_logic_enhanced(ctx.code, ctx.buy_reason or "", ctx.sector or "", ctx.ctx)
         if logic["logic_verdict"] == "断裂":
-            return DefenseResult(signal="EXIT", reason=f"LLM逻辑证伪: {logic['reason']}")
-        if logic["signal_hint"] == "BUY_MORE":
-            return DefenseResult(signal="BUY_MORE", reason=logic.get("reason", ""),
+            return DefenseResult(signal=domain.SIGNAL_EXIT, reason=f"LLM逻辑证伪: {logic['reason']}")
+        if logic["signal_hint"] == domain.SIGNAL_BUY_MORE:
+            return DefenseResult(signal=domain.SIGNAL_BUY_MORE, reason=logic.get("reason", ""),
                                  sector_adv=bool(logic.get("sector_risk")),
                                  drift=bool(logic.get("holding_risk")))
-        if logic["signal_hint"] == "WARNING" or bool(logic.get("sector_risk")):
-            return DefenseResult(signal="WARNING", reason=logic.get("reason", ""),
+        if logic["signal_hint"] == domain.SIGNAL_WARNING or bool(logic.get("sector_risk")):
+            return DefenseResult(signal=domain.SIGNAL_WARNING, reason=logic.get("reason", ""),
                                  sector_adv=bool(logic.get("sector_risk")))
-        return DefenseResult(signal="HOLD", reason=logic.get("reason", ""))
+        return DefenseResult(signal=domain.SIGNAL_HOLD, reason=logic.get("reason", ""))
 
 
 # ───────────────────────────────────────────
@@ -228,12 +230,16 @@ def check_sector_advantage(code: str, sector: str) -> tuple[bool, str]:
     return False, ""
 
 
+def _parse_logic_result(parsed) -> dict | None:
+    """监控 LLM 判定解析校验：非 dict 视为无效（call_llm_json 的 per-prompt validator）。"""
+    if not isinstance(parsed, dict):
+        return None
+    return parsed
+
+
 def _check_logic_enhanced(code: str, buy_reason: str, sector: str,
                           ctx) -> dict:
-    hold_rows = get_holdings(code, 5)
-    holdings_text = "；".join(
-        f"{h['stock_name']}({h['industry'] or '其他'},{h['weight']:.1f}%)" for h in hold_rows
-    ) if hold_rows else "无持仓数据"
+    holdings_text = build_holdings_text(code, 5)
 
     prompt = monitor_logic_prompt(
         buy_reason=buy_reason,
@@ -246,27 +252,15 @@ def _check_logic_enhanced(code: str, buy_reason: str, sector: str,
         news_summary=ctx.news_brief or ctx.news_summary,
     )
 
-    content = call_llm(prompt, temperature=0.1, max_tokens=512)
-    if content is None:
-        return {
+    return call_llm_json(
+        prompt, temperature=0.1, max_tokens=512,
+        fallback={
             "logic_verdict": "维持", "signal_hint": "HOLD",
             "sector_risk": False, "holding_risk": False,
-            "reason": "LLM 未配置或调用失败，保守维持",
-        }
-    result = parse_llm_json(content)
-    if not isinstance(result, dict):
-        return {
-            "logic_verdict": "维持", "signal_hint": "HOLD",
-            "sector_risk": False, "holding_risk": False,
-            "reason": "LLM 解析失败，保守维持",
-        }
-    return {
-        "logic_verdict": result.get("logic_verdict", "维持"),
-        "signal_hint": result.get("signal_hint", "HOLD"),
-        "sector_risk": bool(result.get("sector_risk", False)),
-        "holding_risk": bool(result.get("holding_risk", False)),
-        "reason": result.get("reason", ""),
-    }
+            "reason": "LLM 调用或解析失败，保守维持",
+        },
+        validator=_parse_logic_result,
+    )
 
 
 def _log_monitor_event(code: str, signal: str, logic: dict,
@@ -327,8 +321,8 @@ def _apply_defense_chain(ctx: DefenseContext,
         drift = drift or result.drift
         sector_adv = sector_adv or result.sector_adv
 
-        if rule.short_circuit and result.signal == "EXIT":
-            return ("EXIT", result.reason, trailing, drift, sector_adv)
+        if rule.short_circuit and result.signal == domain.SIGNAL_EXIT:
+            return (domain.SIGNAL_EXIT, result.reason, trailing, drift, sector_adv)
         if result.signal != "HOLD":
             final_signal = result.signal
 
@@ -362,8 +356,8 @@ def run_monitor() -> None:
             )
         )
 
-        if signal == "EXIT":
-            _log_monitor_event(code_str, "EXIT",
+        if signal == domain.SIGNAL_EXIT:
+            _log_monitor_event(code_str, domain.SIGNAL_EXIT,
                 {"logic_verdict": "", "sector_risk": False, "holding_risk": False, "reason": ""},
                 trailing, drift, sector_adv, detail)
             _exit_position(code_str, detail)

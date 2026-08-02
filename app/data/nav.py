@@ -9,8 +9,9 @@ from pathlib import Path
 
 from app.database import db_conn
 from app.data.fetchers import fetch, fetch_async
-from app.data.store import (save_nav_batch, record_failure, mark_recovered_batch,
-                            list_failures, cooldown_targets, run_backfill_rounds,
+from app.data.ingest import run_batched_fetch
+from app.data.store import (save_nav_batch,
+                            list_failures, cooldown_targets,
                             NAV_RETENTION_DAYS)
 from app.utils.log import get_logger
 
@@ -212,20 +213,20 @@ async def async_update_nav_incremental(concurrency: int = 5) -> int:
         "Referer": "https://fund.eastmoney.com/",
     }
 
-    async def _async_fetch_lsjz(code: str, start_date: str) -> tuple[str, list[dict], bool]:
+    async def _fetch_lsjz(session_, item) -> tuple[str, list[dict], bool]:
+        code, start_date = item
         try:
             if start_date:
-                navs = await _lsjz_fetch_all(session, code, start_date, headers)
+                navs = await _lsjz_fetch_all(session_, code, start_date, headers)
             else:
                 # 无本地数据（新基金/H类份额等）：lsjz 全量需逐页数百次请求，改用 pingzhongdata 一次拿全
-                navs = (await _pingzhong_fetch_all_async(session, code, headers))[-NAV_RETENTION_DAYS:]
+                navs = (await _pingzhong_fetch_all_async(session_, code, headers))[-NAV_RETENTION_DAYS:]
             logger.debug("增量 %s: %d 条净值", code, len(navs))
             return code, navs, False
         except Exception as e:
             logger.debug("基金 %s 增量净值拉取失败: %s", code, str(e)[:120], exc_info=True)
             return code, [], True
 
-    semaphore = asyncio.Semaphore(concurrency)
     connector = aiohttp.TCPConnector(limit=concurrency, ttl_dns_cache=300, enable_cleanup_closed=True)
 
     async with aiohttp.ClientSession(connector=connector) as session:
@@ -241,71 +242,39 @@ async def async_update_nav_incremental(concurrency: int = 5) -> int:
         if not tasks_meta:
             return 0
 
-        batch_size = 100
-        total_new = 0
-        all_failed: list[str] = []
-        no_update_codes: list[str] = []
-        success_codes: set[str] = set()
-        for i in range(0, len(tasks_meta), batch_size):
-            batch = tasks_meta[i: i + batch_size]
-            coros = [_async_fetch_lsjz(code, start) for code, start in batch]
-            results = await asyncio.gather(*coros)
+        def _save_nav_batch(conn_, results):
+            outcome = {"new_count": 0, "success": set(), "no_update": [], "failed": []}
+            for code, navs, failed in results:
+                if failed:
+                    outcome["failed"].append(code)
+                    continue
+                n = save_nav_batch(conn_, code, navs)
+                if n == 0:
+                    # 接口确认无新数据（停更/滞后发布/无净值页）：计入失败累计，
+                    # 连续 3 个周期后进入冷却，避免每次运行对注定拉不到的基金反复重试
+                    outcome["no_update"].append(code)
+                else:
+                    outcome["success"].add(code)
+                    outcome["new_count"] += n
+            return outcome
 
-            batch_new = 0
-            batch_failed = 0
-            with db_conn() as conn:
-                for code, navs, failed in results:
-                    if failed:
-                        all_failed.append(code)
-                        batch_failed += 1
-                    else:
-                        n = save_nav_batch(conn, code, navs)
-                        if n == 0:
-                            # 接口确认无新数据（停更/滞后发布/无净值页）：计入失败累计，
-                            # 连续 3 个周期后进入冷却，避免每次运行对注定拉不到的基金反复重试
-                            no_update_codes.append(code)
-                        else:
-                            success_codes.add(code)
-                            batch_new += n
-                            total_new += n
-            # 熔断：批次失败率异常高，疑似接口故障，提前中止避免白耗请求
-            if batch_failed / len(batch) > 0.5:
-                logger.error(
-                    "增量净值批次失败率 %.0f%%（%d/%d）超过 50%%，疑似接口故障，提前中止",
-                    batch_failed / len(batch) * 100, batch_failed, len(batch),
-                )
-                break
-            if batch_new:
-                logger.info("增量净值批次写入 %d 条", batch_new)
+        def _backfill_one(code: str) -> None:
+            navs = fetch_fund_nav(code)
+            if navs:
+                with db_conn() as conn_:
+                    save_nav_batch(conn_, code, navs)
 
-        # 本次成功的基金：清除失败记录，避免冷却逻辑误判为仍在失败
-        if success_codes:
-            mark_recovered_batch("nav_incr", sorted(success_codes))
+        outcome = await run_batched_fetch(
+            session, fetch_type="nav_incr", label="增量净值",
+            targets=tasks_meta, batch_size=100,
+            fetch_one=_fetch_lsjz, handle_batch=_save_nav_batch, backfill_one=_backfill_one,
+            no_update_note="接口确认无新数据", primary_note="增量净值拉取失败",
+        )
 
-        # 确认无新数据的基金：记录失败（累计冷却次数），不计入熔断失败率、不触发补查
-        if no_update_codes:
-            for code in no_update_codes:
-                record_failure("nav_incr", code, "接口确认无新数据", stage="no_update")
-            logger.info("净值增量：%d 只基金接口确认无新数据，已累计失败次数（满 3 次进入冷却）",
-                        len(no_update_codes))
-
-        if all_failed:
-            for code in all_failed:
-                record_failure("nav_incr", code, "增量净值拉取失败", stage="primary")
-            logger.info("增量净值失败 %d 只，开始补查", len(all_failed))
-
-            def _backfill_one(code: str) -> None:
-                navs = fetch_fund_nav(code)
-                if navs:
-                    with db_conn() as conn:
-                        save_nav_batch(conn, code, navs)
-
-            run_backfill_rounds("nav_incr", all_failed, _backfill_one,
-                                len(tasks_meta), label="增量净值", rounds=2, delay=30)
-
-        ok_cnt = len(tasks_meta) - len(all_failed)
+        total_new = outcome["new_count"]
+        ok_cnt = len(tasks_meta) - len(outcome["failed"])
         logger.info("净值增量更新完成: 新增 %d 条, 成功 %d 只, 无新数据 %d 只, 失败 %d 只",
-                    total_new, len(success_codes), len(no_update_codes), len(all_failed))
+                    total_new, len(outcome["success"]), len(outcome["no_update"]), len(outcome["failed"]))
         if total_new == 0 and ok_cnt > 100:
             # 探测接口最新净值日期：若比本地最新还新却没写入，才是真异常；
             # 周末/停更基金导致的 0 条属正常，不应告警。
@@ -358,87 +327,51 @@ async def async_download_all_nav(concurrency: int = 30) -> int:
         "Referer": "https://fund.eastmoney.com/",
     }
 
-    async def _fetch_one(code: str) -> tuple[str, list[dict], bool]:
+    async def _fetch_one(session_, code: str) -> tuple[str, list[dict], bool]:
         try:
-            navs = await _pingzhong_fetch_all_async(session, code, headers)
+            navs = await _pingzhong_fetch_all_async(session_, code, headers)
             return code, navs[-NAV_RETENTION_DAYS:], False
         except Exception as e:
             logger.warning("基金 %s 全量净值拉取失败: %s", code, str(e)[:120], exc_info=True)
             return code, [], True
 
-    semaphore = asyncio.Semaphore(concurrency)
     connector = aiohttp.TCPConnector(limit=concurrency, ttl_dns_cache=300, enable_cleanup_closed=True)
 
     async with aiohttp.ClientSession(connector=connector) as session:
-        all_failed: list[str] = []
-        no_update_codes: list[str] = []
-        success_codes: set[str] = set()
-        for i in range(0, len(all_codes), batch_size):
-            batch = all_codes[i: i + batch_size]
-            coros = [_fetch_one(code) for code in batch]
-            results = await asyncio.gather(*coros)
+        def _save_nav_batch(conn_, results):
+            outcome = {"new_count": 0, "success": set(), "no_update": [], "failed": []}
+            for code, navs, failed in results:
+                if failed:
+                    outcome["failed"].append(code)
+                    continue
+                n = save_nav_batch(conn_, code, navs)
+                if n == 0:
+                    # 接口确认无净值数据（已终止/无净值页）：计入失败累计，
+                    # 连续 3 个周期后进入冷却，避免每次运行反复重试
+                    outcome["no_update"].append(code)
+                else:
+                    outcome["success"].add(code)
+                    outcome["new_count"] += n
+            return outcome
 
-            batch_new = 0
-            batch_failed = 0
-            with db_conn() as conn:
-                for code, navs, failed in results:
-                    if failed:
-                        all_failed.append(code)
-                        batch_failed += 1
-                        continue
-                    n = save_nav_batch(conn, code, navs)
-                    if n == 0:
-                        # 接口确认无净值数据（已终止/无净值页）：计入失败累计，
-                        # 连续 3 个周期后进入冷却，避免每次运行反复重试
-                        no_update_codes.append(code)
-                    else:
-                        success_codes.add(code)
-                        batch_new += n
-                        total_new += n
-            # 熔断：批次失败率异常高，疑似接口故障/被封，提前中止避免白耗请求
-            if batch_failed / len(batch) > 0.5:
-                logger.error(
-                    "全量净值批次失败率 %.0f%%（%d/%d）超过 50%%，疑似接口故障，提前中止",
-                    batch_failed / len(batch) * 100, batch_failed, len(batch),
-                )
-                break
-            total_done += len(batch)
-            elapsed = time.monotonic() - start_time
-            speed = total_done / elapsed if elapsed > 0 else 0
-            logger.info(
-                "全量净值下载进度: %d/%d, speed=%.1f/s",
-                total_done, len(all_codes), speed,
-            )
+        def _backfill_one(code: str) -> None:
+            navs = fetch_fund_nav(code)
+            if navs:
+                with db_conn() as conn_:
+                    save_nav_batch(conn_, code, navs)
 
-        # 本次成功的基金：清除失败记录，避免冷却逻辑误判为仍在失败
-        if success_codes:
-            mark_recovered_batch("nav_full", sorted(success_codes))
+        outcome = await run_batched_fetch(
+            session, fetch_type="nav_full", label="全量净值",
+            targets=all_codes, batch_size=batch_size,
+            fetch_one=_fetch_one, handle_batch=_save_nav_batch, backfill_one=_backfill_one,
+            no_update_note="接口无净值数据", primary_note="全量净值拉取失败",
+        )
 
-        # 确认无净值数据的基金：记录失败（累计冷却次数），不计入熔断失败率、不触发补查
-        if no_update_codes:
-            for code in no_update_codes:
-                record_failure("nav_full", code, "接口无净值数据", stage="no_update")
-            logger.info("全量净值：%d 只基金确认无净值数据，已累计失败次数（满 3 次进入冷却）",
-                        len(no_update_codes))
-
-        if all_failed:
-            for code in all_failed:
-                record_failure("nav_full", code, "全量净值拉取失败", stage="primary")
-            logger.info("全量净值失败 %d 只，开始补查", len(all_failed))
-
-            def _backfill_one(code: str) -> None:
-                navs = fetch_fund_nav(code)
-                if navs:
-                    with db_conn() as conn:
-                        save_nav_batch(conn, code, navs)
-
-            run_backfill_rounds("nav_full", all_failed, _backfill_one,
-                                len(all_codes), label="全量净值", rounds=2, delay=30)
-
-        elapsed = time.monotonic() - start_time
+        total_new = outcome["new_count"]
         logger.info(
             "全量净值更新完成: 新增 %d 条, 无数据 %d 只, 失败 %d/%d 只, 耗时 %.1f 秒",
-            total_new, len(no_update_codes), len(all_failed), len(all_codes), elapsed,
+            total_new, len(outcome["no_update"]), len(outcome["failed"]),
+            len(all_codes), time.monotonic() - start_time,
         )
         if total_new == 0 and len(all_codes) > 100:
             logger.error(

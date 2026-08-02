@@ -8,11 +8,11 @@ IC 的 Spearman 秩相关用 numpy 手写（含并列平均秩），不依赖 sc
 
 import numpy as np
 
+from app import domain
+from app import repo
 from app.utils.log import get_logger
 
 logger = get_logger("quality")
-
-_FORWARD_ROWS = 20
 
 
 def _rankdata(x: np.ndarray) -> np.ndarray:
@@ -59,45 +59,30 @@ def compute_metrics_from_pairs(pairs: list[tuple[float, float]]) -> dict:
     }
 
 
-def compute_quality_metrics(conn, period_start: str, period_end: str) -> dict:
+def compute_quality_metrics(period_start: str, period_end: str) -> dict:
     """统计区间内推荐的 20 日实际超额收益并计算质量指标。
 
     对每条推荐取入场后 21 条净值（含入场日），用第 0 与第 20 条计算基金收益；
     同期沪深300 按同日期收盘价计算基准收益；alpha = 基金收益 - 基准收益。
     数据不足（净值 <21 条或指数缺失）的样本跳过。
+    全部读取经 repo 统一数据 seam（推荐决策域 read），可独立单测。
     """
-    rows = conn.execute(
-        "SELECT code, recommend_date, score FROM recommend_log "
-        "WHERE recommend_date >= ? AND recommend_date <= ? "
-        "AND score IS NOT NULL AND status != 'REJECT' "
-        "ORDER BY recommend_date ASC, code ASC",
-        (period_start, period_end),
-    ).fetchall()
+    rows = repo.get_quality_sample_rows(period_start, period_end)
 
     pairs: list[tuple[float, float]] = []
     points: list[dict] = []
     for code, reco_date, score in rows:
-        nav_rows = conn.execute(
-            "SELECT date, cum_nav FROM fund_nav WHERE code = ? AND date >= ? "
-            "ORDER BY date ASC LIMIT ?",
-            (code, reco_date, _FORWARD_ROWS + 1),
-        ).fetchall()
-        if len(nav_rows) < _FORWARD_ROWS + 1:
+        nav_rows = repo.get_nav_rows_since(code, reco_date, domain.FORWARD_DAYS + 1)
+        if len(nav_rows) < domain.FORWARD_DAYS + 1:
             continue
         start_date, start_nav = nav_rows[0][0], nav_rows[0][1]
-        end_date, end_nav = nav_rows[_FORWARD_ROWS][0], nav_rows[_FORWARD_ROWS][1]
-        hs_start = conn.execute(
-            "SELECT close FROM index_daily WHERE code = 'sh000300' AND date = ?",
-            (start_date,),
-        ).fetchone()
-        hs_end = conn.execute(
-            "SELECT close FROM index_daily WHERE code = 'sh000300' AND date = ?",
-            (end_date,),
-        ).fetchone()
-        if not (start_nav and end_nav and hs_start and hs_end and start_nav > 0 and hs_start[0] > 0):
+        end_date, end_nav = nav_rows[domain.FORWARD_DAYS][0], nav_rows[domain.FORWARD_DAYS][1]
+        hs_start = repo.get_index_close_on("sh000300", start_date)
+        hs_end = repo.get_index_close_on("sh000300", end_date)
+        if not (start_nav and end_nav and hs_start and hs_end and start_nav > 0 and hs_start > 0):
             continue
         fund_ret = end_nav / start_nav - 1.0
-        hs_ret = hs_end[0] / hs_start[0] - 1.0
+        hs_ret = hs_end / hs_start - 1.0
         alpha = fund_ret - hs_ret
         pairs.append((float(score), alpha))
         points.append({"date": reco_date, "code": code,

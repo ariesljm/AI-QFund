@@ -105,3 +105,31 @@ class TestCallLlmJson:
     def test_parse_failure_returns_fallback(self, monkeypatch):
         _install_fake(monkeypatch, ["not json"])
         assert call_llm_json("p", max_tokens=100, fallback=[]) == []
+
+    def test_validator_passes_returns_cleaned(self, monkeypatch):
+        """validator 校验通过：返回清洗后的结果。"""
+        _install_fake(monkeypatch, ['{"code": "000001"}'])
+
+        def v(parsed):
+            return {"code": parsed["code"], "name": "基金A"}
+
+        assert call_llm_json("p", max_tokens=100, fallback=None, validator=v) == {
+            "code": "000001", "name": "基金A"}
+
+    def test_validator_rejects_returns_fallback(self, monkeypatch):
+        """validator 返回 None：视为无效，回退 fallback。"""
+        _install_fake(monkeypatch, ['{"code": "999999"}'])
+
+        def v(parsed):
+            return None
+
+        assert call_llm_json("p", max_tokens=100, fallback={"x": 1}, validator=v) == {"x": 1}
+
+    def test_validator_raises_returns_fallback(self, monkeypatch):
+        """validator 抛异常：视为无效，回退 fallback。"""
+        _install_fake(monkeypatch, ['{"code": "000001"}'])
+
+        def v(parsed):
+            raise ValueError("bad")
+
+        assert call_llm_json("p", max_tokens=100, fallback=None, validator=v) is None
