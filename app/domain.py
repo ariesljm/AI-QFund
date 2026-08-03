@@ -8,6 +8,13 @@
 # 一次推荐对应的预测/结算/质量度量共用的前向窗口（交易日）
 FORWARD_DAYS = 20
 
+# ── 模型特征列（fund_features 表列名，单一来源） ──────────
+# repo 拼 SQL / 特征计算 / 推荐排序 / 回测均从此导入，避免列名清单多处漂移
+FEATURE_COLS = [
+    "hurst_60d", "momentum_20d", "calmar", "downside_vol",
+    "capture_up", "capture_down", "bias_60d",
+]
+
 # ── 信号枚举（监控引擎/推荐引擎/质量度量共用） ──────────
 SIGNAL_HOLD = "HOLD"
 SIGNAL_BUY_MORE = "BUY_MORE"
@@ -16,6 +23,19 @@ SIGNAL_EXIT = "EXIT"
 SIGNAL_REJECT = "REJECT"
 # 持仓状态集合（监控引擎与 repo 查询共用）
 HOLDING_STATES = (SIGNAL_HOLD, SIGNAL_BUY_MORE, SIGNAL_WARNING)
+
+# ── 信号/大盘状态中文文案（Web 展示单一来源） ────────────
+# 模板与前端 JS 均从此映射取文案，避免四处硬编码漂移（历史遗留 PASS/ADD/CAUTION 兼容映射）
+SIGNAL_LABELS = {
+    SIGNAL_HOLD: "持有",
+    SIGNAL_BUY_MORE: "加仓",
+    SIGNAL_WARNING: "警惕",
+    SIGNAL_EXIT: "离场",
+    SIGNAL_REJECT: "否决",
+    "PASS": "持有",
+    "ADD": "加仓",
+    "CAUTION": "警惕",
+}
 
 # ── 大盘状态机 ──────────────────────────────────────────
 REGIME_BULL = "BULL"
@@ -28,6 +48,14 @@ def regime_from_close_ma60(close, ma60) -> str:
     if close is None or ma60 is None or ma60 <= 0:
         return REGIME_NEUTRAL
     return REGIME_BULL if close > ma60 else REGIME_BEAR
+
+
+# 大盘状态中文文案（Web 模板/前端展示单一来源）
+REGIME_LABELS = {
+    REGIME_BULL: "牛市",
+    REGIME_BEAR: "熊市",
+    REGIME_NEUTRAL: "中性",
+}
 
 
 def normalize_regime_label(label: str | None) -> str:

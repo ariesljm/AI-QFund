@@ -189,11 +189,8 @@ async function fetchFundDetail(code) {
                     d.current_signal.signal === 'EXIT' ? 'badge--exit' :
                     'badge--muted'
                 ) + '">' + (
-                    d.current_signal.signal === 'HOLD' ? '持有' :
-                    d.current_signal.signal === 'BUY_MORE' ? '加仓' :
-                    d.current_signal.signal === 'WARNING' ? '警惕' :
-                    d.current_signal.signal === 'EXIT' ? '离场' :
-                    _esc(d.current_signal.signal)
+                    (window.SIGNAL_LABELS && window.SIGNAL_LABELS[d.current_signal.signal]) ?
+                        window.SIGNAL_LABELS[d.current_signal.signal] : _esc(d.current_signal.signal)
                 ) + '</span>' +
                 '<span class="text-[11px] text-on-surface-variant font-bold">' + _esc(d.current_signal.logic_verdict) + '</span>' +
                 '<span class="text-[11px] text-on-surface-variant">' + _esc(d.current_signal.date) + '</span>' +
@@ -294,6 +291,7 @@ async function submitPassword() {
         var r = await fetch('/api/check-password', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({password:pwd}) });
         var d = await r.json();
         if (d.ok) {
+            sessionStorage.setItem('settingsAuth', pwd);
             closeModal('passwordModal');
             if (_pendingClear) { _pendingClear = false; doClearRecommendations(); }
             else { openModal('settingsModal'); }
@@ -308,14 +306,16 @@ function clearRecommendationsFlow() {
 
 async function doClearRecommendations() {
     try {
-        var r = await fetch('/api/clear-recommendations', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({dry_run:true}) });
+        var r = await fetch('/api/clear-recommendations', { method:'POST', headers:{'Content-Type':'application/json', 'X-Settings-Password': sessionStorage.getItem('settingsAuth') || ''}, body: JSON.stringify({dry_run:true}) });
+        if (r.status === 403) { alert('密码已变更，请重新验证'); openPasswordPrompt(); return; }
         var d = await r.json();
         if (d.status !== 'ok') { alert(d.message || '请求失败'); return; }
         var del = d.deleted || {};
         var rec = del.recommend_log || 0;
         var total = rec + (del.sector_selections || 0) + (del.monitor_events || 0) + (del.evolution_insights || 0) + (del.quality_metrics || 0) + (del.macro_news || 0);
         if (!confirm('将永久删除 ' + rec + ' 条推荐记录及关联数据（共 ' + total + ' 条），此操作不可恢复。确定继续吗？')) return;
-        var r2 = await fetch('/api/clear-recommendations', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({dry_run:false}) });
+        var r2 = await fetch('/api/clear-recommendations', { method:'POST', headers:{'Content-Type':'application/json', 'X-Settings-Password': sessionStorage.getItem('settingsAuth') || ''}, body: JSON.stringify({dry_run:false}) });
+        if (r2.status === 403) { alert('密码已变更，请重新验证'); openPasswordPrompt(); return; }
         var d2 = await r2.json();
         if (d2.status === 'ok') { alert('已清除全部推荐数据'); location.reload(); }
         else { alert('清除失败: ' + (d2.message || '未知错误')); }
@@ -417,7 +417,8 @@ async function saveSettings() {
                 minute: _sched.enabled ? _sched.minute : 0,
             },
         };
-        var r = await fetch('/api/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        var r = await fetch('/api/settings', { method: 'POST', headers: {'Content-Type':'application/json', 'X-Settings-Password': sessionStorage.getItem('settingsAuth') || ''}, body: JSON.stringify(body) });
+        if (r.status === 403) { btn.textContent = '密码已变更，请重新验证'; btn.disabled = false; openPasswordPrompt(); return; }
         var d = await r.json();
         if (d.status === 'ok') { btn.textContent = '已保存 ✓'; setTimeout(function(){ btn.textContent = '保存并更新配置'; btn.disabled = false; }, 1500); }
         else { btn.textContent = '保存失败'; btn.disabled = false; }
@@ -426,7 +427,8 @@ async function saveSettings() {
 
 async function triggerPipeline() {
     try {
-        var r = await fetch('/api/run-pipeline', { method: 'POST' });
+        var r = await fetch('/api/run-pipeline', { method: 'POST', headers: {'X-Settings-Password': sessionStorage.getItem('settingsAuth') || ''} });
+        if (r.status === 403) { alert('密码已变更，请重新验证'); openPasswordPrompt(); return; }
         var d = await r.json();
         if (d.status === 'started') {
             openModal('systemLogModal');

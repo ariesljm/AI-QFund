@@ -14,6 +14,7 @@ import pytest
 
 import app.database as db_mod
 from app.data import nav
+from app.data.store import list_failures, cooldown_targets
 
 
 # ============================================================
@@ -195,7 +196,7 @@ class TestIncrementalNoUpdateCooldown:
         for _ in range(3):
             asyncio.run(nav.async_update_nav_incremental(concurrency=1))
 
-        rows = {r["target"]: r for r in nav.list_failures("nav_incr")}
+        rows = {r["target"]: r for r in list_failures("nav_incr")}
         assert rows["000099"]["attempts"] == 3
         assert rows["000099"]["status"] == "failed"
 
@@ -217,7 +218,7 @@ class TestIncrementalNoUpdateCooldown:
         for _ in range(3):
             asyncio.run(nav.async_update_nav_incremental(concurrency=1))
 
-        rows = {r["target"]: r for r in nav.list_failures("nav_incr")}
+        rows = {r["target"]: r for r in list_failures("nav_incr")}
         assert rows["000002"]["attempts"] == 3
         assert "000001" not in rows  # 已对齐到接口最新，从未被规划
 
@@ -239,7 +240,7 @@ class TestIncrementalNoUpdateCooldown:
         monkeypatch.setattr(nav, "_probe_lsjz_latest", fake_probe)
         monkeypatch.setattr(nav, "fetch_async", fake_empty)
         asyncio.run(nav.async_update_nav_incremental(concurrency=1))
-        rows = {r["target"]: r for r in nav.list_failures("nav_incr")}
+        rows = {r["target"]: r for r in list_failures("nav_incr")}
         assert rows["000002"]["attempts"] == 1
 
         # 次轮接口恢复更新 → 写入成功 → 失败记录清除，不再进入冷却
@@ -250,9 +251,9 @@ class TestIncrementalNoUpdateCooldown:
 
         monkeypatch.setattr(nav, "fetch_async", fake_data)
         asyncio.run(nav.async_update_nav_incremental(concurrency=1))
-        rows = {r["target"]: r for r in nav.list_failures("nav_incr")}
+        rows = {r["target"]: r for r in list_failures("nav_incr")}
         assert rows["000002"]["status"] == "recovered"
-        assert "000002" not in nav.cooldown_targets("nav_incr")
+        assert "000002" not in cooldown_targets("nav_incr")
 
 
 # ============================================================

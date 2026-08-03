@@ -1,5 +1,5 @@
 -- AI-QFund 数据库 Schema（SQLite WAL 模式）
--- 单一真相源：data_store._init_schema 读取此文件，_migrate 补充列变更
+-- 单一真相源：app/database._init_schema 读取此文件，_migrate 只做历史列迁移与缺表兜底
 
 -- 基金基本信息
 CREATE TABLE IF NOT EXISTS fund_basic (

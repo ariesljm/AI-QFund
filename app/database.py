@@ -46,6 +46,13 @@ def db_conn():
         conn.close()
 
 
+@contextmanager
+def db():
+    """统一连接 seam：复用 db_conn（含 WAL + schema 初始化 + 迁移）。"""
+    with db_conn() as conn:
+        yield conn
+
+
 def meta_get(conn: sqlite3.Connection, key: str) -> str | None:
     conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
     row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
@@ -71,6 +78,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 conn.execute(f"ALTER TABLE recommend_log ADD COLUMN {col} {typ}")
                 conn.commit()
 
+    # ── 部署兜底（保留理由）：/app/data 在 Docker 部署中被宿主数据卷遮蔽，
+    # 若卷内残留旧版 schema.sql，_init_schema 可能读到缺新表的旧文件。
+    # 因此以下完整 CREATE TABLE IF NOT EXISTS 与 schema.sql 列定义保持一致，
+    # 作为缺表时的兜底；新增列需同时改 schema.sql 与本兜底。
     conn.execute(
         "CREATE TABLE IF NOT EXISTS sector_selections ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT, "

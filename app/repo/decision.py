@@ -1,32 +1,15 @@
 """推荐决策域 seam：recommend_log/sector_selections/monitor_events/evolution_insights/quality_metrics/empty_recommendations 读写。"""
 
-from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 import json as _json
 
-from app.database import db_conn
+from app.database import db, meta_get, meta_set
 from app import domain
 from app.utils.log import get_logger
 
 logger = get_logger("repo")
 
-
-@contextmanager
-def db():
-    """统一连接 seam：复用 database.db_conn（含 WAL + schema 初始化 + 迁移）。"""
-    with db_conn() as conn:
-        yield conn
-
-
-# 模型特征列清单（fund_features 表列名，单一来源；recommend/backtest 均从此导入）
-FEATURE_COLS = [
-    "hurst_60d", "momentum_20d", "calmar", "downside_vol",
-    "capture_up", "capture_down", "bias_60d",
-]
-
-# 推荐模型前向预测窗口（交易日），训练与回测共用（领域常量单一来源）
-FORWARD_WINDOW = domain.FORWARD_DAYS
 def clear_recommendations() -> dict:
     """清空推荐决策域：推荐记录、赛道选择、监控事件、进化洞察、每日宏观摘要及推荐结果文件。
 
@@ -185,10 +168,10 @@ def get_ranking_cfg() -> dict:
     """读取排序权重（meta 表），与默认值合并（推荐/回测共用）。"""
     defaults = dict(domain.DEFAULT_RANKING_CFG)
     with db() as conn:
-        row = conn.execute("SELECT value FROM meta WHERE key = 'ranking_cfg'").fetchone()
-    if row:
+        raw = meta_get(conn, "ranking_cfg")
+    if raw:
         try:
-            defaults.update({k: v for k, v in _json.loads(row[0]).items() if k in defaults})
+            defaults.update({k: v for k, v in _json.loads(raw).items() if k in defaults})
         except Exception:
             pass
     return defaults
@@ -257,7 +240,7 @@ def save_quality_metrics(m: dict) -> None:
 def save_ranking_cfg(weights: dict) -> None:
     """写入排序权重（进化自纠偏用）。"""
     with db() as conn:
-        conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('ranking_cfg', ?)", (_json.dumps(weights),))
+        meta_set(conn, "ranking_cfg", _json.dumps(weights))
 
 def update_highest_nav(code: str, highest: float, statuses: tuple[str, ...]) -> None:
     placeholders = ','.join('?' * len(statuses))
@@ -280,4 +263,4 @@ def update_status(code: str, signal: str, statuses: tuple[str, ...]) -> None:
         conn.execute(f'UPDATE recommend_log SET status = ? WHERE code = ? AND status IN ({placeholders})', (signal, code, *statuses))
 
 
-__all__ = ["db", "FEATURE_COLS", "FORWARD_WINDOW", "clear_recommendations", "count_recommendation_domain", "exit_position", "get_active_insights", "get_all_insights", "get_empty_recommendation", "get_entry", "get_entry_nav", "get_first_reco_date", "get_fund_detail", "get_holding_codes", "get_holding_log_id", "get_latest_monitor_event", "get_latest_reco_id", "get_latest_recommendations", "get_latest_signal", "get_monthly_cases", "get_pending_sector_selections", "get_quality_metrics", "get_quality_sample_rows", "get_ranking_cfg", "get_reco_date_of", "get_recommendation_by_id", "get_sector_insights", "get_tracking_list", "insert_insight", "insert_monitor_event", "insert_recommendation", "insert_sector_selection", "list_active_insights", "record_empty_recommendation", "save_quality_metrics", "save_ranking_cfg", "update_highest_nav", "update_insight_confidence", "update_sector_selection_outcome", "update_status"]
+__all__ = ["clear_recommendations", "count_recommendation_domain", "exit_position", "get_active_insights", "get_all_insights", "get_empty_recommendation", "get_entry", "get_entry_nav", "get_first_reco_date", "get_fund_detail", "get_holding_codes", "get_holding_log_id", "get_latest_monitor_event", "get_latest_reco_id", "get_latest_recommendations", "get_latest_signal", "get_monthly_cases", "get_pending_sector_selections", "get_quality_metrics", "get_quality_sample_rows", "get_ranking_cfg", "get_reco_date_of", "get_recommendation_by_id", "get_sector_insights", "get_tracking_list", "insert_insight", "insert_monitor_event", "insert_recommendation", "insert_sector_selection", "list_active_insights", "record_empty_recommendation", "save_quality_metrics", "save_ranking_cfg", "update_highest_nav", "update_insight_confidence", "update_sector_selection_outcome", "update_status"]

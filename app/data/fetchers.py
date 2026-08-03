@@ -9,6 +9,11 @@ from urllib.parse import urlencode, urlparse
 
 import requests
 
+try:
+    import aiohttp
+except ImportError:
+    aiohttp = None
+
 logger = logging.getLogger(__name__)
 
 _PUSH2_RE = re.compile(r"(?:^|\.)push2(?:his)?\.eastmoney\.com$", re.IGNORECASE)
@@ -33,13 +38,28 @@ def _retry_delay(attempt: int, rate_limited: bool = False) -> float:
 
 
 def _is_retryable(e: Exception) -> bool:
+    should_retry, _ = _retry_decision(e)
+    return should_retry
+
+
+def _retry_decision(e: Exception, status: int | None = None) -> tuple[bool, bool]:
+    """重试判定单一来源（同步 fetch / 异步 fetch_async 共用）。
+
+    返回 (should_retry, rate_limited)：rate_limited 为 True 时用更长退避（429/514）。
+    未知异常不重试（同步路径的原行为；统一后异步路径同样遵守，避免掩盖程序性错误）。
+    """
+    if status is not None:  # aiohttp.ClientResponseError 路径：按 HTTP 状态码判定
+        return status in _RETRYABLE_HTTP_CODES, status in (429, 514)
+    if aiohttp is not None and isinstance(e, (aiohttp.ClientConnectionError, asyncio.TimeoutError)):
+        return True, False
     if isinstance(e, (requests.ConnectionError, requests.Timeout)):
-        return True
-    if isinstance(e, requests.HTTPError):
-        return e.response.status_code in _RETRYABLE_HTTP_CODES
+        return True, False
     if isinstance(e, ConnectionError):
-        return True
-    return False
+        return True, False
+    if isinstance(e, requests.HTTPError):
+        code = e.response.status_code
+        return code in _RETRYABLE_HTTP_CODES, code in (429, 514)
+    return False, False
 
 
 def _short_url(url: str, limit: int = 90) -> str:
@@ -126,11 +146,9 @@ def fetch(
             return resp
         except Exception as e:
             last_error = e
-            if not _is_retryable(e):
+            should_retry, rate_limited = _retry_decision(e)
+            if not should_retry or attempt == _MAX_RETRIES:
                 raise
-            if attempt == _MAX_RETRIES:
-                raise
-            rate_limited = isinstance(e, requests.HTTPError) and e.response.status_code in (429, 514)
             delay = _retry_delay(attempt, rate_limited)
             logger.warning("请求失败(%s, 第%d次重试), %.1f秒后重试: %s",
                            _short_url(url), attempt + 1, delay, str(e)[:120])
@@ -227,32 +245,14 @@ async def fetch_async(
             )
             resp.raise_for_status()
             return resp
-        except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as e:
-            last_error = e
-            if attempt == _MAX_RETRIES:
-                raise
-            delay = _retry_delay(attempt)
-            logger.warning("异步请求失败(%s, 第%d次重试), %.1f秒后重试: %s",
-                           _short_url(url), attempt + 1, delay, str(e)[:120], exc_info=True)
-            await asyncio.sleep(delay)
-        except aiohttp.ClientResponseError as e:
-            if e.status in _RETRYABLE_HTTP_CODES:
-                last_error = e
-                if attempt == _MAX_RETRIES:
-                    raise
-                rate_limited = e.status in (429, 514)
-                delay = _retry_delay(attempt, rate_limited)
-                logger.warning("异步请求 %d(%s, 第%d次重试), %.1f秒后重试",
-                               e.status, _short_url(url), attempt + 1, delay)
-                await asyncio.sleep(delay)
-            else:
-                raise
         except Exception as e:
             last_error = e
-            if attempt == _MAX_RETRIES:
+            status = e.status if isinstance(e, aiohttp.ClientResponseError) else None
+            should_retry, rate_limited = _retry_decision(e, status=status)
+            if not should_retry or attempt == _MAX_RETRIES:
                 raise
-            delay = _retry_delay(attempt)
-            logger.warning("异步请求异常(%s, 第%d次重试): %s",
-                           _short_url(url), attempt + 1, str(e)[:120], exc_info=True)
+            delay = _retry_delay(attempt, rate_limited)
+            logger.warning("异步请求失败(%s, 第%d次重试), %.1f秒后重试: %s",
+                           _short_url(url), attempt + 1, delay, str(e)[:120], exc_info=True)
             await asyncio.sleep(delay)
     raise last_error or RuntimeError("unreachable")

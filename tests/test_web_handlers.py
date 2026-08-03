@@ -173,12 +173,12 @@ class TestCandidateSummary:
 class TestAlphaCurve:
     def test_single_point_flat_line(self):
         """单基金 alpha 曲线为水平线（0% 基线在数据范围外，不做范围断言）。"""
-        svg, baseline = webapp._alpha_curve_svg([5.0])
+        svg, baseline = webapp._smooth_svg_path([5.0])
         assert svg.startswith("M 0,") and "L 200," in svg
         assert baseline > 100  # 单点 +5% 时 0 线远在下方（原行为）
 
     def test_empty(self):
-        assert webapp._alpha_curve_svg([]) == ("", 50)
+        assert webapp._smooth_svg_path([]) == ("", 50)
 
     def test_alpha_block_uses_hs300(self, monkeypatch):
         """超额 alpha = 组合累计收益 - 同期沪深300涨幅。"""
@@ -215,6 +215,55 @@ class TestBasicHandlers:
         resp = client.get("/api/settings")
         assert resp.status_code == 200
         assert "settings_password" not in resp.json()["web"]
+
+
+class TestSettingsAuth:
+    """方案 A：写操作接口校验 X-Settings-Password 头；密码为空时放行（保持"留空不设密码"语义）。"""
+
+    def test_settings_post_requires_password(self, monkeypatch):
+        """设置密码后，无头/错头保存设置返回 403。"""
+        monkeypatch.setattr(webapp, "_load_settings", lambda: {"web": {"settings_password": "secret"}})
+        resp = client.post("/api/settings", json={"llm": {"model": "x"}})
+        assert resp.status_code == 403
+        resp = client.post("/api/settings",
+                           headers={"X-Settings-Password": "wrong"},
+                           json={"llm": {"model": "x"}})
+        assert resp.status_code == 403
+
+    def test_settings_post_ok_with_password(self, monkeypatch):
+        """携带正确密码头保存设置成功。"""
+        monkeypatch.setattr(webapp, "_load_settings", lambda: {"web": {"settings_password": "secret"}})
+        monkeypatch.setattr(webapp, "_save_settings", lambda body: True)
+        resp = client.post("/api/settings",
+                           headers={"X-Settings-Password": "secret"},
+                           json={"llm": {"model": "x"}})
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+
+    def test_settings_post_ok_without_password_when_unset(self, monkeypatch):
+        """密码未设置时写操作放行。"""
+        monkeypatch.setattr(webapp, "_load_settings", lambda: {"web": {"settings_password": ""}})
+        monkeypatch.setattr(webapp, "_save_settings", lambda body: True)
+        resp = client.post("/api/settings", json={"llm": {"model": "x"}})
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+
+    def test_clear_recommendations_requires_password(self, monkeypatch):
+        """设置密码后，清除推荐数据必须带正确密码头。"""
+        monkeypatch.setattr(webapp, "_load_settings", lambda: {"web": {"settings_password": "secret"}})
+        resp = client.post("/api/clear-recommendations", json={"dry_run": True})
+        assert resp.status_code == 403
+        resp = client.post("/api/clear-recommendations",
+                           headers={"X-Settings-Password": "secret"},
+                           json={"dry_run": True})
+        assert resp.status_code == 200
+
+    def test_run_pipeline_requires_password(self, monkeypatch):
+        """设置密码后，触发管线必须带正确密码头（403 时不启动线程）。"""
+        monkeypatch.setattr(webapp, "_load_settings", lambda: {"web": {"settings_password": "secret"}})
+        resp = client.post("/api/run-pipeline")
+        assert resp.status_code == 403
+        # 正确密码路径会真启动管线线程，测试不覆盖，避免污染
 
     def test_recommendation_status(self):
         resp = client.get("/api/recommendation-status")

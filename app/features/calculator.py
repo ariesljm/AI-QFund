@@ -179,9 +179,14 @@ def calc_rbsa(holdings: list[dict], industry_map: dict[str, str] | None = None) 
     return [{"industry": ind, "weight": w} for ind, w in sorted_industries[:3]]
 
 
-def calc_features(code: str, conn=None,
+def calc_features(code: str,
                   idx_closes: np.ndarray | None = None,
-                  idx_volumes: np.ndarray | None = None) -> dict:
+                  idx_volumes: np.ndarray | None = None,
+                  conn=None) -> dict:
+    """计算单只基金特征并返回（内部函数，仅 calc_all_features / 回测调用）。
+
+    ``conn`` 为内部批量 seam：批量路径复用连接，避免逐基金开连接；缺省时自开。
+    """
     rows = repo.get_fund_nav_rows(code, conn)
     if len(rows) < 60:
         logger.warning("基金 %s 净值数据不足 (%d 天)，跳过特征计算", code, len(rows))
@@ -263,7 +268,7 @@ def calc_all_features(batch_commit: int = 500) -> int:
             if code in skip_codes:
                 done += 1
                 continue
-            features = calc_features(code, conn, idx_closes, idx_volumes)
+            features = calc_features(code, idx_closes, idx_volumes, conn)
             done += 1
             if features:
                 top = rbsa_data.get(code, [])
@@ -274,7 +279,7 @@ def calc_all_features(batch_commit: int = 500) -> int:
                 features["rbsa_weight_2"] = top[1]["weight"] if len(top) > 1 else 0.0
                 features["rbsa_industry_3"] = top[2]["industry"] if len(top) > 2 else ""
                 features["rbsa_weight_3"] = top[2]["weight"] if len(top) > 2 else 0.0
-                repo.save_fund_features(conn, features)
+                repo.save_fund_features(features, conn)
                 saved += 1
             if saved % batch_commit == 0:
                 conn.commit()
@@ -282,7 +287,7 @@ def calc_all_features(batch_commit: int = 500) -> int:
                 speed = done / elapsed if elapsed > 0 else 0
                 logger.info("特征计算进度: %d/%d, speed=%.1f/s", done, total, speed)
         # 修剪：每只基金仅保留最近 N 行特征快照，防止历史快照无限累积
-        repo.trim_fund_features(conn, _FEATURE_RETENTION_ROWS)
+        repo.trim_fund_features(_FEATURE_RETENTION_ROWS, conn)
         conn.commit()
     elapsed = time.monotonic() - start_time
     logger.info("特征计算完成: %d/%d 只基金入库, 耗时 %.1f 秒", saved, total, elapsed)

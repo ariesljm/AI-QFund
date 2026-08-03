@@ -9,9 +9,8 @@ from pathlib import Path
 
 from app.database import db_conn
 from app.data.fetchers import fetch, fetch_async
-from app.data.ingest import run_batched_fetch
+from app.data.ingest import run_batched_fetch, filter_cooldown_targets
 from app.data.store import (save_nav_batch,
-                            list_failures, cooldown_targets,
                             NAV_RETENTION_DAYS)
 from app.utils.log import get_logger
 
@@ -186,13 +185,6 @@ def _plan_nav_tasks(
 
 
 async def async_update_nav_incremental(concurrency: int = 5) -> int:
-    pending = list_failures("nav_incr", status="failed")
-    if pending:
-        logger.info("净值增量：存在 %d 条待重试失败记录", len(pending))
-    cooldown = cooldown_targets("nav_incr")
-    if cooldown:
-        logger.info("净值增量：%d 只基金连续失败进入冷却期，本次跳过", len(cooldown))
-
     with db_conn() as conn:
         all_codes = [
             r[0] for r in conn.execute("SELECT code FROM fund_basic WHERE is_buyable = 1").fetchall()
@@ -202,7 +194,7 @@ async def async_update_nav_incremental(concurrency: int = 5) -> int:
         )
         global_latest = conn.execute("SELECT MAX(date) FROM fund_nav").fetchone()[0]
 
-    all_codes = [c for c in all_codes if c not in cooldown]
+    all_codes = filter_cooldown_targets("nav_incr", all_codes, "净值增量")
 
     headers = {
         "User-Agent": (
@@ -292,18 +284,11 @@ async def async_update_nav_incremental(concurrency: int = 5) -> int:
 
 
 async def async_download_all_nav(concurrency: int = 30) -> int:
-    pending = list_failures("nav_full", status="failed")
-    if pending:
-        logger.info("全量净值：存在 %d 条待重试失败记录", len(pending))
-    cooldown = cooldown_targets("nav_full")
-    if cooldown:
-        logger.info("全量净值：%d 只基金连续失败进入冷却期，本次跳过", len(cooldown))
-
     with db_conn() as conn:
         all_codes = [
             r[0] for r in conn.execute("SELECT code FROM fund_basic WHERE is_buyable = 1").fetchall()
         ]
-    all_codes = [c for c in all_codes if c not in cooldown]
+    all_codes = filter_cooldown_targets("nav_full", all_codes, "全量净值")
     if not all_codes:
         return 0
 

@@ -9,13 +9,31 @@ import asyncio
 import time
 
 from app.database import db_conn
-from app.data.store import record_failure, mark_recovered_batch, run_backfill_rounds
+from app.data.store import (record_failure, mark_recovered_batch,
+                            list_failures, cooldown_targets, run_backfill_rounds)
 from app.utils.log import get_logger
 
 logger = get_logger("data_ingest")
 
 # 熔断阈值：批次失败率超过该比例，疑似接口故障，提前中止避免白耗请求
 CIRCUIT_BREAK_FAIL_RATE = 0.5
+
+
+def filter_cooldown_targets(fetch_type: str, targets: list, label: str) -> list:
+    """下载入口 preflight：记录待重试失败、过滤冷却目标（nav 增量/全量/持仓/行业映射共用样板）。
+
+    - 日志打印待重试失败记录数（观察用）
+    - 过滤掉连续失败进入冷却期的目标，避免对注定失败的基金/股票反复请求
+    - 返回过滤后的目标列表（不修改入参）
+    """
+    pending = list_failures(fetch_type, status="failed")
+    if pending:
+        logger.info("%s：存在 %d 条待重试失败记录", label, len(pending))
+    cooldown = cooldown_targets(fetch_type)
+    if cooldown:
+        logger.info("%s：%d 个目标连续失败进入冷却期，本次跳过", label, len(cooldown))
+        return [t for t in targets if t not in cooldown]
+    return targets
 
 
 async def run_batched_fetch(

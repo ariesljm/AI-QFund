@@ -78,7 +78,7 @@
           <span id="idx-300-pct" class="font-data-sm text-on-surface-variant">—</span>
           <div class="px-2 py-0.5 surface-panel flex items-center gap-1.5">
             <div class="w-1.5 h-1.5 pulse-dot {% if regime_label == 'BULL' %}bg-up{% elif regime_label == 'BEAR' %}bg-down{% else %}bg-on-surface-variant{% endif %}"></div>
-            <span class="font-label-caps text-on-surface">{% if regime_label == 'BULL' %}牛市{% elif regime_label == 'BEAR' %}熊市{% else %}中性{% endif %}</span>
+            <span class="font-label-caps text-on-surface">{{ regime_labels.get(regime_label, '中性') }}</span>
           </div>
           <span id="quoteFallback" class="hidden items-center gap-1 font-label-caps text-warn text-[11px] whitespace-nowrap" title="实时行情源不可用，显示最近收盘数据">
             <span class="material-symbols-outlined text-[13px]">cloud_off</span>已收盘
@@ -409,13 +409,13 @@
                 <td class="px-4 py-2 text-center">{{ c.rec_count }}</td>
                 <td class="px-4 py-2 text-center">
                   {% if c.status == 'HOLD' or c.status == 'PASS' %}
-                  <span class="badge badge--hold">持有</span>
+                  <span class="badge badge--hold">{{ signal_labels.get(c.status, '持有') }}</span>
                   {% elif c.status == 'ADD' or c.status == 'BUY_MORE' %}
-                  <span class="badge badge--add">加仓</span>
+                  <span class="badge badge--add">{{ signal_labels.get(c.status, '加仓') }}</span>
                   {% elif c.status == 'CAUTION' or c.status == 'WARNING' %}
-                  <span class="badge badge--warn">警惕</span>
+                  <span class="badge badge--warn">{{ signal_labels.get(c.status, '警惕') }}</span>
                   {% elif c.status == 'EXIT' or c.status == 'REJECT' %}
-                  <span class="badge badge--exit">离场</span>
+                  <span class="badge badge--exit">{{ signal_labels.get(c.status, '离场') }}</span>
                   {% else %}
                   <span class="badge badge--muted">{{ c.status }}</span>
                   {% endif %}
@@ -662,6 +662,7 @@
 
 
 <script>window.__NEWS_ITEMS__ = {{ macro.news_items|tojson }};</script>
+<script>window.SIGNAL_LABELS = {{ signal_labels|tojson }}; window.REGIME_LABELS = {{ regime_labels|tojson }};</script>
 <script src="/static/app.js"></script>
 </body>
 </html>

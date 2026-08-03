@@ -1,29 +1,18 @@
 """底层数据 seam：fund/nav/index/holdings/features/meta 等可重建的底层数据只读与写入。"""
 
-from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 import json as _json
 
-from app.database import db_conn
+from app.database import db, meta_get, meta_set
 from app import domain
 from app.utils.log import get_logger
 
 logger = get_logger("repo")
 
 
-@contextmanager
-def db():
-    """统一连接 seam：复用 database.db_conn（含 WAL + schema 初始化 + 迁移）。"""
-    with db_conn() as conn:
-        yield conn
-
-
-# 模型特征列清单（fund_features 表列名，单一来源；recommend/backtest 均从此导入）
-FEATURE_COLS = [
-    "hurst_60d", "momentum_20d", "calmar", "downside_vol",
-    "capture_up", "capture_down", "bias_60d",
-]
+# 模型特征列清单（fund_features 表列名，单一来源；repo 拼 SQL / 特征计算 / 回测均从此导入）
+FEATURE_COLS = domain.FEATURE_COLS
 
 # 推荐模型前向预测窗口（交易日），训练与回测共用（领域常量单一来源）
 FORWARD_WINDOW = domain.FORWARD_DAYS
@@ -94,7 +83,7 @@ def get_fund_name(code: str) -> str | None:
 def get_fund_nav_rows(code: str, conn=None) -> list[tuple[str, float]]:
     """单只基金全部净值序列（训练样本面板构建用）。
 
-    conn 可复用现有连接（批量特征计算路径避免每基金一次连接）；缺省时自开连接。
+    conn 为内部批量 seam（批量特征计算路径复用连接避免每基金一次连接）；缺省时自开连接。
     """
     sql = 'SELECT date, cum_nav FROM fund_nav WHERE code = ? ORDER BY date ASC'
     if conn is not None:
@@ -137,7 +126,7 @@ def get_index_momentum(code: str='sh000300', days: int=21) -> float:
 def get_index_rows(code: str='sh000300', conn=None) -> list[tuple]:
     """宽基指数日线行 (date, close, volume)，按日期升序（特征计算/回测共用）。
 
-    conn 可复用现有连接（批量特征计算路径）；缺省时自开连接。
+    conn 为内部批量 seam（批量特征计算路径复用连接）；缺省时自开连接。
     """
     sql = 'SELECT date, close, volume FROM index_daily WHERE code = ? ORDER BY date ASC'
     if conn is not None:
@@ -227,16 +216,13 @@ def get_market_technical_summary() -> str:
 def get_meta(key: str) -> str | None:
     """读取 meta 配置值（行业映射更新时间等）。"""
     with db() as conn:
-        conn.execute('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)')
-        row = conn.execute('SELECT value FROM meta WHERE key = ?', (key,)).fetchone()
-    return row[0] if row else None
+        return meta_get(conn, key)
+
 
 def get_model_last_trained() -> str | None:
     """读取最近一次模型训练日期（meta 表），无则返回 None。"""
     with db() as conn:
-        conn.execute('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)')
-        row = conn.execute("SELECT value FROM meta WHERE key = 'model_last_trained'").fetchone()
-    return row[0] if row else None
+        return meta_get(conn, "model_last_trained")
 
 def get_momentum_in_sector(sector: str, date: str) -> list[float]:
     with db() as conn:
@@ -317,10 +303,38 @@ def get_train_fund_codes(min_bars: int, limit: int) -> list[str]:
         rows = conn.execute('SELECT code FROM fund_nav GROUP BY code HAVING COUNT(*) >= ? ORDER BY RANDOM() LIMIT ?', (min_bars, limit)).fetchall()
     return [r[0] for r in rows]
 
+def get_system_logs(lines: int = 200, after: int = 0) -> tuple[list[tuple], int, int]:
+    """系统日志读取（Web /api/logs 用，避免绕过 repo seam 内联 SQL）。
+
+    after 为上次读取的最大 id（增量游标，轮转/清理后仍可靠）。
+    返回 (rows, total, last_id)。
+    """
+    from app.utils.log import SYSTEM_LOG_TABLE_SQL
+    with db() as conn:
+        conn.execute(SYSTEM_LOG_TABLE_SQL)
+        total = conn.execute("SELECT COUNT(*) FROM system_logs").fetchone()[0]
+        if after <= 0:
+            rows = conn.execute(
+                "SELECT id, ts, level, logger, event, message, correlation_id "
+                "FROM system_logs ORDER BY id DESC LIMIT ?",
+                (lines,),
+            ).fetchall()
+            rows.reverse()
+        else:
+            rows = conn.execute(
+                "SELECT id, ts, level, logger, event, message, correlation_id "
+                "FROM system_logs WHERE id > ? ORDER BY id LIMIT ?",
+                (after, lines),
+            ).fetchall()
+    last_id = after
+    for r in rows:
+        last_id = r[0]
+    return rows, total, last_id
+
+
 def get_uptime_days() -> int:
     with db() as conn:
-        row = conn.execute("SELECT value FROM meta WHERE key = 'uptime_start'").fetchone()
-    start = row[0] if row else None
+        start = meta_get(conn, "uptime_start")
     if start:
         return (datetime.now() - datetime.strptime(start, '%Y-%m-%d')).days
     return 365
@@ -333,9 +347,19 @@ def save_flow_data(date_str: str, flow_json: dict) -> None:
     with db() as conn:
         conn.execute('INSERT INTO macro_news (date, flow_json) VALUES (?, ?) ON CONFLICT(date) DO UPDATE SET flow_json = excluded.flow_json', (date_str, _json.dumps(flow_json, ensure_ascii=False)))
 
-def save_fund_features(conn, features: dict) -> None:
-    """写入一条基金特征快照（INSERT OR REPLACE，批量特征计算路径复用连接）。"""
-    conn.execute('INSERT OR REPLACE INTO fund_features (code, date, regime, hurst_60d, momentum_20d, calmar, downside_vol, capture_up, capture_down, bias_60d, rbsa_industry_1, rbsa_weight_1, rbsa_industry_2, rbsa_weight_2, rbsa_industry_3, rbsa_weight_3) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (features['code'], features['date'], features['regime'], features.get('hurst_60d'), features.get('momentum_20d'), features.get('calmar'), features.get('downside_vol'), features.get('capture_up'), features.get('capture_down'), features.get('bias_60d'), features.get('rbsa_industry_1', ''), features.get('rbsa_weight_1', 0.0), features.get('rbsa_industry_2', ''), features.get('rbsa_weight_2', 0.0), features.get('rbsa_industry_3', ''), features.get('rbsa_weight_3', 0.0)))
+def save_fund_features(features: dict, conn=None) -> None:
+    """写入一条基金特征快照（INSERT OR REPLACE）。
+
+    ``conn`` 为内部批量 seam：特征全量计算（calc_all_features）复用连接避免逐条重开；
+    缺省时自开连接。普通调用不需要也不应传 conn。
+    """
+    sql = 'INSERT OR REPLACE INTO fund_features (code, date, regime, hurst_60d, momentum_20d, calmar, downside_vol, capture_up, capture_down, bias_60d, rbsa_industry_1, rbsa_weight_1, rbsa_industry_2, rbsa_weight_2, rbsa_industry_3, rbsa_weight_3) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    params = (features['code'], features['date'], features['regime'], features.get('hurst_60d'), features.get('momentum_20d'), features.get('calmar'), features.get('downside_vol'), features.get('capture_up'), features.get('capture_down'), features.get('bias_60d'), features.get('rbsa_industry_1', ''), features.get('rbsa_weight_1', 0.0), features.get('rbsa_industry_2', ''), features.get('rbsa_weight_2', 0.0), features.get('rbsa_industry_3', ''), features.get('rbsa_weight_3', 0.0))
+    if conn is not None:
+        conn.execute(sql, params)
+    else:
+        with db() as conn:
+            conn.execute(sql, params)
 
 def save_macro_news(date_str: str, news: str, top_gainers: str, top_losers: str, etf_net_flow: str) -> None:
     with db() as conn:
@@ -344,12 +368,19 @@ def save_macro_news(date_str: str, news: str, top_gainers: str, top_losers: str,
 def set_model_last_trained(date_str: str) -> None:
     """记录最近一次模型训练日期。"""
     with db() as conn:
-        conn.execute('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)')
-        conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('model_last_trained', ?)", (date_str,))
+        meta_set(conn, "model_last_trained", date_str)
 
-def trim_fund_features(conn, retention: int) -> None:
-    """修剪每只基金特征快照至最近 retention 行（防历史快照无限累积）。"""
-    conn.execute('DELETE FROM fund_features WHERE rowid IN (  SELECT rowid FROM (    SELECT rowid, ROW_NUMBER() OVER (PARTITION BY code ORDER BY date DESC) rk    FROM fund_features) WHERE rk > ?)', (retention,))
+def trim_fund_features(retention: int, conn=None) -> None:
+    """修剪每只基金特征快照至最近 retention 行（防历史快照无限累积）。
+
+    ``conn`` 为内部批量 seam：特征全量计算路径复用连接；缺省时自开连接。
+    """
+    sql = 'DELETE FROM fund_features WHERE rowid IN (  SELECT rowid FROM (    SELECT rowid, ROW_NUMBER() OVER (PARTITION BY code ORDER BY date DESC) rk    FROM fund_features) WHERE rk > ?)'
+    if conn is not None:
+        conn.execute(sql, (retention,))
+    else:
+        with db() as conn:
+            conn.execute(sql, (retention,))
 
 
-__all__ = ["db", "FEATURE_COLS", "FORWARD_WINDOW", "get_all_nav_rows", "get_all_ranking_rows", "get_available_sectors", "get_buyable_codes", "get_buyable_feature_stats", "get_cached_context", "get_codes_missing_rbsa", "get_feature_codes_before", "get_feature_dates_map", "get_fund_name", "get_fund_nav_rows", "get_fund_pool_stats", "get_holdings", "get_index_close", "get_index_close_on", "get_index_momentum", "get_index_rows", "get_index_series", "get_industry_map", "get_latest_feature_date", "get_latest_features", "get_latest_holdings_date", "get_latest_holdings_rows", "get_latest_macro_news", "get_latest_nav", "get_market_regime", "get_market_technical_summary", "get_meta", "get_model_last_trained", "get_momentum_in_sector", "get_nav_at_date", "get_nav_at_or_before", "get_nav_history", "get_nav_latest_dates", "get_nav_rows_for_codes", "get_nav_rows_since", "get_nav_since", "get_rbsa_weight_at_date", "get_sector_candidates", "get_sector_heatmap", "get_train_fund_codes", "get_uptime_days", "save_context", "save_flow_data", "save_fund_features", "save_macro_news", "set_model_last_trained", "trim_fund_features"]
+__all__ = ["db", "FEATURE_COLS", "FORWARD_WINDOW", "get_all_nav_rows", "get_all_ranking_rows", "get_available_sectors", "get_buyable_codes", "get_buyable_feature_stats", "get_cached_context", "get_codes_missing_rbsa", "get_feature_codes_before", "get_feature_dates_map", "get_fund_name", "get_fund_nav_rows", "get_fund_pool_stats", "get_holdings", "get_index_close", "get_index_close_on", "get_index_momentum", "get_index_rows", "get_index_series", "get_industry_map", "get_latest_feature_date", "get_latest_features", "get_latest_holdings_date", "get_latest_holdings_rows", "get_latest_macro_news", "get_latest_nav", "get_market_regime", "get_market_technical_summary", "get_meta", "get_model_last_trained", "get_momentum_in_sector", "get_nav_at_date", "get_nav_at_or_before", "get_nav_history", "get_nav_latest_dates", "get_nav_rows_for_codes", "get_nav_rows_since", "get_nav_since", "get_rbsa_weight_at_date", "get_sector_candidates", "get_sector_heatmap", "get_system_logs", "get_train_fund_codes", "get_uptime_days", "save_context", "save_flow_data", "save_fund_features", "save_macro_news", "set_model_last_trained", "trim_fund_features"]

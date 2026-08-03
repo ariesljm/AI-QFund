@@ -15,12 +15,12 @@ from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 
 import tomllib
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Header, HTTPException, Depends
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app.database import get_db as _get_db, db_conn
+from app.database import get_db as _get_db
 from app.config import load_settings as _load_settings, save_settings as _save_settings, SETTINGS_PATH
 from app.pipeline import run as run_full_pipeline
 from app.utils.trading_calendar import is_trading_day
@@ -392,28 +392,32 @@ def _fund_profile_block(code):
     return fund_features, top_holdings
 
 
-def _alpha_curve_svg(alpha_pcts):
-    """逐基金 alpha 贡献曲线 SVG（自动缩放）。返回 (svg, baseline_y)。"""
-    if not alpha_pcts:
+def _smooth_svg_path(values, pad_ratio=0.1):
+    """生成平滑 SVG 路径与 0% 基线 y 坐标（alpha 贡献/质量曲线共用，viewBox 200x100）。
+
+    空输入返回 ("", 50)；单点返回水平线。三次贝塞尔平滑，Y 轴按数据范围自动缩放。
+    """
+    vals = [float(v) for v in values if v is not None]
+    if not vals:
         return "", 50
-    a_min, a_max = min(alpha_pcts), max(alpha_pcts)
-    a_range = a_max - a_min or 1
-    a_pad = a_range * 0.1
-    a_min -= a_pad
-    a_max += a_pad
-    a_range = a_max - a_min or 1
+    y_min, y_max = min(vals), max(vals)
+    y_range = y_max - y_min or 1
+    pad = y_range * pad_ratio
+    y_min -= pad
+    y_max += pad
+    y_range = y_max - y_min or 1
 
-    def _ay(v):
-        return 90 - (v - a_min) / a_range * 80
+    def _y(v):
+        return 90 - (v - y_min) / y_range * 80
 
-    baseline_y = _ay(0)
-    if len(alpha_pcts) == 1:
-        y = _ay(alpha_pcts[0])
+    baseline_y = _y(0)
+    n = len(vals)
+    if n == 1:
+        y = _y(vals[0])
         return f"M 0,{y:.1f} L 200,{y:.1f}", baseline_y
-    n = len(alpha_pcts)
-    pts = [(i / (n - 1) * 200, _ay(v)) for i, v in enumerate(alpha_pcts)]
+    pts = [(i / (n - 1) * 200, _y(v)) for i, v in enumerate(vals)]
     d = f"M {pts[0][0]:.1f},{pts[0][1]:.1f}"
-    for i in range(len(pts) - 1):
+    for i in range(n - 1):
         x0, y0 = pts[i]
         x1, y1 = pts[i + 1]
         mx = (x0 + x1) / 2
@@ -431,7 +435,7 @@ def _alpha_block(candidate_list, total_return):
         if hs300_start and hs300_now:
             hs300_pct = round((hs300_now / hs300_start - 1) * 100, 2)
             alpha = round(total_return - hs300_pct, 2)
-    alpha_svg, alpha_baseline_y = _alpha_curve_svg(_alpha_series(candidate_list))
+    alpha_svg, alpha_baseline_y = _smooth_svg_path(_alpha_series(candidate_list))
     return alpha, alpha_svg, alpha_baseline_y
 
 
@@ -496,29 +500,8 @@ def _make_dual_svg(pcts, hs_pcts):
 
 def _quality_curve_svg(points):
     """累计超额曲线 SVG（单线），points=[{cum_alpha,...}] 按时间序。返回 (path, baseline_y)。"""
-    vals = [float(p["cum_alpha"]) for p in points if p.get("cum_alpha") is not None]
-    if len(vals) < 2:
-        return "", 50
-    y_min, y_max = min(vals), max(vals)
-    y_range = y_max - y_min or 1
-    pad = y_range * 0.15
-    y_min -= pad
-    y_max += pad
-    y_range = y_max - y_min or 1
-
-    def _y(v):
-        return 90 - (v - y_min) / y_range * 80
-
-    baseline_y = _y(0)
-    n = len(vals)
-    pts = [(i / (n - 1) * 200, _y(v)) for i, v in enumerate(vals)]
-    d = f"M {pts[0][0]:.1f},{pts[0][1]:.1f}"
-    for i in range(n - 1):
-        x0, y0 = pts[i]
-        x1, y1 = pts[i + 1]
-        mx = (x0 + x1) / 2
-        d += f" C {mx:.1f},{y0:.1f} {mx:.1f},{y1:.1f} {x1:.1f},{y1:.1f}"
-    return d, baseline_y
+    return _smooth_svg_path([float(p["cum_alpha"]) for p in points if p.get("cum_alpha") is not None],
+                            pad_ratio=0.15)
 
 
 def _index_context() -> dict:
@@ -664,6 +647,8 @@ def _index_context() -> dict:
         "max_drawdown": max_drawdown,
         "latest_ic": latest_ic,
         "latest_excess_win_rate": latest_excess_win_rate,
+        "signal_labels": domain.SIGNAL_LABELS,
+        "regime_labels": domain.REGIME_LABELS,
     }
 
 
@@ -680,27 +665,9 @@ async def index_v1(request: Request):
 @app.get("/api/logs")
 async def get_logs(lines: int = 200, after: int = 0):
     """从 SQLite 返回日志；after 为上次读取的最大 id（增量游标，轮转/清理后仍可靠）。"""
-    from app.utils.log import SYSTEM_LOG_TABLE_SQL
-    with db_conn() as conn:
-        conn.execute(SYSTEM_LOG_TABLE_SQL)
-        total = conn.execute("SELECT COUNT(*) FROM system_logs").fetchone()[0]
-        if after <= 0:
-            rows = conn.execute(
-                "SELECT id, ts, level, logger, event, message, correlation_id "
-                "FROM system_logs ORDER BY id DESC LIMIT ?",
-                (lines,),
-            ).fetchall()
-            rows.reverse()
-        else:
-            rows = conn.execute(
-                "SELECT id, ts, level, logger, event, message, correlation_id "
-                "FROM system_logs WHERE id > ? ORDER BY id LIMIT ?",
-                (after, lines),
-            ).fetchall()
+    rows, total, last_id = repo.get_system_logs(lines, after)
     out = []
-    last_id = after
     for r in rows:
-        last_id = r[0]
         out.append(json.dumps({
             "timestamp": r[1],
             "level": r[2],
@@ -719,8 +686,19 @@ async def get_settings():
     return s
 
 
+def _require_settings_auth(x_settings_password: str | None = Header(default=None)) -> None:
+    """写操作鉴权：校验 X-Settings-Password 头；密码为空（未设置）时放行。
+
+    防止绕过前端密码弹窗直接调用写接口（改设置/清数据/触发管线）。
+    """
+    s = _load_settings()
+    pwd = (s.get("web", {}) or {}).get("settings_password", "") or ""
+    if pwd and x_settings_password != pwd:
+        raise HTTPException(status_code=403, detail="密码错误")
+
+
 @app.post("/api/settings")
-async def save_settings(body: dict):
+async def save_settings(body: dict, _auth: None = Depends(_require_settings_auth)):
     try:
         _save_settings(body)
         return {"status": "ok"}
@@ -739,7 +717,7 @@ async def check_password(body: dict):
 
 
 @app.post("/api/run-pipeline")
-async def run_pipeline():
+async def run_pipeline(_auth: None = Depends(_require_settings_auth)):
     logger = logging.getLogger("web")
     try:
         t = threading.Thread(target=_run_pipeline_wrapper, args=(True,), daemon=True)
@@ -757,7 +735,8 @@ async def get_pipeline_status():
 
 
 @app.post("/api/clear-recommendations")
-async def clear_recommendations(body: dict | None = None):
+async def clear_recommendations(body: dict | None = None,
+                               _auth: None = Depends(_require_settings_auth)):
     """清除推荐决策域数据（推荐记录、赛道选择、监控事件、进化洞察）。
 
     dry_run=true 时仅返回各表行数不删除（前端确认弹窗用）。

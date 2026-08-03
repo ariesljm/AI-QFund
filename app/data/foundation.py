@@ -16,10 +16,10 @@ import requests
 
 from app.database import db_conn, meta_get, meta_set, DB_PATH
 from app.data.fetchers import fetch as _push2_fetch, fetch_async
-from app.data.ingest import run_batched_fetch
+from app.data.ingest import run_batched_fetch, filter_cooldown_targets
 from app.data.nav import async_update_nav_incremental, async_download_all_nav
 from app.data.store import (save_fund_list, save_index_daily, record_failure,
-                            mark_recovered_batch, list_failures, cooldown_targets,
+                            mark_recovered_batch,
                             run_backfill_rounds)
 from app.features import calculator as _features
 from app.utils.log import get_logger
@@ -256,13 +256,7 @@ async def async_download_all_holdings(
             latest_quarter, len(local_latest) - len(all_codes), len(all_codes),
         )
 
-    pending = list_failures("holdings", status="failed")
-    if pending:
-        logger.info("持仓：存在 %d 条待重试失败记录", len(pending))
-    cooldown = cooldown_targets("holdings")
-    if cooldown:
-        logger.info("持仓：%d 只基金连续失败进入冷却期，本次跳过", len(cooldown))
-        all_codes = [c for c in all_codes if c not in cooldown]
+    all_codes = filter_cooldown_targets("holdings", all_codes, "持仓")
 
     with db_conn() as conn:
         semaphore = asyncio.Semaphore(concurrency)
@@ -344,9 +338,9 @@ async def async_download_all_holdings(
 def update_industry_map(force: bool = False) -> int:
     with db_conn() as conn:
         if not force:
-            row = conn.execute("SELECT value FROM meta WHERE key = 'industry_map_updated'").fetchone()
-            if row:
-                last_update = datetime.strptime(row[0], "%Y-%m-%d")
+            last_update_raw = meta_get(conn, "industry_map_updated")
+            if last_update_raw:
+                last_update = datetime.strptime(last_update_raw, "%Y-%m-%d")
                 if datetime.now() - last_update < timedelta(days=90):
                     logger.info("行业映射距上次更新不足 90 天，跳过")
                     return 0
@@ -368,10 +362,7 @@ def update_industry_map(force: bool = False) -> int:
             "VALUES (?, ?, ?, ?)",
             [(sc, ic, in_, today) for sc, ic, in_ in records],
         )
-        conn.execute(
-            "INSERT OR REPLACE INTO meta (key, value) VALUES ('industry_map_updated', ?)",
-            (today,),
-        )
+        meta_set(conn, "industry_map_updated", today)
     logger.info("行业映射更新完成: %d 条记录", len(records))
     return len(records)
 
@@ -457,20 +448,13 @@ def _fetch_hk_industry_push2(hk_stocks: list[str], results: dict[str, tuple[str,
 
 
 def _fetch_industry_map() -> list[tuple[str, str, str]]:
-    pending = list_failures("industry_map", status="failed")
-    if pending:
-        logger.info("行业映射：存在 %d 条待重试失败记录", len(pending))
-    cooldown = cooldown_targets("industry_map")
-    if cooldown:
-        logger.info("行业映射：%d 只股票连续失败进入冷却期，本次跳过", len(cooldown))
-
     with db_conn() as conn:
         all_stocks = [
             r[0] for r in conn.execute(
                 "SELECT DISTINCT stock_code FROM fund_holdings"
             ).fetchall()
         ]
-    all_stocks = [s for s in all_stocks if s not in cooldown]
+    all_stocks = filter_cooldown_targets("industry_map", all_stocks, "行业映射")
     if not all_stocks:
         return []
     logger.info("需要查询 %d 只股票的行业分类...", len(all_stocks))

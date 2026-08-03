@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 
 from app.data.foundation import run_pipeline as run_data_foundation
-from app.database import db_conn
+from app.database import db_conn, meta_get, meta_set
 from app.utils.log import set_correlation_id, get_logger
 from app.engine.monitor import run_monitor
 from app.engine.recommend import run_recommendation
@@ -17,19 +17,15 @@ _HOLDINGS_INTERVAL_DAYS = 7
 
 def _daily_data_steps() -> list[int]:
     with db_conn() as conn:
-        conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
-        row = conn.execute("SELECT value FROM meta WHERE key = 'holdings_last_run'").fetchone()
-    if row:
-        last = datetime.strptime(row[0], "%Y-%m-%d").date()
+        last_raw = meta_get(conn, "holdings_last_run")
+    if last_raw:
+        last = datetime.strptime(last_raw, "%Y-%m-%d").date()
         elapsed = (datetime.now().date() - last).days
     else:
         elapsed = _HOLDINGS_INTERVAL_DAYS + 1
     if elapsed > _HOLDINGS_INTERVAL_DAYS:
         with db_conn() as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO meta (key, value) VALUES ('holdings_last_run', ?)",
-                (datetime.now().strftime("%Y-%m-%d"),),
-            )
+            meta_set(conn, "holdings_last_run", datetime.now().strftime("%Y-%m-%d"))
         return [1, 2, 3, 4, 7]
     return [1, 2, 3, 7]
 

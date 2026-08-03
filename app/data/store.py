@@ -7,7 +7,6 @@ from app.database import db_conn
 from app.utils.log import get_logger
 
 logger = get_logger("data_store")
-
 NAV_RETENTION_DAYS = 250
 """净值保留窗口（交易日）：每只基金仅保留最近 N 条。
 
@@ -119,21 +118,6 @@ def backfill_guard(failed, total, label, threshold=0.5):
 
 # ── 数据拉取失败记录 ──
 
-_FETCH_FAILURE_TABLE = """
-CREATE TABLE IF NOT EXISTS data_fetch_failures (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    fetch_type TEXT NOT NULL,
-    target TEXT NOT NULL,
-    stage TEXT DEFAULT '',
-    error TEXT,
-    attempts INTEGER DEFAULT 1,
-    status TEXT DEFAULT 'failed',
-    first_failed_at TEXT DEFAULT (datetime('now')),
-    last_failed_at TEXT,
-    recovered_at TEXT,
-    UNIQUE (fetch_type, target)
-)"""
-
 
 def record_failure(fetch_type: str, target: str, error: str = "",
                    stage: str = "", count_attempt: bool = True) -> None:
@@ -143,7 +127,6 @@ def record_failure(fetch_type: str, target: str, error: str = "",
     避免把同一次运行内的多轮补查算作多次失败）；恢复后再次失败则重置为 1。
     """
     with db_conn() as conn:
-        conn.execute(_FETCH_FAILURE_TABLE)
         row = conn.execute(
             "SELECT status, attempts FROM data_fetch_failures WHERE fetch_type = ? AND target = ?",
             (fetch_type, target),
@@ -175,7 +158,6 @@ def record_failure(fetch_type: str, target: str, error: str = "",
 def mark_recovered(fetch_type: str, target: str, note: str = "") -> None:
     """标记失败已恢复（补查成功或确认无需重试的基金/股票）。"""
     with db_conn() as conn:
-        conn.execute(_FETCH_FAILURE_TABLE)
         conn.execute(
             "UPDATE data_fetch_failures SET status = 'recovered', "
             "recovered_at = datetime('now'), error = COALESCE(?, error) "
@@ -192,7 +174,6 @@ def mark_recovered_batch(fetch_type: str, targets: list[str]) -> None:
     if not targets:
         return
     with db_conn() as conn:
-        conn.execute(_FETCH_FAILURE_TABLE)
         conn.executemany(
             "UPDATE data_fetch_failures SET status = 'recovered', "
             "recovered_at = datetime('now') "
@@ -210,7 +191,6 @@ def cooldown_targets(fetch_type: str, min_attempts: int = 3,
     （datetime('now')），与 Python 侧 UTC 对齐。
     """
     with db_conn() as conn:
-        conn.execute(_FETCH_FAILURE_TABLE)
         rows = conn.execute(
             "SELECT target, attempts, last_failed_at FROM data_fetch_failures "
             "WHERE fetch_type = ? AND status = 'failed'",
@@ -253,7 +233,6 @@ def list_failures(fetch_type: str | None = None, status: str | None = None,
     cols = ("fetch_type", "target", "stage", "error", "attempts", "status",
             "first_failed_at", "last_failed_at", "recovered_at")
     with db_conn() as conn:
-        conn.execute(_FETCH_FAILURE_TABLE)
         rows = conn.execute(sql, params).fetchall()
     return [dict(zip(cols, r)) for r in rows]
 
