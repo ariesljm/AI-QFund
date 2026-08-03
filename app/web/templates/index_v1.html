@@ -145,6 +145,13 @@ button:focus-visible { outline: 2px solid #1A1A1A; outline-offset: 2px; }
 </div>
 </div>
 {% endif %}
+<!-- 全局市场状态条 -->
+<div class="flex items-center gap-md px-md py-1 md:py-2 mb-md md:mb-lg border-2 border-primary">
+<span class="material-symbols-outlined text-[18px] text-primary">trending_up</span>
+<span class="text-[13px] font-black">大盘状态：{% if regime_label == 'BULL' %}<span class="text-up">{{ regime_labels.get('BULL') }}</span>{% elif regime_label == 'BEAR' %}<span class="text-down">{{ regime_labels.get('BEAR') }}</span>{% else %}{{ regime_labels.get('NEUTRAL') }}{% endif %}</span>
+<span class="opacity-30 mx-1">|</span>
+<span id="idx-source" class="text-[11px] font-black uppercase tracking-widest text-on-surface-variant">● 实时</span>
+</div>
 <!-- Hero Section -->
 <div class="relative -mx-sm md:-mx-lg px-sm md:px-lg pt-sm md:pt-lg pb-sm md:pb-sm mb-md md:mb-lg"
      style="background:linear-gradient(180deg, #F4F1EA 0%, #FDFBF7 60%, transparent 100%);">
@@ -155,10 +162,6 @@ button:focus-visible { outline: 2px solid #1A1A1A; outline-offset: 2px; }
 <div class="lg:col-span-4 flex flex-col justify-center pr-lg lg:border-r border-outline-variant">
 <div class="flex items-center justify-between mb-sm md:mb-md">
 <span class="text-on-surface-variant font-label-sm text-[13px] md:text-[14px] uppercase tracking-[0.2em] font-black">MARKET OVERVIEW / 核心指数</span>
-</div>
-<div class="flex items-center gap-md mb-sm md:mb-md">
-<span class="text-[13px] font-black">大盘状态：{% if regime_label == 'BULL' %}<span class="text-up">{{ regime_labels.get('BULL') }}</span>{% elif regime_label == 'BEAR' %}<span class="text-down">{{ regime_labels.get('BEAR') }}</span>{% else %}{{ regime_labels.get('NEUTRAL') }}{% endif %}</span>
-<span id="idx-source" class="text-[11px] font-black uppercase tracking-widest text-on-surface-variant">● 实时</span>
 </div>
 <div class="grid grid-cols-2 gap-md md:gap-xl">
 <div class="flex flex-col">
