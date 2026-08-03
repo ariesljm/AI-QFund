@@ -23,6 +23,7 @@ from fastapi.templating import Jinja2Templates
 from app.database import get_db as _get_db, db_conn
 from app.config import load_settings as _load_settings, save_settings as _save_settings, SETTINGS_PATH
 from app.pipeline import run as run_full_pipeline
+from app.utils.trading_calendar import is_trading_day
 from app.engine.valuation import (portfolio_series as _portfolio_series,
                                   period_returns as _period_returns,
                                   sharpe_ratio as _sharpe_ratio,
@@ -102,9 +103,12 @@ def _scheduler_loop():
                 today = datetime.now().strftime("%Y-%m-%d")
                 now = datetime.now()
                 if now.hour == int(h) and now.minute == int(m) and _pipeline.last_run_date != today:
-                    _sched_logger.info("定时触发: %s %02d:%02d", today, int(h), int(m))
-                    _pipeline.last_run_date = today
-                    _run_pipeline_wrapper()
+                    if not is_trading_day(now.date()):
+                        _sched_logger.info("定时跳过：%s 非交易日，不启动推荐流程", today)
+                    else:
+                        _sched_logger.info("定时触发: %s %02d:%02d", today, int(h), int(m))
+                        _pipeline.last_run_date = today
+                        _run_pipeline_wrapper()
             else:
                 _sched_logger.debug("调度器已禁用（hour 为空）")
         except Exception as e:
