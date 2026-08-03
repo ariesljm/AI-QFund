@@ -28,14 +28,14 @@ FEATURE_COLS = [
 # 推荐模型前向预测窗口（交易日），训练与回测共用（领域常量单一来源）
 FORWARD_WINDOW = domain.FORWARD_DAYS
 def clear_recommendations() -> dict:
-    """清空推荐决策域：推荐记录、赛道选择、监控事件、进化洞察及推荐结果文件。
+    """清空推荐决策域：推荐记录、赛道选择、监控事件、进化洞察、每日宏观摘要及推荐结果文件。
 
     保留底层数据（fund_basic/fund_nav/fund_features 等）与 meta 配置。
     返回各表删除的行数。
     """
     counts: dict[str, int] = {}
     with db() as conn:
-        for table in ('recommend_log', 'sector_selections', 'monitor_events', 'evolution_insights', 'quality_metrics'):
+        for table in ('recommend_log', 'sector_selections', 'monitor_events', 'evolution_insights', 'quality_metrics', 'macro_news'):
             cur = conn.execute(f'DELETE FROM {table}')
             counts[table] = cur.rowcount
     last_reco = Path('data/last_recommendation.txt')
@@ -48,7 +48,7 @@ def clear_recommendations() -> dict:
 def count_recommendation_domain() -> dict[str, int]:
     """推荐决策域各表行数（清除确认 dry-run 用）。"""
     with db() as conn:
-        counts = {'recommend_log': conn.execute('SELECT COUNT(*) FROM recommend_log').fetchone()[0], 'sector_selections': conn.execute('SELECT COUNT(*) FROM sector_selections').fetchone()[0], 'monitor_events': conn.execute('SELECT COUNT(*) FROM monitor_events').fetchone()[0], 'evolution_insights': conn.execute('SELECT COUNT(*) FROM evolution_insights').fetchone()[0], 'quality_metrics': conn.execute('SELECT COUNT(*) FROM quality_metrics').fetchone()[0]}
+        counts = {'recommend_log': conn.execute('SELECT COUNT(*) FROM recommend_log').fetchone()[0], 'sector_selections': conn.execute('SELECT COUNT(*) FROM sector_selections').fetchone()[0], 'monitor_events': conn.execute('SELECT COUNT(*) FROM monitor_events').fetchone()[0], 'evolution_insights': conn.execute('SELECT COUNT(*) FROM evolution_insights').fetchone()[0], 'quality_metrics': conn.execute('SELECT COUNT(*) FROM quality_metrics').fetchone()[0], 'macro_news': conn.execute('SELECT COUNT(*) FROM macro_news').fetchone()[0]}
     return counts
 
 def exit_position(code: str, sell_reason: str, return_rate: float | None, statuses: tuple[str, ...], today: str) -> None:

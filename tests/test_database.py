@@ -19,7 +19,8 @@ class TestMigrateCreatesNewTables:
             pass
 
         monkeypatch.setattr(db_mod, "_init_schema", _noop_init_schema)
-        monkeypatch.setattr(db_mod._migrate, "_done", False)
+        # _done 是函数属性，仅在其他测试先触发迁移后存在；raising=False 允许单跑本文件
+        monkeypatch.setattr(db_mod._migrate, "_done", False, raising=False)
         monkeypatch.setattr(db_mod, "DB_PATH", tmp_path / "test.db")
 
         conn = get_db()
@@ -76,3 +77,39 @@ class TestGetHoldingCodesSector:
         rows = decision_mod.get_holding_codes(("HOLD",))
         assert len(rows) == 1
         assert rows[0][4] == "半导体"
+
+
+class TestClearRecommendationsIncludesMacroNews:
+    """清除推荐数据应一并清除每日宏观摘要（板块轮动/资金流向/AI赛道分析的数据源）。"""
+
+    def test_clear_removes_macro_news(self, monkeypatch, tmp_path):
+        import app.database as db_mod
+        monkeypatch.setattr(db_mod, "DB_PATH", str(tmp_path / "test.db"))
+        from app.repo import decision as decision_mod
+        with decision_mod.db() as conn:
+            conn.execute(
+                "INSERT INTO recommend_log (recommend_date, code, name, status)"
+                " VALUES ('2026-08-03', '018517', '测试基金', 'HOLD')"
+            )
+            conn.execute(
+                "INSERT INTO macro_news (date, news_summary, top_gainers)"
+                " VALUES ('2026-08-03', '新闻', '半导体(+3.2%)')"
+            )
+        counts = decision_mod.clear_recommendations()
+        assert counts["recommend_log"] == 1
+        assert counts["macro_news"] == 1
+        with decision_mod.db() as conn:
+            assert conn.execute("SELECT COUNT(*) FROM macro_news").fetchone()[0] == 0
+            assert conn.execute("SELECT COUNT(*) FROM recommend_log").fetchone()[0] == 0
+
+    def test_count_includes_macro_news(self, monkeypatch, tmp_path):
+        import app.database as db_mod
+        monkeypatch.setattr(db_mod, "DB_PATH", str(tmp_path / "test.db"))
+        from app.repo import decision as decision_mod
+        with decision_mod.db() as conn:
+            conn.execute(
+                "INSERT INTO macro_news (date, news_summary)"
+                " VALUES ('2026-08-03', '新闻')"
+            )
+        counts = decision_mod.count_recommendation_domain()
+        assert counts["macro_news"] == 1
