@@ -67,7 +67,7 @@ def sector_selection_prompt(
         '  "recommended_sectors": ["行业1", "行业2", ...],',
         '  "risk_sectors": ["回避行业1", ...],',
         '  "regime_label": "bullish/bearish/neutral",',
-        '  "reasoning": "为什么选这些赛道，基于新闻中的产业动态/政策风向/资金流向"',
+        '  "reasoning": "为什么选这些赛道，基于新闻中的产业动态/政策风向/资金流向；全部使用中文，描述大盘状态用「牛市/熊市/中性」，禁止出现英文 bullish/bearish/neutral"',
         "}",
     ]
     return "\n".join(lines)

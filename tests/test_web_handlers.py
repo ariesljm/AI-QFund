@@ -110,6 +110,24 @@ class TestMacroSummary:
         assert m["macro"]["news_items"][0] == {"title": "央行开展公开市场操作", "summary": "央行开展公开市场操作"}
         assert m["macro"]["news"] == "央行开展公开市场操作"
 
+    def test_sector_reasoning_regime_chinese(self):
+        """AI赛道分析中的英文大盘状态词替换为中文（熊市/牛市/中性）。"""
+        m = webapp._macro_summary({
+            "news_summary": "新闻",
+            "sector_reasoning": "半导体领涨，但大盘判定为bearish，消费板块中性观望，注意bull陷阱",
+        })
+        sr = m["sector_reasoning"]
+        assert "熊市" in sr and "bearish" not in sr
+        assert "中性" in sr and "neutral" not in sr
+        assert "牛市" in sr and "bull" not in sr
+
+    def test_zh_regime_replacements(self):
+        """替换函数：大小写不敏感、无匹配原样返回。"""
+        assert webapp._zh_regime("判定为 Bearish 和 BULL market") == "判定为 熊市 和 牛市 market"
+        assert webapp._zh_regime("无英文大盘词") == "无英文大盘词"
+        assert webapp._zh_regime("") == ""
+        assert webapp._zh_regime(None) is None
+
     def test_empty_macro(self):
         """无宏观数据 → 默认值。"""
         m = webapp._macro_summary(None)
