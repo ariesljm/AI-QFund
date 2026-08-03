@@ -10,12 +10,14 @@ import logging
 import re
 import threading
 import time
-from datetime import datetime
+import asyncio
+from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 
 import tomllib
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.database import get_db as _get_db, db_conn
@@ -121,6 +123,102 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="AI Quant Terminal", lifespan=lifespan)
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+STATIC_DIR = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+class _IndexQuoteCache:
+    """实时指数行情：15 秒实时缓存，抓取失败降级为数据库最近收盘（60 秒缓存）。"""
+
+    def __init__(self):
+        self.data: dict | None = None
+        self.expires: float = 0.0
+        self.ttl_live = 15.0
+        self.ttl_fallback = 60.0
+
+    async def get(self) -> dict:
+        now = time.time()
+        if self.data is not None and now < self.expires:
+            return self.data
+        try:
+            items = await asyncio.to_thread(self._fetch_live)
+            self.data = {"items": items, "updated_at": datetime.now().strftime("%H:%M:%S"), "source": "live"}
+            self.expires = now + self.ttl_live
+        except Exception as e:
+            logger.warning("实时行情抓取失败，降级为收盘价: %s", str(e)[:120])
+            self.data = {"items": self._fallback_closed(), "updated_at": datetime.now().strftime("%H:%M:%S"), "source": "closed"}
+            self.expires = now + self.ttl_fallback
+        return self.data
+
+    def _fetch_live(self) -> list[dict]:
+        """腾讯 qt.gtimg.cn 简化接口：v_s_sh000001="1~上证指数~000001~价格~涨跌额~涨跌幅%..."。"""
+        from app.data.fetchers import fetch
+        resp = fetch("https://qt.gtimg.cn/q=s_sh000001,s_sh000300", timeout=8)
+        text = resp.content.decode("gbk", errors="replace")
+        items = []
+        for m in re.finditer(r'v_s_sh(\d+)="([^"]*)"', text):
+            code, payload = m.group(1), m.group(2)
+            fields = payload.split("~")
+            if len(fields) < 6:
+                continue
+            try:
+                price = float(fields[3])
+                pct = float(fields[5])
+            except ValueError:
+                continue
+            items.append({"code": f"sh{code}", "name": fields[1], "price": price,
+                          "change_percent": pct, "source": "live"})
+        if not items:
+            raise RuntimeError("行情响应为空")
+        return items
+
+    def _fallback_closed(self) -> list[dict]:
+        """降级：沪深300 取数据库最近收盘（含最近两日涨跌幅），上证无历史数据标记不可用。"""
+        items = []
+        rows = sorted(repo.get_index_series("sh000300", ("date", "close")), key=lambda r: r[0])
+        if rows:
+            price = rows[-1][1]
+            pct = None
+            if len(rows) >= 2 and rows[-2][1]:
+                pct = round((rows[-1][1] / rows[-2][1] - 1) * 100, 2)
+            items.append({"code": "sh000300", "name": "沪深300", "price": price,
+                          "change_percent": pct, "date": rows[-1][0], "source": "closed"})
+        items.append({"code": "sh000001", "name": "上证指数", "price": None,
+                      "change_percent": None, "source": "unavailable"})
+        return items
+
+
+_index_quote = _IndexQuoteCache()
+
+
+@app.get("/api/indices")
+async def get_indices():
+    """实时指数行情（后端代理 + 15s 缓存；失败降级收盘价，前端据此标注）。"""
+    return await _index_quote.get()
+
+
+@app.get("/api/pipeline-schedule")
+async def get_pipeline_schedule():
+    """管线自动执行状态：下次执行时间 + 上次执行结果（页面状态卡用）。"""
+    s = _load_settings()
+    sched = s.get("scheduler", {}) or {}
+    h, m = sched.get("hour", ""), sched.get("minute", "")
+    enabled = h != "" and h is not None
+    next_run = None
+    if enabled:
+        now = datetime.now()
+        run = now.replace(hour=int(h), minute=int(m or 0), second=0, microsecond=0)
+        if run <= now:
+            run = run + timedelta(days=1)
+        next_run = run.strftime("%Y-%m-%d %H:%M")
+    return {
+        "enabled": enabled,
+        "next_run": next_run,
+        "last_run_date": _pipeline.last_run_date,
+        "state": _pipeline.status.get("state"),
+        "message": _pipeline.status.get("message"),
+        "now": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    }
 
 
 def _macro_summary(mn):

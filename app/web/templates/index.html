@@ -10,266 +10,15 @@
 <meta content="website" property="og:type"/>
 <link href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%23f4f6fa'/><path d='M5 20 L12 12 L17 17 L27 7' stroke='%23263242' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/><rect x='22' y='20' width='5' height='5' fill='%232f6bff'/></svg>" rel="icon"/>
 <title>AI量化投研终端</title>
-<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="/static/output.css" rel="stylesheet"/>
+<link href="/static/fonts.css" rel="stylesheet"/>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin=""/>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&amp;display=swap" rel="stylesheet"/>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&amp;display=swap" rel="stylesheet"/>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;700&amp;display=swap" rel="stylesheet"/>
 <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
-<script>
-tailwind.config = {
-  darkMode: "class",
-  theme: {
-    extend: {
-      colors: {
-        "primary": "oklch(0.24 0.02 258)",
-        "accent": "oklch(0.55 0.19 256)",
-        "accent-soft": "oklch(0.55 0.19 256 / 0.10)",
-        "secondary": "oklch(0.50 0.012 256)",
-        "paper": "oklch(0.985 0.004 250)",
-        "paper-raised": "oklch(0.995 0.002 250)",
-        "background": "oklch(0.985 0.004 250)",
-        "surface": "oklch(0.965 0.005 250)",
-        "surface-raised": "oklch(0.995 0.002 250)",
-        "surface-container": "oklch(0.94 0.006 250)",
-        "on-surface": "oklch(0.32 0.018 258)",
-        "on-surface-variant": "oklch(0.50 0.012 256)",
-        "outline": "oklch(0.88 0.006 250)",
-        "outline-strong": "oklch(0.76 0.010 252)",
-        "ink": "oklch(0.94 0.006 250)",
-        "graphite": "oklch(0.24 0.02 258)",
-        "up": "oklch(0.62 0.19 30)",
-        "down": "oklch(0.50 0.115 152)",
-        "error": "oklch(0.62 0.19 27)",
-        "success": "oklch(0.50 0.115 152)",
-        "tertiary": "oklch(0.60 0.13 70)",
-        "violet": "oklch(0.55 0.14 290)",
-        "rose": "oklch(0.60 0.17 12)",
-        "cyan": "oklch(0.55 0.11 215)"
-      },
-      borderRadius: { DEFAULT: "6px", sm: "4px", md: "6px", lg: "10px", xl: "10px", "2xl": "12px", full: "9999px" },
-      spacing: { "container-padding": "16px", unit: "4px", gutter: "12px", "gutter-lg": "24px" },
-      fontFamily: {
-        sans: ['Inter', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'sans-serif'],
-        "label-caps": ['JetBrains Mono', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'monospace'],
-        "display-lg": ['Space Grotesk', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'sans-serif'],
-        "display-md": ['Space Grotesk', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'sans-serif'],
-        "body-md": ['Inter', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'sans-serif'],
-        "data-md": ['JetBrains Mono', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'monospace'],
-        "data-lg": ['JetBrains Mono', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'monospace'],
-        "data-sm": ['JetBrains Mono', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'monospace'],
-        "display-data": ['JetBrains Mono', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'monospace']
-      },
-      fontSize: {
-        "label-caps": ["11px", { "lineHeight": "14px", "letterSpacing": "0.06em", "fontWeight": "600" }],
-        "display-lg": ["30px", { "lineHeight": "38px", "letterSpacing": "-0.02em", "fontWeight": "700" }],
-        "display-md": ["22px", { "lineHeight": "30px", "letterSpacing": "-0.015em", "fontWeight": "700" }],
-        "data-md": ["14px", { "lineHeight": "18px", "fontWeight": "500" }],
-        "data-lg": ["19px", { "lineHeight": "24px", "fontWeight": "600" }],
-        "body-md": ["15px", { "lineHeight": "22px", "fontWeight": "400" }],
-        "data-sm": ["12px", { "lineHeight": "16px", "fontWeight": "400" }],
-        "display-data": ["30px", { "lineHeight": "38px", "fontWeight": "700" }]
-      }
-    }
-  }
-}
-</script>
-<style>
-/* Hallmark · genre: modern-minimal · macrostructure: Workbench · theme: Cobalt · enrichment: none · nav: N1b (bordered, app) · footer: Ft2
- * tone: technical · audience: 量化投研用户 · use: 一眼定位今日推荐 + 快速盯盘
- * 保留：信息架构 / 数据接口 / 红涨绿跌 / Material Symbols 单图标库
- * 变更：Deep Ink 深色 → Cobalt 浅色工程风（冷白纸面 + 单一电光蓝 + hairline 结构 + 6px 圆角） */
-html, body { margin: 0; padding: 0; overflow-x: clip; }
-html { scroll-behavior: smooth; }
-:root {
-  /* 颜色 token —— 全部样式经由 var() 引用，禁止内联值 */
-  --color-paper:         oklch(0.985 0.004 250);
-  --color-paper-2:       oklch(0.965 0.005 250);
-  --color-paper-raised:  oklch(0.995 0.002 250);
-  --color-surface-tint:  oklch(0.94 0.006 250);
-  --color-ink:           oklch(0.24 0.02 258);
-  --color-ink-2:         oklch(0.32 0.018 258);
-  --color-muted:         oklch(0.50 0.012 256);
-  --color-rule:          oklch(0.88 0.006 250);
-  --color-rule-2:        oklch(0.76 0.010 252);
-  --color-accent:        oklch(0.55 0.19 256);
-  --color-accent-2:      oklch(0.48 0.17 256);
-  --color-accent-ink:    oklch(0.985 0.004 250);
-  --color-focus:         oklch(0.55 0.19 256);
-  --color-graphite:      oklch(0.24 0.02 258);
-  --color-up:            oklch(0.62 0.19 30);
-  --color-down:          oklch(0.50 0.115 152);
-  --color-warn:          oklch(0.60 0.13 70);
-  --color-warn-bright:   oklch(0.78 0.14 80);   /* 深色日志区内的 WARN 亮琥珀 */
-  --color-rule-soft:     oklch(88% 0.006 250 / 0.5);   /* 网格线 / 表格分隔 */
-  --color-scrim:         oklch(24% 0.02 258 / 0.55);   /* 弹层背板 */
-  --color-log-ink:       oklch(88% 0.008 258);          /* 日志终端区正文 */
-  --color-log-hover:     oklch(100% 0 0 / 0.05);        /* 日志行 hover */
-  --color-err-bg:        oklch(62% 0.19 30 / 0.14);     /* 日志 ERROR 行背景 */
-  --color-err-bg-hover:  oklch(62% 0.19 30 / 0.2);
-  --color-up-soft:       oklch(62% 0.19 30 / 0.06);     /* 徽章浅底 */
-  --color-down-soft:     oklch(50% 0.115 152 / 0.06);
-  --color-warn-soft:     oklch(60% 0.13 70 / 0.07);
-  --color-accent-soft-2: oklch(55% 0.19 256 / 0.07);
-  --color-skel-a:        oklch(93% 0.006 250);
-  --color-skel-b:        oklch(97% 0.004 250);
-  --color-cyan:          oklch(0.55 0.11 215);
-  --color-violet:        oklch(0.55 0.14 290);
-  /* 字体 token */
-  --font-display: "Space Grotesk", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
-  --font-body: "Inter", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
-  --font-mono: "JetBrains Mono", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", monospace;
-  /* 间距 token（4pt 语义刻度） */
-  --space-3xs: 0.125rem; --space-2xs: 0.25rem; --space-xs: 0.5rem;
-  --space-sm:  0.75rem;  --space-md:  1rem;    --space-lg:  1.5rem;
-  --space-xl:  2.5rem;   --space-2xl: 4rem;    --space-3xl: 6rem;
-  /* 动效 token */
-  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
-  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
-  --dur-micro: 120ms; --dur-short: 220ms; --dur-long: 420ms;
-  /* 圆角 token */
-  --radius-control: 6px; --radius-card: 10px; --radius-inset: 8px;
-  /* 阴影 token（whisper 级，永不叠加多层） */
-  --shadow-whisper: 0 1px 2px oklch(24% 0.02 258 / 0.04);
-  --shadow-hover: 0 2px 8px oklch(24% 0.02 258 / 0.07);
-}
-body {
-  background-color: var(--color-paper);
-  -webkit-font-smoothing: antialiased;
-  font-variant-numeric: tabular-nums;
-}
-h1, h2, h3, h4 { text-wrap: balance; letter-spacing: -0.01em; }
-p { text-wrap: pretty; }
-::-webkit-scrollbar { width: 4px; height: 4px; }
-::-webkit-scrollbar-thumb { background: var(--color-rule-2); border-radius: 4px; }
-::-webkit-scrollbar-track { background: transparent; }
-/* 表面卡：hairline 边框 + 单层 whisper 阴影，无玻璃、无渐变 */
-.surface-panel {
-  background: var(--color-paper-raised);
-  border: 1px solid var(--color-rule);
-  border-radius: var(--radius-card);
-  box-shadow: var(--shadow-whisper);
-  transition: border-color var(--dur-short) var(--ease-out);
-}
-.surface-panel:hover { border-color: var(--color-rule-2); }
-.surface-inset {
-  background: var(--color-surface-tint);
-  border: 1px solid var(--color-rule);
-  border-radius: var(--radius-inset);
-}
-.btn-outline {
-  background: transparent;
-  border: 1px solid var(--color-rule-2);
-  border-radius: var(--radius-control);
-  color: var(--color-ink-2);
-  transition: border-color var(--dur-short) var(--ease-out), color var(--dur-short) var(--ease-out), background-color var(--dur-short) var(--ease-out);
-}
-.btn-outline:hover { border-color: var(--color-accent); color: var(--color-accent); background: var(--color-accent-soft); }
-.btn-outline:active { transform: translateY(1px); }
-.btn-primary {
-  background: var(--color-accent);
-  border: 1px solid var(--color-accent);
-  border-radius: var(--radius-control);
-  color: var(--color-accent-ink);
-  transition: background-color var(--dur-short) var(--ease-out), transform var(--dur-micro) var(--ease-out);
-}
-.btn-primary:hover { background: var(--color-accent-2); }
-.btn-primary:active { transform: translateY(1px); }
-.btn-danger {
-  background: var(--color-up);
-  border: 1px solid var(--color-up);
-  border-radius: var(--radius-control);
-  color: var(--color-accent-ink);
-  transition: background-color var(--dur-short) var(--ease-out), transform var(--dur-micro) var(--ease-out);
-}
-.btn-danger:hover { opacity: 0.88; }
-.btn-danger:active { transform: translateY(1px); }
-/* 今日推荐双卡：层级来自 lightness 与 hairline，而非阴影（主卡近白 / 次卡微灰） */
-.fund-card {
-  position: relative;
-  border-radius: var(--radius-card);
-  border: 1px solid var(--color-rule);
-  box-shadow: var(--shadow-whisper);
-  transition: border-color var(--dur-short) var(--ease-out), box-shadow var(--dur-short) var(--ease-out);
-}
-.fund-card:hover { border-color: var(--color-rule-2); box-shadow: var(--shadow-hover); }
-.fund-card::before {
-  content: ""; position: absolute; top: -1px; left: 24px; width: 40px; height: 2px; border-radius: 1px;
-  background: var(--card-accent);
-}
-.fund-card-primary { --card-accent: var(--color-accent); background: var(--color-paper-raised); }
-.fund-card-secondary { --card-accent: var(--color-rule-2); background: var(--color-paper-2); }
-.data-grid-line {
-  background-image: linear-gradient(to right, var(--color-rule-soft) 1px, transparent 1px),
-                    linear-gradient(to bottom, var(--color-rule-soft) 1px, transparent 1px);
-  background-size: 20px 20px;
-}
-.pulse-dot { animation: pulse 2s infinite; }
-@keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
-.visible-scrollbar::-webkit-scrollbar { width: 6px; }
-.visible-scrollbar::-webkit-scrollbar-thumb { background: var(--color-rule-2); border-radius: 4px; }
-.visible-scrollbar { scrollbar-width: thin; scrollbar-color: var(--color-rule-2) transparent; }
-.material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20; }
-.skel { background: linear-gradient(90deg, var(--color-skel-a) 25%, var(--color-skel-b) 50%, var(--color-skel-a) 75%); background-size: 200% 100%; animation: skel-shimmer 1.5s ease-in-out infinite; }
-@keyframes skel-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
-/* 键盘导航焦点环（可访问性，即时出现，不渐变） */
-:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
-/* 交互元素统一过渡：仅 background-color / border-color / color / opacity / transform */
-button, a, input, select { transition-property: background-color, border-color, color, opacity, transform; transition-duration: 0.15s; transition-timing-function: var(--ease-out); }
-/* 弹层背板：石墨半透明 + 轻 blur，非纯黑 */
-.modal-backdrop {
-  background: var(--color-scrim);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
-}
-/* 单次入场（仅首屏推荐区，一处 orchestrated entrance） */
-@keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
-.rise { animation: rise 0.5s var(--ease-out) both; }
-/* 表格 hairline 分隔 + hover 浅灰（不做 shadow） */
-.data-table thead th {
-  font-family: var(--font-mono); font-size: 11px; font-weight: 600;
-  letter-spacing: 0.06em; text-transform: uppercase;
-  color: var(--color-muted);
-  border-bottom: 1px solid var(--color-rule);
-}
-.data-table tbody tr { border-bottom: 1px solid var(--color-rule-soft); transition: background-color var(--dur-micro) var(--ease-out); }
-.data-table tbody tr:hover { background: var(--color-paper-2); }
-.data-table td { font-family: var(--font-mono); font-size: 13px; }
-/* 信号徽章：mono 描边徽章 */
-.badge { display: inline-block; padding: 2px 8px; border-radius: 4px; border: 1px solid; font-family: var(--font-mono); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; line-height: 1.4; white-space: nowrap; }
-.badge--hold { color: var(--color-up); border-color: var(--color-up); background: var(--color-up-soft); }
-.badge--add { color: var(--color-accent); border-color: var(--color-accent); background: var(--color-accent-soft-2); }
-.badge--warn { color: var(--color-warn); border-color: var(--color-warn); background: var(--color-warn-soft); }
-.badge--exit { color: var(--color-down); border-color: var(--color-down); background: var(--color-down-soft); }
-.badge--muted { color: var(--color-muted); border-color: var(--color-rule-2); }
-/* 日志区：石墨终端带（Cobalt 全页唯一的暗色区） */
-.log-shell { background: var(--color-graphite); color: var(--color-log-ink); font-family: var(--font-mono); }
-.log-row:hover { background: var(--color-log-hover); }
-.log-row--error { background: var(--color-err-bg); }
-.log-row--error:hover { background: var(--color-err-bg-hover); }
-@media (prefers-reduced-motion: reduce) {
-  .rise { animation: none; }
-  *, *::before, *::after { animation-duration: 150ms !important; animation-iteration-count: 1 !important; transition-duration: 150ms !important; }
-}
-/* 触控目标：触屏设备上可点元素最小高度 44px（iOS 人机界面指南） */
-@media (pointer: coarse) {
-  .btn-outline, .btn-primary, .btn-danger, .tab-btn, .log-filter { min-height: 44px; }
-}
-/* 安全区：iOS 刘海/底部手势条适配（viewport-fit=cover 已声明） */
-body { padding-bottom: max(0px, env(safe-area-inset-bottom, 0px)); }
-@media (min-width: 40rem) {
-  body { padding-inline: max(0px, env(safe-area-inset-left, 0px)); }
-}
-/* 移动端弹层贴近边缘，不留大边距 */
-@media (max-width: 39.9375rem) {
-  .modal-backdrop.p-sm { padding: 0.5rem; }
-}
-</style>
 </head>
-<body class="bg-background font-body-md text-on-surface">
+<body class="bg-background font-body-md text-on-surface" data-rec-id="{{ latest_rec_id }}">
 <a href="#main-content" class="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[10001] focus:bg-graphite focus:text-white focus:px-3 focus:py-1 focus:font-bold focus:text-sm">跳转到主要内容</a>
 <header class="fixed top-0 left-0 right-0 h-14 bg-paper/80 backdrop-blur z-[100] flex items-center px-container-padding justify-between border-b border-outline">
   <div class="flex items-center gap-6">
@@ -331,6 +80,13 @@ body { padding-bottom: max(0px, env(safe-area-inset-bottom, 0px)); }
             <div class="w-1.5 h-1.5 pulse-dot {% if regime_label == 'BULL' %}bg-up{% elif regime_label == 'BEAR' %}bg-down{% else %}bg-on-surface-variant{% endif %}"></div>
             <span class="font-label-caps text-on-surface">{% if regime_label == 'BULL' %}牛市{% elif regime_label == 'BEAR' %}熊市{% else %}中性{% endif %}</span>
           </div>
+          <span id="quoteFallback" class="hidden items-center gap-1 font-label-caps text-warn text-[11px] whitespace-nowrap" title="实时行情源不可用，显示最近收盘数据">
+            <span class="material-symbols-outlined text-[13px]">cloud_off</span>已收盘
+          </span>
+          <span class="flex items-center gap-1.5 font-data-sm text-on-surface-variant text-[11px] whitespace-nowrap" title="实时行情每 15 秒自动刷新">
+            <span id="quoteLiveDot" class="w-1.5 h-1.5 rounded-full bg-success pulse-dot"></span>
+            <span id="quoteUpdated">--:--:--</span>
+          </span>
         </div>
         <div class="w-px h-4 bg-outline hidden sm:block"></div>
         <div class="flex items-center gap-2 whitespace-nowrap hidden sm:flex">
@@ -339,15 +95,18 @@ body { padding-bottom: max(0px, env(safe-area-inset-bottom, 0px)); }
           <span id="idx-sse-pct" class="font-data-sm text-on-surface-variant">—</span>
         </div>
         <div class="w-px h-4 bg-outline hidden sm:block"></div>
-        <div class="flex items-center gap-2 flex-1 min-w-0">
+        <div class="flex items-center gap-2 flex-1 min-w-0" id="newsCarousel">
           <span class="material-symbols-outlined text-[14px] text-accent shrink-0">campaign</span>
-          <div class="flex-1 overflow-hidden h-5 relative">
-            <div class="flex flex-col transition-transform duration-200 ease-linear" id="newsTickerTrack">
-              {% for item in macro.news_items %}
-              <div class="h-5 flex items-center whitespace-nowrap truncate font-data-sm text-on-surface-variant">{{ item }}</div>
-              {% endfor %}
-            </div>
-          </div>
+          <button class="flex-1 min-w-0 text-left overflow-hidden" onclick="openNewsDetail()" title="点击查看完整快讯">
+            <span class="block truncate font-data-sm text-on-surface-variant" id="newsCurrentText"></span>
+          </button>
+          <span class="font-data-sm text-[11px] text-on-surface-variant shrink-0" id="newsIdx"></span>
+          <button class="w-6 h-6 flex items-center justify-center rounded-md border border-outline hover:border-accent hover:text-accent transition-colors shrink-0" onclick="newsPrev()" aria-label="上一条">
+            <span class="material-symbols-outlined text-[14px]">chevron_left</span>
+          </button>
+          <button class="w-6 h-6 flex items-center justify-center rounded-md border border-outline hover:border-accent hover:text-accent transition-colors shrink-0" onclick="newsNext()" aria-label="下一条">
+            <span class="material-symbols-outlined text-[14px]">chevron_right</span>
+          </button>
         </div>
       </div>
     </div>
@@ -477,6 +236,26 @@ body { padding-bottom: max(0px, env(safe-area-inset-bottom, 0px)); }
             <p class="text-on-surface-variant font-data-md">今日暂无其他精选</p>
           </div>
           {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <!-- 管线自动执行状态卡 -->
+    <div class="px-container-padding mt-6">
+      <div class="surface-panel px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-6">
+        <div class="flex items-center gap-2 shrink-0">
+          <span class="material-symbols-outlined text-[18px] text-accent">automation</span>
+          <span class="font-label-caps text-primary text-[13px]">管线自动执行</span>
+          <span id="pipeStateDot" class="w-1.5 h-1.5 rounded-full bg-on-surface-variant"></span>
+        </div>
+        <div class="flex flex-wrap items-center gap-x-6 gap-y-1 text-[13px]">
+          <span class="flex items-center gap-1.5 font-data-sm text-on-surface-variant">
+            <span class="material-symbols-outlined text-[14px]">schedule</span>下次：<b id="pipeNextRun" class="text-on-surface">--</b>
+          </span>
+          <span class="flex items-center gap-1.5 font-data-sm text-on-surface-variant">
+            <span class="material-symbols-outlined text-[14px]">history</span>上次：<b id="pipeLastRun" class="text-on-surface">--</b>
+          </span>
+          <span id="pipeStateText" class="font-data-sm text-on-surface-variant">--</span>
         </div>
       </div>
     </div>
@@ -736,6 +515,28 @@ body { padding-bottom: max(0px, env(safe-area-inset-bottom, 0px)); }
   </footer>
 </main>
 
+<!-- 快讯全文弹层 -->
+<div class="fixed inset-0 modal-backdrop z-[10000] hidden flex items-center justify-center p-sm" id="newsModal">
+  <div class="bg-paper-raised w-full max-w-lg border border-outline rounded-xl overflow-hidden flex flex-col">
+    <div class="p-3 border-b border-outline flex justify-between items-center">
+      <h3 class="font-label-caps text-[13px] uppercase font-bold flex items-center gap-2 tracking-widest text-primary">
+        <span class="material-symbols-outlined text-[16px] text-accent">campaign</span>
+        市场快讯 / MARKET NEWS
+      </h3>
+      <button class="material-symbols-outlined text-on-surface-variant hover:rotate-90 transition-transform" onclick="closeModal('newsModal')">close</button>
+    </div>
+    <div class="p-4">
+      <p class="text-[14px] font-body-md leading-relaxed text-on-surface" id="newsDetailText"></p>
+      <div class="mt-4 flex items-center justify-between">
+        <span class="font-data-sm text-[11px] text-on-surface-variant" id="newsDetailIdx"></span>
+        <button class="btn-outline h-8 px-3 font-bold text-[11px] uppercase flex items-center gap-1" onclick="newsNext(); updateNewsDetail()">
+          <span class="material-symbols-outlined text-[14px]">arrow_forward</span> 下一条
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- 系统日志弹层 -->
 <div class="fixed inset-0 modal-backdrop z-[10000] hidden flex items-center justify-center p-sm" id="systemLogModal">
   <div class="bg-paper-raised w-full max-w-4xl border border-outline rounded-xl flex flex-col overflow-hidden max-h-[90dvh]">
@@ -799,17 +600,29 @@ body { padding-bottom: max(0px, env(safe-area-inset-bottom, 0px)); }
     <div class="p-4 flex-1 overflow-y-auto space-y-6">
       <section>
         <h3 class="font-bold text-[13px] uppercase tracking-[0.2em] mb-2 border-b border-outline pb-1 text-primary">管线定时启动 / SCHEDULE</h3>
-        <p class="text-[13px] font-bold text-on-surface-variant mb-2">选择每日定时执行推荐管线的时间</p>
-        <div class="flex items-center gap-2">
-          <select id="schedHour" class="flex-1 p-2 rounded-md border border-outline bg-surface text-primary font-bold text-sm focus:border-accent focus:outline-none">
-            <option value="">关闭</option>
-            <script>for(var i=0;i<24;i++){var h=('0'+i).slice(-2);document.write('<option value="'+h+'">'+h+' 时</option>')}</script>
-          </select>
-          <select id="schedMinute" class="flex-1 p-2 rounded-md border border-outline bg-surface text-primary font-bold text-sm focus:border-accent focus:outline-none">
-            <script>{[0,15,30,45].forEach(function(m){var s=('0'+m).slice(-2);document.write('<option value="'+s+'">'+s+' 分</option>')})}</script>
-          </select>
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <p class="text-[13px] font-bold text-on-surface-variant">每日自动执行推荐管线</p>
+            <p class="text-[11px] font-data-sm text-on-surface-variant mt-0.5">设定后每天自动运行，无需手动触发</p>
+          </div>
+          <button id="schedToggle" class="relative w-11 h-6 rounded-full border border-outline bg-surface transition-colors shrink-0" onclick="toggleSchedule()" role="switch" aria-checked="false" aria-label="定时开关">
+            <span id="schedToggleKnob" class="absolute top-0.5 left-0.5 w-[18px] h-[18px] rounded-full bg-on-surface-variant transition-all duration-200"></span>
+          </button>
         </div>
-        <p class="text-[13px] font-bold text-on-surface-variant mt-2">下次执行时间可在系统日志中查看</p>
+        <div id="schedBody">
+          <div class="flex items-start gap-1 mb-2">
+            <span class="font-label-caps text-on-surface-variant text-[11px] w-10 shrink-0 pt-1">小时</span>
+            <div id="schedHourBar" class="flex-1 grid grid-cols-12 gap-1"></div>
+          </div>
+          <div class="flex items-center gap-1">
+            <span class="font-label-caps text-on-surface-variant text-[11px] w-10 shrink-0 pt-1">分钟</span>
+            <div id="schedMinuteBar" class="flex gap-1 flex-1"></div>
+          </div>
+          <div class="mt-3 flex items-center gap-2 p-2 rounded-md bg-surface border border-outline">
+            <span class="material-symbols-outlined text-[16px] text-accent">schedule</span>
+            <p class="text-[12px] font-bold text-on-surface-variant" id="schedNextRun">定时未启用</p>
+          </div>
+        </div>
       </section>
       <section>
         <h3 class="font-bold text-[13px] uppercase tracking-[0.2em] mb-2 border-b border-outline pb-1 text-primary">手动执行 / MANUAL</h3>
@@ -855,518 +668,9 @@ body { padding-bottom: max(0px, env(safe-area-inset-bottom, 0px)); }
   </div>
 </div>
 
-<script>
-function _esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
-var logInterval = null;
-var _logCount = 0;
-var _lastId = 0;
-var _fetching = false;
-var FUND_SKEL = '<div class="space-y-3"><div class="skel h-5 w-3/4"></div><div class="skel h-4 w-1/2"></div><div class="skel h-4 w-full"></div><div class="skel h-4 w-5/6"></div><div class="skel h-16 w-full"></div><div class="skel h-32 w-full"></div></div>';
 
-function switchTab(name) {
-  var today = document.getElementById('tab-today');
-  var quality = document.getElementById('tab-quality');
-  var bToday = document.getElementById('tabBtn-today');
-  var bQuality = document.getElementById('tabBtn-quality');
-  if (name === 'quality') {
-    today.classList.add('hidden');
-    quality.classList.remove('hidden');
-    bToday.className = 'tab-btn px-4 py-2 font-label-caps text-on-surface-variant border-b-2 border-transparent hover:text-on-surface';
-    bQuality.className = 'tab-btn px-4 py-2 font-label-caps text-accent border-b-2 border-accent';
-  } else {
-    quality.classList.add('hidden');
-    today.classList.remove('hidden');
-    bQuality.className = 'tab-btn px-4 py-2 font-label-caps text-on-surface-variant border-b-2 border-transparent hover:text-on-surface';
-    bToday.className = 'tab-btn px-4 py-2 font-label-caps text-accent border-b-2 border-accent';
-  }
-}
-
-function _parseLogLine(str) {
-    try { var j = JSON.parse(str); return { level: j.level || 'INFO', ts: (j.timestamp || '').substring(0, 19), msg: j.message || j.event || '' }; }
-    catch(e) {
-        var s = str.indexOf('['), e2 = str.indexOf(']', s);
-        var level = (s >= 0 && e2 > s) ? str.substring(s + 1, e2).trim() : 'INFO';
-        if (['ERROR','WARNING','INFO','DEBUG'].indexOf(level) < 0) level = 'INFO';
-        var ts = s > 0 ? str.substring(0, s - 1).trim() : str.substring(0, 19).trim();
-        var tail = e2 >= 0 ? str.substring(e2 + 1).trim() : str.substring(19).trim();
-        var colon = tail.indexOf(':');
-        var msg = colon > 0 ? tail.substring(colon + 1).trim() : tail;
-        return { level: level, ts: ts, msg: msg };
-    }
-}
-
-function applyLogFilter() {
-    var btn = document.querySelector('.log-filter.active');
-    var level = btn ? btn.getAttribute('data-level') : 'all';
-    var query = (document.getElementById('logSearch').value || '').toLowerCase();
-    document.querySelectorAll('#logLines .log-row').forEach(function(el) {
-        var show = true;
-        if (level !== 'all' && el.getAttribute('data-level') !== level) show = false;
-        if (show && query && !el.textContent.toLowerCase().includes(query)) show = false;
-        el.style.display = show ? '' : 'none';
-    });
-}
-
-function resetLogFilter() {
-    document.querySelectorAll('.log-filter').forEach(function(b) { b.classList.remove('active'); b.style.background = ''; });
-    var allBtn = document.querySelector('.log-filter[data-level="all"]');
-    if (allBtn) { allBtn.classList.add('active'); allBtn.style.background = 'var(--color-surface-tint)'; }
-}
-
-function clearLogs() {
-    document.getElementById('logLines').innerHTML = '';
-    resetLogFilter();
-}
-
-function openModal(id) {
-    document.getElementById(id).classList.remove('hidden');
-    if (id === 'systemLogModal') {
-        if (logInterval) { clearInterval(logInterval); logInterval = null; }
-        _logCount = 0;
-        _lastId = 0;
-        document.getElementById('logLines').innerHTML = '';
-        resetLogFilter();
-        fetchLogs();
-        logInterval = setInterval(fetchLogs, 5000);
-        var container = document.getElementById('logContainer');
-        container.addEventListener('scroll', function() {
-            var btn = document.getElementById('logScrollBtn');
-            if (!btn) return;
-            var atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
-            if (atBottom) btn.classList.add('hidden');
-            else btn.classList.remove('hidden');
-        });
-    }
-    if (id === 'settingsModal') {
-        loadSettings();
-    }
-}
-
-document.addEventListener('click', function(e) {
-    if (e.target.classList.contains('log-filter')) {
-        document.querySelectorAll('.log-filter').forEach(function(b) { b.classList.remove('active'); b.style.background = ''; });
-        e.target.classList.add('active');
-        e.target.style.background = 'var(--color-surface-tint)';
-        applyLogFilter();
-    }
-});
-
-function closeModal(id) {
-    document.getElementById(id).classList.add('hidden');
-    if (id === 'systemLogModal' && logInterval) {
-        clearInterval(logInterval);
-        logInterval = null;
-    }
-}
-function openFundDetail(code) {
-    var modal = document.getElementById('fundDetailModal');
-    var panel = document.getElementById('fundDetailPanel');
-    modal.classList.remove('hidden');
-    setTimeout(function() { panel.classList.remove('translate-x-full'); }, 10);
-    document.getElementById('fundDetailTitle').textContent = code + ' 详情';
-    document.getElementById('fundDetailContent').innerHTML = FUND_SKEL;
-    fetchFundDetail(code);
-}
-function closeFundDetail() {
-    var panel = document.getElementById('fundDetailPanel');
-    panel.classList.add('translate-x-full');
-    setTimeout(function() { document.getElementById('fundDetailModal').classList.add('hidden'); }, 300);
-}
-async function fetchFundDetail(code) {
-    var container = document.getElementById('fundDetailContent');
-    try {
-        var r = await fetch('/api/fund-detail/' + encodeURIComponent(code));
-        var d = await r.json();
-        if (d.error) { container.innerHTML = '<p class="text-error font-bold">' + _esc(d.error) + '</p>'; return; }
-        var f = d.fund;
-
-        var holdingsHtml = '';
-        if (d.top_holdings && d.top_holdings.length) {
-            holdingsHtml = '<div class="space-y-2">';
-            for (var i = 0; i < d.top_holdings.length; i++) {
-                var h = d.top_holdings[i];
-                var pct = (h.weight || 0).toFixed(2);
-                holdingsHtml += '<div class="flex items-center gap-2 text-[13px] font-bold">' +
-                    '<span class="w-8 text-right font-data-md text-[13px] text-on-surface-variant">#' + (i+1) + '</span>' +
-                    '<span class="flex-1 truncate">' + _esc(h.stock_name) + '</span>' +
-                    '<span class="text-[11px] text-on-surface-variant bg-surface px-2 py-0.5 rounded-md border border-outline">' + _esc(h.industry || '--') + '</span>' +
-                    '<span class="w-16 text-right font-data-md">' + pct + '%</span>' +
-                    '</div>';
-            }
-            holdingsHtml += '</div>';
-        } else {
-            holdingsHtml = '<p class="text-on-surface-variant text-[13px]">暂无持仓数据</p>';
-        }
-
-        var navChartHtml = '';
-        if (d.nav_data && d.nav_data.length >= 2) {
-            var navs = d.nav_data.map(function(x) { return x.nav; }).filter(function(v) { return v !== null; });
-            if (navs.length >= 2) {
-                var nMin = Math.min.apply(null, navs);
-                var nMax = Math.max.apply(null, navs);
-                var nRange = nMax - nMin || 1;
-                var pad = nRange * 0.05;
-                nMin -= pad;
-                nMax += pad;
-                nRange = nMax - nMin;
-                var pts = navs.map(function(v, i) {
-                    var x = (i / (navs.length - 1)) * 100;
-                    var y = 100 - ((v - nMin) / nRange) * 100;
-                    return x + ',' + y;
-                }).join(' ');
-                navChartHtml = '<div class="relative h-[200px] bg-surface rounded-md border border-outline p-2">' +
-                    '<svg class="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none">' +
-                    '<polyline points="' + pts + '" fill="none" stroke="var(--color-accent)" stroke-width="0.5" vector-effect="non-scaling-stroke"/>' +
-                    '</svg>' +
-                    '<div class="flex justify-between text-[11px] font-bold text-on-surface-variant mt-1">' +
-                    '<span>' + _esc(d.nav_data[0].date) + '</span>' +
-                    '<span>' + _esc(d.nav_data[d.nav_data.length-1].date) + '</span>' +
-                    '</div>' +
-                    '</div>';
-            } else {
-                navChartHtml = '<p class="text-on-surface-variant text-[13px]">净值数据不足，无法绘制走势图</p>';
-            }
-        } else {
-            navChartHtml = '<p class="text-on-surface-variant text-[13px]">暂无净值走势数据</p>';
-        }
-
-        container.innerHTML =
-            '<div class="space-y-4">' +
-            '<div class="border-b border-outline pb-3">' +
-            '<h3 class="font-label-caps text-[13px] uppercase tracking-widest font-bold mb-1">' + _esc(f.name) + '</h3>' +
-            '<p class="text-[11px] text-on-surface-variant">' + _esc(f.type || '--') + ' | ' + _esc(f.first_date || '--') + ' | 状态: <span class="font-bold">' + _esc(f.status) + '</span></p>' +
-            '</div>' +
-            (d.current_signal ? (
-                '<div class="border-b border-outline pb-3">' +
-                '<h4 class="font-label-caps text-[13px] uppercase tracking-widest font-bold mb-2 border-b border-accent pb-1">当前信号 / SIGNAL</h4>' +
-                '<div class="flex items-center gap-2 mb-1">' +
-                '<span class="badge ' + (
-                    d.current_signal.signal === 'HOLD' ? 'badge--hold' :
-                    d.current_signal.signal === 'BUY_MORE' ? 'badge--add' :
-                    d.current_signal.signal === 'WARNING' ? 'badge--warn' :
-                    d.current_signal.signal === 'EXIT' ? 'badge--exit' :
-                    'badge--muted'
-                ) + '">' + (
-                    d.current_signal.signal === 'HOLD' ? '持有' :
-                    d.current_signal.signal === 'BUY_MORE' ? '加仓' :
-                    d.current_signal.signal === 'WARNING' ? '警惕' :
-                    d.current_signal.signal === 'EXIT' ? '离场' :
-                    _esc(d.current_signal.signal)
-                ) + '</span>' +
-                '<span class="text-[11px] text-on-surface-variant font-bold">' + _esc(d.current_signal.logic_verdict) + '</span>' +
-                '<span class="text-[11px] text-on-surface-variant">' + _esc(d.current_signal.date) + '</span>' +
-                '</div>' +
-                '<p class="text-[13px] font-bold leading-relaxed">' + _esc(d.current_signal.reason || '无详细原因') + '</p>' +
-                (d.current_signal.sector_risk ? '<p class="text-[11px] text-up mt-1">赛道风险</p>' : '') +
-                (d.current_signal.holding_risk ? '<p class="text-[11px] text-up mt-1">持仓风险</p>' : '') +
-                '</div>'
-            ) : '' ) +
-            '<div>' +
-            '<h4 class="font-label-caps text-[13px] uppercase tracking-widest font-bold mb-2 border-b border-accent pb-1">推荐理由</h4>' +
-            '<p class="text-[13px] font-bold leading-relaxed whitespace-pre-wrap">' + _esc(f.buy_reason || '暂无推荐理由') + '</p>' +
-            '</div>' +
-            '<div>' +
-            '<h4 class="font-label-caps text-[13px] uppercase tracking-widest font-bold mb-2 border-b border-accent pb-1">前十大重仓</h4>' +
-            holdingsHtml +
-            '</div>' +
-            '<div>' +
-            '<h4 class="font-label-caps text-[13px] uppercase tracking-widest font-bold mb-2 border-b border-accent pb-1">净值走势（近90日）</h4>' +
-            navChartHtml +
-            '</div>' +
-            '</div>';
-    } catch(e) {
-        container.innerHTML = '<p class="text-error font-bold">加载失败: ' + _esc(String(e.message || e)) + '</p>';
-    }
-}
-window.onclick = function(event) {
-    if (event.target.classList.contains('modal-backdrop')) {
-        if (event.target.id === 'fundDetailModal') {
-            closeFundDetail();
-        } else {
-            event.target.classList.add('hidden');
-            if (logInterval) { clearInterval(logInterval); logInterval = null; }
-        }
-    }
-}
-
-async function fetchLogs() {
-    if (_fetching) return;
-    _fetching = true;
-    var container = document.getElementById('logContainer');
-    var linesEl = document.getElementById('logLines');
-    if (!container || !linesEl) { _fetching = false; return; }
-    var atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
-    try {
-        var r = await fetch('/api/logs?lines=200&after=' + _lastId);
-        var data = await r.json();
-        if (!data.lines || !data.lines.length) { _fetching = false; return; }
-        for (var i = 0; i < data.lines.length; i++) {
-            var p = _parseLogLine(data.lines[i]);
-            var row = document.createElement('div');
-            row.className = 'log-row flex items-start gap-1 px-3 py-[3px] transition-colors';
-            row.setAttribute('data-level', p.level);
-            var ts = _esc(p.ts);
-            var msg = _esc(p.msg);
-            if (p.level === 'ERROR') {
-                row.classList.add('log-row--error');
-                row.innerHTML = '<span class="shrink-0 w-[52px] text-[11px] font-bold text-up uppercase">ERROR</span><span class="shrink-0 text-[11px] opacity-50 w-[130px]">' + ts + '</span><span class="break-all text-up font-medium">' + msg + '</span>';
-            } else if (p.level === 'WARNING') {
-                row.innerHTML = '<span class="shrink-0 w-[52px] text-[11px] font-bold uppercase" style="color:var(--color-warn-bright)">WARN</span><span class="shrink-0 text-[11px] opacity-50 w-[130px]">' + ts + '</span><span class="break-all text-white">' + msg + '</span>';
-            } else if (p.level === 'DEBUG') {
-                row.innerHTML = '<span class="shrink-0 w-[52px] text-[11px] font-bold opacity-40 uppercase">DEBUG</span><span class="shrink-0 text-[11px] opacity-30 w-[130px]">' + ts + '</span><span class="break-all opacity-50">' + msg + '</span>';
-            } else {
-                row.innerHTML = '<span class="shrink-0 w-[52px] text-[11px] font-bold opacity-60 uppercase">INFO</span><span class="shrink-0 text-[11px] opacity-50 w-[130px]">' + ts + '</span><span class="break-all">' + msg + '</span>';
-            }
-            linesEl.appendChild(row);
-        }
-        _lastId = data.last_id;
-        _logCount = data.total;
-        document.getElementById('logCount').textContent = _logCount + ' 条';
-        if (atBottom) container.scrollTop = container.scrollHeight;
-        else {
-            var btn = document.getElementById('logScrollBtn');
-            if (btn) btn.classList.remove('hidden');
-        }
-        applyLogFilter();
-    } catch(e) {
-        console.error('日志加载失败:', e);
-    }
-    _fetching = false;
-}
-
-function val(id) { return document.getElementById(id).value; }
-
-var _pendingClear = false;
-
-function openPasswordPrompt(action) {
-    _pendingClear = (action === 'clear');
-    document.getElementById('passwordInput').value = '';
-    document.getElementById('passwordError').classList.add('hidden');
-    openModal('passwordModal');
-}
-
-async function submitPassword() {
-    var pwd = val('passwordInput');
-    if (!pwd) { document.getElementById('passwordError').classList.remove('hidden'); return; }
-    try {
-        var r = await fetch('/api/check-password', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({password:pwd}) });
-        var d = await r.json();
-        if (d.ok) {
-            closeModal('passwordModal');
-            if (_pendingClear) { _pendingClear = false; doClearRecommendations(); }
-            else { openModal('settingsModal'); }
-        }
-        else { document.getElementById('passwordError').classList.remove('hidden'); }
-    } catch(e) { document.getElementById('passwordError').classList.remove('hidden'); }
-}
-
-function clearRecommendationsFlow() {
-    openPasswordPrompt('clear');
-}
-
-async function doClearRecommendations() {
-    try {
-        var r = await fetch('/api/clear-recommendations', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({dry_run:true}) });
-        var d = await r.json();
-        if (d.status !== 'ok') { alert(d.message || '请求失败'); return; }
-        var del = d.deleted || {};
-        var rec = del.recommend_log || 0;
-        var total = rec + (del.sector_selections || 0) + (del.monitor_events || 0) + (del.evolution_insights || 0) + (del.quality_metrics || 0);
-        if (!confirm('将永久删除 ' + rec + ' 条推荐记录及关联数据（共 ' + total + ' 条），此操作不可恢复。确定继续吗？')) return;
-        var r2 = await fetch('/api/clear-recommendations', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({dry_run:false}) });
-        var d2 = await r2.json();
-        if (d2.status === 'ok') { alert('已清除全部推荐数据'); location.reload(); }
-        else { alert('清除失败: ' + (d2.message || '未知错误')); }
-    } catch(e) { alert('请求失败: ' + e.message); }
-}
-
-async function loadSettings() {
-    try {
-        var r = await fetch('/api/settings');
-        var s = await r.json();
-        var llm = s.llm || {};
-        document.getElementById('llmBaseUrl').value = llm.base_url || '';
-        document.getElementById('llmApiKey').value = llm.api_key || '';
-        document.getElementById('llmModel').value = llm.model || '';
-        var sched = s.scheduler || {};
-        var h = sched.hour != null ? ('0' + sched.hour).slice(-2) : '';
-        var m = sched.minute != null ? ('0' + sched.minute).slice(-2) : '00';
-        document.getElementById('schedHour').value = h;
-        document.getElementById('schedMinute').value = m;
-    } catch(e) { console.error('settings load failed', e); }
-}
-
-async function saveSettings() {
-    var btn = document.getElementById('saveSettingsBtn');
-    btn.textContent = '保存中...';
-    btn.disabled = true;
-    try {
-        var h = val('schedHour'), m = val('schedMinute');
-        var body = {
-            llm: {
-                base_url: val('llmBaseUrl'),
-                api_key: val('llmApiKey'),
-                model: val('llmModel'),
-            },
-            scheduler: {
-                hour: h !== '' ? parseInt(h) : '',
-                minute: h !== '' ? parseInt(m) : 0,
-            },
-        };
-        var r = await fetch('/api/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
-        var d = await r.json();
-        if (d.status === 'ok') { btn.textContent = '已保存 ✓'; setTimeout(function(){ btn.textContent = '保存并更新配置'; btn.disabled = false; }, 1500); }
-        else { btn.textContent = '保存失败'; btn.disabled = false; }
-    } catch(e) { btn.textContent = '保存失败'; btn.disabled = false; console.error(e); }
-}
-
-async function triggerPipeline() {
-    try {
-        var r = await fetch('/api/run-pipeline', { method: 'POST' });
-        var d = await r.json();
-        if (d.status === 'started') {
-            openModal('systemLogModal');
-        } else {
-            alert('管线启动失败');
-        }
-    } catch(e) {
-        alert('请求失败: ' + e.message);
-    }
-}
-</script>
-
-<script type="module">
-import { StockSDK } from 'https://esm.sh/stock-sdk@2.4.0';
-
-const _sdk = new StockSDK();
-
-function _upd(el, v) { if (el) el.textContent = v; }
-
-function _color(v, dir) {
-  if (dir === 'flat') return 'text-on-surface-variant';
-  return dir === 'up' ? 'text-up' : 'text-down';
-}
-
-async function _updateIndices() {
-  try {
-    const quotes = await _sdk.quotes.cnSimple(['sh000001', 'sh000300']);
-    for (const q of quotes) {
-      const isSSE = q.code === '000001' || q.code === 'sh000001';
-      const pfx = isSSE ? 'sse' : '300';
-      const pct = q.changePercent ?? 0;
-      const dir = pct > 0.01 ? 'up' : pct < -0.01 ? 'down' : 'flat';
-      const pctStr = (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
-      const valStr = q.price.toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-
-      const valEl = document.getElementById('idx-' + pfx + '-value');
-      if (valEl) {
-        valEl.textContent = valStr;
-        valEl.className = valEl.className.replace(/(text-up|text-down|text-on-surface-variant)/g, '') + ' ' + _color(pct, dir);
-      }
-
-      _upd(document.getElementById('idx-' + pfx + '-pct'), pctStr);
-      const pctEl = document.getElementById('idx-' + pfx + '-pct');
-      if (pctEl) pctEl.className = 'font-data-sm ' + _color(pct, dir);
-    }
-  } catch (e) {
-    console.error('实时指数更新失败:', e);
-  }
-}
-
-_updateIndices();
-setInterval(_updateIndices, 15000);
-
-// 快讯垂直滚动：慢速连续滚动，每条滚动到框中央后停留 2 秒再继续
-(function() {
-  var track = document.getElementById('newsTickerTrack');
-  if (!track) return;
-  if (track.children.length < 2) return;
-
-  // 复制一份内容实现无缝循环滚动
-  track.innerHTML += track.innerHTML;
-
-  var step = 20; // 每条高度 h-5 = 20px
-  var half = track.children.length / 2; // 原始条数
-  var idx = 0; // 已滚过的条数
-  var pos = 0; // 当前 translateY
-  var paused = false;
-
-  setInterval(function() {
-    if (paused) return;
-    var target = -(idx + 1) * step; // 下一条完全进入框中央的目标位置
-    pos = Math.max(pos - 1, target); // 慢速上移 1px/40ms
-    track.style.transform = 'translateY(' + pos + 'px)';
-    if (pos <= target) {
-      idx++;
-      if (idx >= half) {
-        // 播完一遍，无缝回到起点
-        idx = 0;
-        pos = 0;
-        track.style.transform = 'translateY(0px)';
-        return;
-      }
-      paused = true;
-      setTimeout(function() { paused = false; }, 2000); // 框中央停留 2 秒
-    }
-  }, 40);
-})();
-
-// 表格分页
-(function() {
-  var PAGE_SIZE = 15;
-  var rows = document.querySelectorAll('#trackingBody tr[data-page]');
-  var totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
-  var currentPage = 1;
-
-  function renderPage(page) {
-    rows.forEach(function(r) {
-      var p = parseInt(r.getAttribute('data-page'));
-      r.style.display = (p === page) ? '' : 'none';
-    });
-    var btns = document.querySelectorAll('#paginationControls button');
-    btns.forEach(function(b) {
-      var p = parseInt(b.getAttribute('data-page'));
-      b.className = (p === page)
-        ? 'px-3 py-1 rounded-md text-[11px] font-bold bg-accent text-white border border-accent'
-        : 'px-3 py-1 rounded-md text-[11px] font-bold text-on-surface-variant border border-outline hover:bg-surface transition-colors';
-    });
-  }
-
-  function buildControls() {
-    var container = document.getElementById('paginationControls');
-    if (!container) return;
-    if (totalPages <= 1) { container.innerHTML = ''; return; }
-    var html = '';
-    for (var i = 1; i <= totalPages; i++) {
-      html += '<button data-page="' + i + '" class="px-3 py-1 rounded-md text-[11px] font-bold border border-outline hover:bg-surface transition-colors">' + i + '</button>';
-    }
-    container.innerHTML = html;
-    container.addEventListener('click', function(e) {
-      var btn = e.target.closest('button');
-      if (!btn) return;
-      var p = parseInt(btn.getAttribute('data-page'));
-      if (p === currentPage) return;
-      currentPage = p;
-      renderPage(p);
-    });
-  }
-
-  buildControls();
-  if (rows.length > 0) renderPage(1);
-})();
-
-// 推荐结果自动刷新
-var _initialRecId = {{ latest_rec_id }};
-setInterval(function() {
-  fetch('/api/recommendation-status')
-    .then(function(r) { return r.json(); })
-    .then(function(d) {
-      if (d.id && d.id !== _initialRecId) {
-        location.reload();
-      }
-    })
-    .catch(function() {});
-}, 30000);
-</script>
+<script>window.__NEWS_ITEMS__ = {{ macro.news_items|tojson }};</script>
+<script src="/static/app.js"></script>
 </body>
 </html>
+

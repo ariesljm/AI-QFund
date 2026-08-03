@@ -188,3 +188,47 @@ class TestBasicHandlers:
         assert resp.status_code == 200
         data = resp.json()
         assert "lines" in data and "last_id" in data
+
+
+class TestIndices:
+    """/api/indices：实时抓取（source=live）与降级收盘（source=closed）两路径。"""
+
+    def _clear_cache(self):
+        webapp._index_quote.data = None
+        webapp._index_quote.expires = 0.0
+
+    def test_live_path(self, monkeypatch):
+        """实时源可用：返回两个指数，source=live。"""
+        self._clear_cache()
+        monkeypatch.setattr(
+            webapp._index_quote, "_fetch_live",
+            lambda: [
+                {"code": "sh000001", "name": "上证指数", "price": 3800.0,
+                 "change_percent": -0.4, "source": "live"},
+                {"code": "sh000300", "name": "沪深300", "price": 4560.0,
+                 "change_percent": 0.6, "source": "live"},
+            ],
+        )
+        resp = client.get("/api/indices")
+        assert resp.status_code == 200
+        d = resp.json()
+        assert d["source"] == "live"
+        assert len(d["items"]) == 2
+        assert d["items"][0]["code"] == "sh000001"
+
+    def test_fallback_closed(self, monkeypatch):
+        """实时源不可用：沪深300 降级为数据库收盘，上证标记 unavailable。"""
+        self._clear_cache()
+        monkeypatch.setattr(webapp._index_quote, "_fetch_live", lambda: (_ for _ in ()).throw(ConnectionError("断网")))
+        monkeypatch.setattr(webapp.repo, "get_index_series", lambda code, cols: [
+            ("2026-07-30", 4580.0), ("2026-07-31", 4588.197),
+        ])
+        resp = client.get("/api/indices")
+        assert resp.status_code == 200
+        d = resp.json()
+        assert d["source"] == "closed"
+        items = {it["code"]: it for it in d["items"]}
+        assert items["sh000300"]["price"] == 4588.197
+        assert items["sh000300"]["change_percent"] == pytest.approx(0.179, abs=0.01)
+        assert items["sh000001"]["source"] == "unavailable"
+        assert items["sh000001"]["price"] is None

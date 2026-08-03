@@ -49,6 +49,20 @@ LightGBM 预测目标是 `R_fund(t+20) - R_hs300(t+20)`（相对沪深300 的超
 | Web | FastAPI + Jinja2（单页仪表板） |
 | 部署 | Docker / docker-compose / GitHub Actions |
 
+### Web 面板前端构建
+
+前端静态资源（`app/web/static/`）已本地化：**运行时零 Node / 零外网 CDN 依赖**——
+Tailwind 产物 `output.css`、自托管字体与 `app.js` 均已提交仓库，Docker 镜像无需 Node 即可运行。
+
+修改模板或 JS 中的类名后需重新生成 CSS：
+
+```bash
+npm install   # 首次（node_modules 不入库）
+npm run build:css   # tailwindcss -i app/web/static/input.css -o app/web/static/output.css --minify
+```
+
+实时指数经后端 `/api/indices` 代理（15s 缓存），行情源不可用时自动降级为数据库最近收盘价并在页面上标注「已收盘」。
+
 ## 快速开始（本地）
 
 ```bash

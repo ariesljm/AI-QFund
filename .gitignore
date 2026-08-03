@@ -51,3 +51,6 @@ test_basic.py
 
 # 模型文件（运行时生成）
 models/
+
+# 前端构建（Node 依赖不入库；构建产物 output.css / fonts / app.js 已提交）
+node_modules/
