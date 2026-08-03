@@ -539,7 +539,7 @@ function newsListHtml(activeIdx, openIdx) {
       '<button class="w-full text-left p-3 flex items-start gap-2" onclick="newsToggle(' + i + ')">' +
       '<span class="mt-0.5 w-5 h-5 shrink-0 flex items-center justify-center rounded bg-surface border border-outline font-data-sm text-[10px] text-on-surface-variant">' + (i + 1) + '</span>' +
       '<span class="flex-1 min-w-0">' +
-      '<span class="block text-[13px] font-bold text-on-surface leading-snug">' + _esc(title) + '</span>' +
+      '<span class="block text-[13px] font-bold text-on-surface leading-snug line-clamp-2">' + _esc(title) + '</span>' +
       (open ? '<span class="block mt-1.5 text-[13px] text-on-surface-variant leading-relaxed whitespace-pre-wrap">' + _esc(summary || title) + '</span>' : '') +
       '</span>' +
       '<span class="material-symbols-outlined text-[16px] text-on-surface-variant shrink-0 transition-transform duration-200 ' + (open ? 'rotate-180' : '') + '">expand_more</span>' +

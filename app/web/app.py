@@ -238,20 +238,21 @@ def _macro_summary(mn):
             seg = seg.strip()
             if not seg or len(seg) < 6 or seg.startswith(("http", "www")):
                 continue
-            # 标题 + 摘要拆分：冒号前为标题，冒号后为摘要；无冒号则整行作标题与摘要
-            if "：" in seg:
-                title, _, body = seg.partition("：")
-                title, body = title.strip(), body.strip()
+            # 标题提取：去掉行首时间戳 [HH:MM]；冒号前为标题；
+            # 无冒号则截取第一句（。！？）为止，不超过 50 字符，避免标题=全文
+            body_text = re.sub(r"^\[\d{1,2}:\d{2}\]\s*", "", seg)
+            if "：" in body_text:
+                title = body_text.split("：", 1)[0].strip()
             else:
-                title, body = seg, ""
+                sent = re.search(r"^(.{1,60}?)[。！？]", body_text)
+                title = (sent.group(1).strip() if sent else body_text[:50]).strip()
             if not title:
                 continue
             dedup = title[:100] if len(title) > 100 else title
             if dedup in seen:
                 continue
             seen.add(dedup)
-            summary = body if body and len(body) >= 4 else seg
-            items.append({"title": title, "summary": summary})
+            items.append({"title": title, "summary": seg})  # 摘要 = 完整快讯行
         if items:
             news_items = items
         top_gainers = mn.get("top_gainers") or ""
