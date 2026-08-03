@@ -125,6 +125,15 @@ async def lifespan(_app: FastAPI):
     yield
 
 
+def _is_trading_time(now: datetime | None = None) -> bool:
+    """A股交易时段：交易日（akshare 全年交易日历，自动涵盖节假日与调休）内的 9:30-11:30、13:00-15:00。"""
+    now = now or datetime.now()
+    if not is_trading_day(now.date()):
+        return False
+    hm = now.hour * 60 + now.minute
+    return (9 * 60 + 30 <= hm <= 11 * 60 + 30) or (13 * 60 <= hm <= 15 * 60)
+
+
 app = FastAPI(title="AI Quant Terminal", lifespan=lifespan)
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 STATIC_DIR = Path(__file__).parent / "static"
@@ -143,6 +152,11 @@ class _IndexQuoteCache:
     async def get(self) -> dict:
         now = time.time()
         if self.data is not None and now < self.expires:
+            return self.data
+        # 非交易日/非交易时段（节假日、调休、周末均覆盖）不请求行情接口，直接返回收盘缓存
+        if not _is_trading_time():
+            self.data = {"items": self._fallback_closed(), "updated_at": datetime.now().strftime("%H:%M:%S"), "source": "closed"}
+            self.expires = now + self.ttl_fallback
             return self.data
         try:
             items = await asyncio.to_thread(self._fetch_live)
