@@ -13,7 +13,6 @@
   .border-outline\/40 { border-color: color-mix(in oklab, var(--color-rule) 40%, transparent); }
   .border-outline\/50 { border-color: color-mix(in oklab, var(--color-rule) 50%, transparent); }
   .text-on-surface-variant\/60 { color: color-mix(in oklab, var(--color-muted) 60%, transparent); }
-  .hover\:border-accent\/50:hover { border-color: color-mix(in oklab, var(--color-accent) 50%, transparent); }
 }
 
 /* Hallmark · genre: modern-minimal · macrostructure: Workbench · theme: Cobalt · enrichment: none · nav: N1b (bordered, app) · footer: Ft2

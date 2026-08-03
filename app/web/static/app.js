@@ -322,64 +322,62 @@ async function doClearRecommendations() {
     } catch(e) { alert('请求失败: ' + e.message); }
 }
 
-// ===== 定时仪表（SCHEDULE 可视化时间选择器） =====
+// ===== 定时调度（SCHEDULE：开关 + 下拉选择） =====
 var _sched = { enabled: false, hour: 8, minute: 0 };
 
-function renderSchedBar() {
-  var hbar = document.getElementById('schedHourBar');
-  var mbar = document.getElementById('schedMinuteBar');
-  if (!hbar || !mbar) return;
+function renderSchedSelects() {
+  var hsel = document.getElementById('schedHour');
+  var msel = document.getElementById('schedMinute');
+  if (!hsel || !msel) return;
   var hhtml = '';
   for (var h = 0; h < 24; h++) {
-    hhtml += '<button class="sched-hour px-0 py-1 text-[10px] font-data-sm rounded-sm border border-outline bg-surface text-on-surface-variant hover:border-accent transition-colors" data-h="' + h + '" onclick="selectSchedHour(' + h + ')">' + ('0' + h).slice(-2) + '</button>';
+    hhtml += '<option value="' + h + '">' + ('0' + h).slice(-2) + ' 时</option>';
   }
-  hbar.innerHTML = hhtml;
+  hsel.innerHTML = hhtml;
   var mhtml = '';
   [0, 15, 30, 45].forEach(function(m) {
-    mhtml += '<button class="sched-minute flex-1 px-0 py-1 text-[11px] font-data-sm rounded-sm border border-outline bg-surface text-on-surface-variant hover:border-accent transition-colors" data-m="' + m + '" onclick="selectSchedMinute(' + m + ')">' + ('0' + m).slice(-2) + '</button>';
+    mhtml += '<option value="' + m + '">' + ('0' + m).slice(-2) + ' 分</option>';
   });
-  mbar.innerHTML = mhtml;
+  msel.innerHTML = mhtml;
 }
 
-function selectSchedHour(h) { _sched.hour = h; syncSchedUI(); }
-function selectSchedMinute(m) { _sched.minute = m; syncSchedUI(); }
+function onSchedHourChange() { _sched.hour = parseInt(document.getElementById('schedHour').value) || 0; updateSchedNextRun(); }
+function onSchedMinuteChange() { _sched.minute = parseInt(document.getElementById('schedMinute').value) || 0; updateSchedNextRun(); }
 function toggleSchedule() { _sched.enabled = !_sched.enabled; syncSchedUI(); }
 
+function updateSchedNextRun() {
+  var next = document.getElementById('schedNextRun');
+  if (!next) return;
+  var now = new Date();
+  var run = new Date(now.getFullYear(), now.getMonth(), now.getDate(), _sched.hour, _sched.minute, 0);
+  if (run <= now) run.setDate(run.getDate() + 1);
+  var day = run.getDate() === now.getDate() ? '今天' : '明天';
+  var hh = ('0' + run.getHours()).slice(-2), mm = ('0' + run.getMinutes()).slice(-2);
+  next.textContent = '下次执行：' + day + ' ' + hh + ':' + mm;
+}
+
 function syncSchedUI() {
-  document.querySelectorAll('.sched-hour').forEach(function(b) {
-    var active = _sched.enabled && parseInt(b.getAttribute('data-h')) === _sched.hour;
-    b.className = active
-      ? 'sched-hour px-0 py-1 text-[10px] font-data-sm rounded-sm bg-accent text-white border border-accent transition-colors'
-      : 'sched-hour px-0 py-1 text-[10px] font-data-sm rounded-sm border border-outline bg-surface text-on-surface-variant hover:border-accent transition-colors';
-    b.style.opacity = _sched.enabled ? '1' : '0.4';
-  });
-  document.querySelectorAll('.sched-minute').forEach(function(b) {
-    var active = _sched.enabled && parseInt(b.getAttribute('data-m')) === _sched.minute;
-    b.className = active
-      ? 'sched-minute flex-1 px-0 py-1 text-[11px] font-data-sm rounded-sm bg-accent text-white border border-accent transition-colors'
-      : 'sched-minute flex-1 px-0 py-1 text-[11px] font-data-sm rounded-sm border border-outline bg-surface text-on-surface-variant hover:border-accent transition-colors';
-    b.style.opacity = _sched.enabled ? '1' : '0.4';
-  });
   var toggle = document.getElementById('schedToggle');
   var knob = document.getElementById('schedToggleKnob');
   var body = document.getElementById('schedBody');
   var next = document.getElementById('schedNextRun');
+  var hsel = document.getElementById('schedHour');
+  var msel = document.getElementById('schedMinute');
   if (!toggle || !knob || !body || !next) return;
   toggle.setAttribute('aria-checked', _sched.enabled ? 'true' : 'false');
   if (_sched.enabled) {
     toggle.className = 'relative w-11 h-6 rounded-full bg-accent border border-accent transition-colors shrink-0';
     knob.className = 'absolute top-0.5 left-[22px] w-[18px] h-[18px] rounded-full bg-white transition-all duration-200';
     body.style.opacity = '1';
-    var now = new Date();
-    var run = new Date(now.getFullYear(), now.getMonth(), now.getDate(), _sched.hour, _sched.minute, 0);
-    if (run <= now) run.setDate(run.getDate() + 1);
-    var day = run.getDate() === now.getDate() ? '今天' : '明天';
-    var hh = ('0' + run.getHours()).slice(-2), mm = ('0' + run.getMinutes()).slice(-2);
-    next.textContent = '下次执行：' + day + ' ' + hh + ':' + mm;
+    if (hsel) hsel.disabled = false;
+    if (msel) msel.disabled = false;
+    updateSchedNextRun();
   } else {
     toggle.className = 'relative w-11 h-6 rounded-full border border-outline bg-surface transition-colors shrink-0';
     knob.className = 'absolute top-0.5 left-0.5 w-[18px] h-[18px] rounded-full bg-on-surface-variant transition-all duration-200';
     body.style.opacity = '0.5';
+    if (hsel) hsel.disabled = true;
+    if (msel) msel.disabled = true;
     next.textContent = '定时未启用';
   }
 }
@@ -396,7 +394,9 @@ async function loadSettings() {
         _sched.enabled = sched.hour !== '' && sched.hour != null;
         _sched.hour = _sched.enabled ? parseInt(sched.hour) : 8;
         _sched.minute = sched.minute != null ? parseInt(sched.minute) : 0;
-        renderSchedBar();
+        renderSchedSelects();
+        document.getElementById('schedHour').value = _sched.hour;
+        document.getElementById('schedMinute').value = _sched.minute;
         syncSchedUI();
     } catch(e) { console.error('settings load failed', e); }
 }
@@ -487,6 +487,7 @@ setInterval(_updateIndices, 15000);
 var _newsItems = window.__NEWS_ITEMS__ || [];
 var _newsIdx = 0;
 var _newsTimer = null;
+var _newsOpen = -1; // 弹窗列表中当前展开的条目索引（-1 表示无）
 
 function renderNews() {
   var cur = document.getElementById('newsCurrentText');
@@ -508,6 +509,7 @@ function restartNewsTimer() {
 function newsNext(auto) {
   if (!_newsItems.length) return;
   _newsIdx = (_newsIdx + 1) % _newsItems.length;
+  _newsOpen = _newsIdx;
   renderNews();
   if (auto !== true) restartNewsTimer();
   var m = document.getElementById('newsModal');
@@ -517,25 +519,32 @@ function newsNext(auto) {
 function newsPrev() {
   if (!_newsItems.length) return;
   _newsIdx = (_newsIdx - 1 + _newsItems.length) % _newsItems.length;
+  _newsOpen = _newsIdx;
   renderNews();
   restartNewsTimer();
   var m = document.getElementById('newsModal');
   if (m && !m.classList.contains('hidden')) renderNewsList();
 }
 
-function newsListHtml(activeIdx) {
+function newsListHtml(activeIdx, openIdx) {
   var html = '';
   for (var i = 0; i < _newsItems.length; i++) {
     var it = _newsItems[i];
     var title = (it && it.title) ? it.title : it;
     var summary = (it && it.summary) ? it.summary : '';
     var active = i === activeIdx;
-    html += '<button class="w-full text-left p-3 rounded-md border transition-colors ' +
-      (active ? 'border-accent bg-accent-soft' : 'border-outline bg-surface hover:border-accent/50') +
-      '" onclick="newsJumpTo(' + i + ')">' +
+    var open = i === openIdx;
+    html += '<div class="rounded-md border transition-colors overflow-hidden ' +
+      (active ? 'border-accent bg-accent-soft' : 'border-outline bg-surface') + '">' +
+      '<button class="w-full text-left p-3 flex items-start gap-2" onclick="newsToggle(' + i + ')">' +
+      '<span class="mt-0.5 w-5 h-5 shrink-0 flex items-center justify-center rounded bg-surface border border-outline font-data-sm text-[10px] text-on-surface-variant">' + (i + 1) + '</span>' +
+      '<span class="flex-1 min-w-0">' +
       '<span class="block text-[13px] font-bold text-on-surface leading-snug">' + _esc(title) + '</span>' +
-      (summary ? '<span class="block mt-1 text-[13px] text-on-surface-variant leading-relaxed">' + _esc(summary) + '</span>' : '') +
-      '</button>';
+      (open ? '<span class="block mt-1.5 text-[13px] text-on-surface-variant leading-relaxed whitespace-pre-wrap">' + _esc(summary || title) + '</span>' : '') +
+      '</span>' +
+      '<span class="material-symbols-outlined text-[16px] text-on-surface-variant shrink-0 transition-transform duration-200 ' + (open ? 'rotate-180' : '') + '">expand_more</span>' +
+      '</button>' +
+      '</div>';
   }
   return html;
 }
@@ -543,12 +552,13 @@ function newsListHtml(activeIdx) {
 function renderNewsList() {
   var list = document.getElementById('newsList');
   if (!list) return;
-  list.innerHTML = newsListHtml(_newsIdx);
+  list.innerHTML = newsListHtml(_newsIdx, _newsOpen);
   document.getElementById('newsDetailIdx').textContent = (_newsIdx + 1) + ' / ' + _newsItems.length;
 }
 
-function newsJumpTo(i) {
-  _newsIdx = i;
+function newsToggle(i) {
+  _newsOpen = (_newsOpen === i) ? -1 : i; // 手风琴：再点收起
+  _newsIdx = i; // 同步轮播位置
   renderNews();
   restartNewsTimer();
   renderNewsList();
@@ -557,6 +567,7 @@ function newsJumpTo(i) {
 function openNewsDetail() {
   if (!_newsItems.length) return;
   if (_newsTimer) { clearInterval(_newsTimer); _newsTimer = null; }
+  _newsOpen = _newsIdx; // 打开弹窗默认展开当前轮播条
   renderNewsList();
   openModal('newsModal');
 }
