@@ -103,9 +103,21 @@ def get_fund_detail(code: str) -> dict | None:
     return {'code': code, 'name': row[7] or code, 'type': row[8] or '', 'first_date': row[9] or row[0] or '', 'entry_nav': round(row[5], 4) if row[5] else None, 'buy_reason': (row[1] or '').split(' | 否决记录:')[0].strip(), 'score': row[2], 'combo': row[3], 'regime': row[4] or 'NEUTRAL', 'status': row[6] or 'HOLD'}
 
 def get_holding_codes(statuses: tuple[str, ...]=('HOLD', 'BUY_MORE', 'WARNING')) -> list[tuple]:
+    """持仓基金列表 (code, name, reco_date, buy_reason, sector)。
+
+    sector 优先取推荐入库时的赛道归属（feature_snapshot.sector），
+    回退当前 RBSA 第一行业——保证监控证伪与推荐使用同一赛道判定。
+    """
     placeholders = ','.join('?' * len(statuses))
     with db() as conn:
-        rows = conn.execute(f'SELECT r.code, fb.name, r.recommend_date, r.buy_reason, ff.rbsa_industry_1 FROM recommend_log r LEFT JOIN fund_basic fb ON fb.code = r.code LEFT JOIN fund_features ff ON ff.code = r.code WHERE r.status IN ({placeholders}) GROUP BY r.code ORDER BY MAX(r.id) DESC', statuses).fetchall()
+        rows = conn.execute(
+            f'SELECT r.code, fb.name, r.recommend_date, r.buy_reason, '
+            f'COALESCE(NULLIF(json_extract(r.feature_snapshot, \'$.sector\'), \'\'), ff.rbsa_industry_1) AS sector '
+            f'FROM recommend_log r LEFT JOIN fund_basic fb ON fb.code = r.code '
+            f'LEFT JOIN fund_features ff ON ff.code = r.code '
+            f'WHERE r.status IN ({placeholders}) GROUP BY r.code ORDER BY MAX(r.id) DESC',
+            statuses,
+        ).fetchall()
     return rows
 
 def get_holding_log_id(code: str, statuses: tuple[str, ...]) -> int | None:

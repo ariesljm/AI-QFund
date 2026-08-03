@@ -237,6 +237,20 @@ def _parse_logic_result(parsed) -> dict | None:
     return parsed
 
 
+def _rbsa_distribution(code: str) -> str:
+    """基金 RBSA 行业暴露分布（如 '半导体(4.6%), 通信设备(4.1%), 电源设备(4.1%)'）。"""
+    feat = get_latest_features(code)
+    if not feat:
+        return ""
+    parts = []
+    for i in range(1, 4):
+        ind = feat.get(f"rbsa_industry_{i}")
+        w = feat.get(f"rbsa_weight_{i}")
+        if ind and w:
+            parts.append(f"{ind}({w:.1f}%)")
+    return ", ".join(parts)
+
+
 def _check_logic_enhanced(code: str, buy_reason: str, sector: str,
                           ctx) -> dict:
     holdings_text = build_holdings_text(code, 5)
@@ -250,6 +264,7 @@ def _check_logic_enhanced(code: str, buy_reason: str, sector: str,
         sector_reasoning=ctx.sector_reasoning,
         holdings_text=holdings_text,
         news_summary=ctx.news_brief or ctx.news_summary,
+        rbsa_distribution=_rbsa_distribution(code),
     )
 
     return call_llm_json(

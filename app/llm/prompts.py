@@ -102,6 +102,7 @@ def monitor_logic_prompt(
     sector_reasoning: str,
     holdings_text: str,
     news_summary: str,
+    rbsa_distribution: str = "",
 ) -> str:
     lines = [
         "你是基金投研审核员。根据买入逻辑、该基金的赛道归属和今日宏观数据，"
@@ -109,6 +110,7 @@ def monitor_logic_prompt(
         "",
         f"买入逻辑: {buy_reason}",
         f"该基金所属赛道: {sector}",
+        (f"该基金行业分布: {rbsa_distribution}" if rbsa_distribution else ""),
         "",
         "【今日宏观判定】",
         f"推荐赛道: {', '.join(recommended_sectors) or '无'}",

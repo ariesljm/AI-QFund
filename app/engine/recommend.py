@@ -264,7 +264,14 @@ def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> list[dict]:
         return rank_funds(model)
     df = pd.DataFrame(expanded)
 
-    df = df[~df["sector"].isin(risk_sectors)]
+    # 回避赛道整体过滤：第一行业命中回避赛道的基金直接剔除，
+    # 防止基金以次要行业身份入选、监控按第一行业判定后被否决（推荐/监控赛道不一致）
+    risk_set = set(risk_sectors)
+    df = df[~df["rbsa_industry_1"].isin(risk_set)]
+    df = df[~df["sector"].isin(risk_set)]
+    if df.empty:
+        logger.info("回避赛道过滤后无候选，降级为全市场 Top 10")
+        return rank_funds(model)
     df = _add_sector_relatives(df)
     cfg = _load_ranking_cfg()
     df = df[df["momentum_20d"] >= cfg["momentum_guard_pct"]]
@@ -277,6 +284,11 @@ def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> list[dict]:
         sector_rel_calmar_col="sector_rel_calmar",
         rbsa_weight_col="rbsa_weight",
     )
+    # 预测超额必须为正：负分（跑输沪深300）不推荐，避免归一化洗白负分
+    df = df[df["score"] > 0]
+    if df.empty:
+        logger.info("赛道内无正预测超额基金，降级为全市场 Top 10")
+        return rank_funds(model)
 
     top_per_sector = []
     for sector in sectors:
@@ -338,6 +350,8 @@ def rank_funds(model: lgb.Booster) -> list[dict]:
     df = score_frame(df, model, cfg, idx_mom,
                      default_regime=_get_market_regime(),
                      rbsa_weight_col="rbsa_weight_1")
+    # 预测超额必须为正，与赛道内排序一致
+    df = df[df["score"] > 0]
     top = df.sort_values("combo", ascending=False).head(10)
     candidates = []
     for _, r in top.iterrows():
@@ -535,7 +549,9 @@ def run_recommendation(retrain: bool = False, force: bool = False) -> None:
     logger.info("=== 赛道内相对化排序 ===")
     finalists = _rank_within_sectors(ctx, model)
     if not finalists:
-        logger.error("无候选基金，终止推荐")
+        repo.record_empty_recommendation(
+            date_str, ctx.sector_reasoning or "候选基金预测超额均为非正或无可用基金")
+        logger.info("无候选基金（预测超额均非正或回避过滤），记录空推荐日")
         return
     logger.info("候选 %d 只: %s",
                 len(finalists),

@@ -411,6 +411,56 @@ class TestRankWithinSectors:
         assert "电源设备" in got, f"电源设备被挤出候选: {got}"
         assert len(finalists) <= 5
 
+    def test_negative_score_candidates_filtered(self, monkeypatch):
+        """修复：预测超额为负的基金不得进入候选（负分被 min-max 归一化洗白后仍会入选）。"""
+        sectors = ["半导体"]
+        data = [
+            self._row("SC_A", "半导体", 3.0),
+            self._row("SC_B", "半导体", 2.0),
+        ]
+        monkeypatch.setattr(recommend_mod.repo, "get_sector_candidates", lambda s: data)
+        monkeypatch.setattr(recommend_mod.repo, "get_all_ranking_rows", lambda: data)  # 降级路径
+        monkeypatch.setattr(recommend_mod, "_index_momentum", lambda: 5.0)
+        monkeypatch.setattr(recommend_mod, "_get_market_regime", lambda: "BULL")
+        monkeypatch.setattr(recommend_mod, "_load_ranking_cfg", lambda: {
+            "model_weight": 0.5, "rel_strength_weight": 0.15,
+            "calmar_weight": 0.1, "hurst_weight": 0.1, "momentum_guard_pct": -15.0,
+        })
+
+        class _NegModel:
+            def predict(self, X):
+                return -abs(X["momentum_20d"].to_numpy()) - 0.1  # 全部预测为负超额
+
+        ctx = MacroContext(recommended_sectors=sectors, risk_sectors=[], date="2026-08-02")
+        finalists = recommend_mod._rank_within_sectors(ctx, _NegModel())
+        assert finalists == [], f"负预测超额不应进入候选: {finalists}"
+
+    def test_first_industry_in_risk_sectors_excluded(self, monkeypatch):
+        """修复：第一行业命中回避赛道 → 整体剔除（即使次行业在推荐赛道）。
+
+        018517 场景复现：RBSA1=半导体（回避）、RBSA2=电源设备（推荐），
+        修复前以电源设备身份入选、监控按 RBSA1=半导体 否决（推荐/监控赛道不一致）。
+        """
+        sectors = ["电源设备"]
+        data = [
+            self._row("MIX_A", "半导体", 5.0),  # 第一行业=半导体（回避）
+            self._row("PD_A", "电源设备", 6.0),
+        ]
+        data[0]["rbsa_industry_2"] = "电源设备"
+        data[0]["rbsa_weight_2"] = 4.0
+        monkeypatch.setattr(recommend_mod.repo, "get_sector_candidates", lambda s: data)
+        monkeypatch.setattr(recommend_mod, "_index_momentum", lambda: 5.0)
+        monkeypatch.setattr(recommend_mod, "_get_market_regime", lambda: "BULL")
+        monkeypatch.setattr(recommend_mod, "_load_ranking_cfg", lambda: {
+            "model_weight": 0.5, "rel_strength_weight": 0.15,
+            "calmar_weight": 0.1, "hurst_weight": 0.1, "momentum_guard_pct": -15.0,
+        })
+        ctx = MacroContext(recommended_sectors=sectors, risk_sectors=["半导体"], date="2026-08-02")
+        finalists = recommend_mod._rank_within_sectors(ctx, _FakeRankModel())
+        codes = {f["code"] for f in finalists}
+        assert "MIX_A" not in codes, f"第一行业在回避赛道的基金应整体剔除: {codes}"
+        assert "PD_A" in codes
+
 
 # ============================================================
 # LLM 最终定论解析 + 持仓上下文构建（候选4 胶水收敛后的测试缺口）
@@ -475,3 +525,48 @@ class TestBuildHoldingsText:
     def test_empty_holdings(self, monkeypatch):
         monkeypatch.setattr("app.llm.context.repo.get_holdings", lambda code, limit: [])
         assert build_holdings_text("000003", 5) == "无持仓数据"
+
+
+class TestMonitorLogicPrompt:
+    """修复 A：监控 LLM 证伪 prompt 携带基金完整 RBSA 行业分布，
+    避免只凭单一赛道（RBSA1）下结论导致与推荐理由矛盾。"""
+
+    def test_prompt_includes_rbsa_distribution(self):
+        from app.llm.prompts import monitor_logic_prompt
+        p = monitor_logic_prompt(
+            buy_reason="重仓电源设备，政策利好",
+            sector="电源设备",
+            recommended_sectors=["电源设备"],
+            risk_sectors=["半导体"],
+            regime_label="BULL",
+            sector_reasoning="半导体回避",
+            holdings_text="宁德时代(1.5%)",
+            news_summary="新闻",
+            rbsa_distribution="半导体(4.6%), 通信设备(4.1%), 电源设备(4.1%)",
+        )
+        assert "该基金所属赛道: 电源设备" in p
+        assert "该基金行业分布: 半导体(4.6%), 通信设备(4.1%), 电源设备(4.1%)" in p
+
+    def test_prompt_without_distribution(self):
+        """无行业分布时（特征缺失）不输出该行，不影响原格式。"""
+        from app.llm.prompts import monitor_logic_prompt
+        p = monitor_logic_prompt(
+            buy_reason="x", sector="电源设备", recommended_sectors=["电源设备"],
+            risk_sectors=[], regime_label="NEUTRAL", sector_reasoning="",
+            holdings_text="h", news_summary="n",
+        )
+        assert "该基金行业分布" not in p
+        assert "该基金所属赛道: 电源设备" in p
+
+    def test_rbsa_distribution_formats(self, monkeypatch):
+        """行业分布字符串格式：'行业(权重%), ...'，跳过空行业。"""
+        monkeypatch.setattr(monitor_mod, "get_latest_features", lambda code: {
+            "rbsa_industry_1": "半导体", "rbsa_weight_1": 4.6,
+            "rbsa_industry_2": "通信设备", "rbsa_weight_2": 4.1,
+            "rbsa_industry_3": "", "rbsa_weight_3": 0.0,
+        })
+        assert monitor_mod._rbsa_distribution("018517") == "半导体(4.6%), 通信设备(4.1%)"
+
+    def test_rbsa_distribution_no_features(self, monkeypatch):
+        monkeypatch.setattr(monitor_mod, "get_latest_features", lambda code: None)
+        assert monitor_mod._rbsa_distribution("018517") == ""
