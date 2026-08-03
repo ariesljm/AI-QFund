@@ -52,3 +52,20 @@ class TestConfigCache:
         assert config_mod.load_settings()["llm"]["model"] == "old"
         config_mod.save_settings({"llm": {"model": "new"}})
         assert config_mod.load_settings()["llm"]["model"] == "new"
+
+    def test_load_settings_picks_up_file_edits(self, tmp_path, monkeypatch):
+        """运行期编辑 settings.toml（不重启、不调 save_settings）后 load 必须读到新值。
+
+        回归：web 进程启动后直接改 settings.toml 设置密码不生效，
+        check-password 仍用缓存旧值（空密码），导致任意密码都能进设置页。
+        """
+        cfg = tmp_path / "settings.toml"
+        cfg.write_text('[web]\nsettings_password = ""\n', encoding="utf-8")
+        monkeypatch.setattr(config_mod, "SETTINGS_PATH", cfg)
+        _isolate_env(monkeypatch, tmp_path)
+
+        # 首次加载：空密码
+        assert config_mod.load_settings()["web"]["settings_password"] == ""
+        # 模拟用户运行期编辑文件设置密码（进程不重启）
+        cfg.write_text('[web]\nsettings_password = "secret"\n', encoding="utf-8")
+        assert config_mod.load_settings()["web"]["settings_password"] == "secret"

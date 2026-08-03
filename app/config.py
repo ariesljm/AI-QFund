@@ -15,8 +15,10 @@ logger = get_logger("config")
 DB_PATH = Path("data/qfund.db")
 SETTINGS_PATH = Path("config/settings.toml")
 
-# 配置缓存：单槽 module 级状态，由 save_settings 显式失效。
+# 配置缓存：单槽 module 级状态，由 save_settings 显式失效；
+# 文件 mtime 变化（运行期直接编辑 settings.toml）时同样失效。
 _settings_cache: dict | None = None
+_settings_mtime: float | None = None
 
 _ENV_OVERRIDE_MAP = {
     "LLM_BASE_URL": ("llm", "base_url"),
@@ -29,8 +31,15 @@ _ENV_OVERRIDE_MAP = {
 
 
 def load_settings():
-    global _settings_cache
-    if _settings_cache is not None:
+    global _settings_cache, _settings_mtime
+    # 回归：运行期直接编辑 settings.toml（如设置 settings_password）后，
+    # 进程不重启时旧缓存永不失效，web 密码校验会读到过期空值。
+    # 以文件 mtime 变化作为缓存失效信号。
+    try:
+        mtime = SETTINGS_PATH.stat().st_mtime
+    except OSError:
+        mtime = None
+    if _settings_cache is not None and mtime == _settings_mtime:
         return copy.deepcopy(_settings_cache)
     try:
         with open(SETTINGS_PATH, "rb") as f:
@@ -56,6 +65,7 @@ def load_settings():
     except Exception:
         pass
     _settings_cache = settings
+    _settings_mtime = mtime
     # 返回副本，调用方变异（如 web 层剔除密码）不会污染缓存。
     return copy.deepcopy(settings)
 
