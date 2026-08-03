@@ -493,7 +493,8 @@ function renderNews() {
   var idx = document.getElementById('newsIdx');
   if (!cur || !idx) return;
   if (!_newsItems.length) { cur.textContent = '暂无快讯'; idx.textContent = ''; return; }
-  cur.textContent = _newsItems[_newsIdx];
+  var it = _newsItems[_newsIdx];
+  cur.textContent = (it && it.title) ? it.title : it;
   idx.textContent = (_newsIdx + 1) + '/' + _newsItems.length;
 }
 
@@ -510,7 +511,7 @@ function newsNext(auto) {
   renderNews();
   if (auto !== true) restartNewsTimer();
   var m = document.getElementById('newsModal');
-  if (m && !m.classList.contains('hidden')) updateNewsDetail();
+  if (m && !m.classList.contains('hidden')) renderNewsList();
 }
 
 function newsPrev() {
@@ -519,19 +520,44 @@ function newsPrev() {
   renderNews();
   restartNewsTimer();
   var m = document.getElementById('newsModal');
-  if (m && !m.classList.contains('hidden')) updateNewsDetail();
+  if (m && !m.classList.contains('hidden')) renderNewsList();
 }
 
-function updateNewsDetail() {
-  if (!_newsItems.length) return;
-  document.getElementById('newsDetailText').textContent = _newsItems[_newsIdx];
+function newsListHtml(activeIdx) {
+  var html = '';
+  for (var i = 0; i < _newsItems.length; i++) {
+    var it = _newsItems[i];
+    var title = (it && it.title) ? it.title : it;
+    var summary = (it && it.summary) ? it.summary : '';
+    var active = i === activeIdx;
+    html += '<button class="w-full text-left p-3 rounded-md border transition-colors ' +
+      (active ? 'border-accent bg-accent-soft' : 'border-outline bg-surface hover:border-accent/50') +
+      '" onclick="newsJumpTo(' + i + ')">' +
+      '<span class="block text-[13px] font-bold text-on-surface leading-snug">' + _esc(title) + '</span>' +
+      (summary ? '<span class="block mt-1 text-[13px] text-on-surface-variant leading-relaxed">' + _esc(summary) + '</span>' : '') +
+      '</button>';
+  }
+  return html;
+}
+
+function renderNewsList() {
+  var list = document.getElementById('newsList');
+  if (!list) return;
+  list.innerHTML = newsListHtml(_newsIdx);
   document.getElementById('newsDetailIdx').textContent = (_newsIdx + 1) + ' / ' + _newsItems.length;
+}
+
+function newsJumpTo(i) {
+  _newsIdx = i;
+  renderNews();
+  restartNewsTimer();
+  renderNewsList();
 }
 
 function openNewsDetail() {
   if (!_newsItems.length) return;
   if (_newsTimer) { clearInterval(_newsTimer); _newsTimer = null; }
-  updateNewsDetail();
+  renderNewsList();
   openModal('newsModal');
 }
 

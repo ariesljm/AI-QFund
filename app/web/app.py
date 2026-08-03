@@ -223,7 +223,7 @@ async def get_pipeline_schedule():
 
 def _macro_summary(mn):
     """宏观摘要解析：新闻列表/领涨领跌/资金流向/赛道分析/大盘状态归一。"""
-    news_items = ["暂无快讯"]
+    news_items = [{"title": "暂无快讯", "summary": "暂无快讯"}]
     sector_gainers = sector_losers = []
     flow_inflows = []
     flow_outflows = []
@@ -238,14 +238,20 @@ def _macro_summary(mn):
             seg = seg.strip()
             if not seg or len(seg) < 6 or seg.startswith(("http", "www")):
                 continue
-            title = seg.split("：", 1)[0].strip()
+            # 标题 + 摘要拆分：冒号前为标题，冒号后为摘要；无冒号则整行作标题与摘要
+            if "：" in seg:
+                title, _, body = seg.partition("：")
+                title, body = title.strip(), body.strip()
+            else:
+                title, body = seg, ""
             if not title:
                 continue
             dedup = title[:100] if len(title) > 100 else title
             if dedup in seen:
                 continue
             seen.add(dedup)
-            items.append(title)
+            summary = body if body and len(body) >= 4 else seg
+            items.append({"title": title, "summary": summary})
         if items:
             news_items = items
         top_gainers = mn.get("top_gainers") or ""
@@ -283,7 +289,7 @@ def _macro_summary(mn):
         # 大盘状态（LLM 可能输出 bullish/bearish/bull/bear 等变体，统一归一）
         regime_label = domain.normalize_regime_label(mn.get("regime_label"))
     macro_data = {
-        "news": "；".join(news_items),
+        "news": "；".join(it["title"] for it in news_items),
         "news_items": news_items,
         "top_gainers": [],
         "top_losers": [],

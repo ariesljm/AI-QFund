@@ -88,7 +88,16 @@ class TestMacroSummary:
         assert m["sector_gainers"][0]["pct"] == "+3.20%"
         # 领跌按跌幅从小到大排列后反转 → 最深跌幅排最后
         assert [s["name"] for s in m["sector_losers"]] == ["房地产", "煤炭"]
+        # 快讯拆分为「标题 + 摘要」对象，冒号前为标题、冒号后为摘要
         assert len(m["macro"]["news_items"]) == 2
+        assert m["macro"]["news_items"][0] == {"title": "半导体板块大涨", "summary": "政策利好"}
+        assert m["macro"]["news_items"][1] == {"title": "AI板块走弱", "summary": "估值回调"}
+
+    def test_news_without_colon_uses_full_line(self):
+        """快讯行无冒号时整行作标题与摘要（弹出窗仍可展示完整内容）。"""
+        m = webapp._macro_summary({"news_summary": "央行开展公开市场操作"})
+        assert m["macro"]["news_items"][0] == {"title": "央行开展公开市场操作", "summary": "央行开展公开市场操作"}
+        assert m["macro"]["news"] == "央行开展公开市场操作"
 
     def test_empty_macro(self):
         """无宏观数据 → 默认值。"""
