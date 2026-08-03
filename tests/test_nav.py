@@ -253,3 +253,66 @@ class TestIncrementalNoUpdateCooldown:
         rows = {r["target"]: r for r in nav.list_failures("nav_incr")}
         assert rows["000002"]["status"] == "recovered"
         assert "000002" not in nav.cooldown_targets("nav_incr")
+
+
+# ============================================================
+# 增量新增条数 — 只统计真正缺失的交易日（边界日不重复计数）
+# ============================================================
+
+class TestIncrementalNewCount:
+    """回归：lsjz 的 startDate 是闭区间（返回含本地最新日），
+    写入时按 date > 本地最新过滤，新增条数必须等于真正缺失的交易日数。
+    """
+
+    @staticmethod
+    def _lsjz_resp(days: list[str]) -> str:
+        rows = ",".join(f'{{"FSRQ":"{d}","LJJZ":"1.5"}}' for d in days)
+        return f'jQuery({{"Data":{{"LSJZList":[{rows}]}},"TotalCount":{len(days)}}})'
+
+    def _seed(self, code: str, latest: str) -> None:
+        with db_mod.db_conn() as conn:
+            conn.execute(
+                "INSERT INTO fund_basic (code, name, type, is_buyable) VALUES (?, ?, ?, ?)",
+                (code, "测试基金", "混合型", 1),
+            )
+            conn.execute("INSERT INTO fund_nav (code, date, cum_nav) VALUES (?, ?, ?)",
+                         (code, latest, 1.2))
+
+    def _run(self, monkeypatch, api_days: list[str]) -> int:
+        async def fake_probe(session, headers):
+            return api_days[0]  # 接口最新日期
+
+        async def fake_fetch(session, url, timeout=15, headers=None):
+            if "lsjz" in url:
+                return _FakeResp(self._lsjz_resp(api_days))
+            return _FakeResp("var ACWorthTrend = [];")
+
+        monkeypatch.setattr(nav, "_probe_lsjz_latest", fake_probe)
+        monkeypatch.setattr(nav, "fetch_async", fake_fetch)
+        return asyncio.run(nav.async_update_nav_incremental(concurrency=1))
+
+    def test_one_new_day_counts_one(self, iso_db, monkeypatch):
+        """本地最新 07-31，接口新增 08-03（响应含边界日 07-31）→ 只写 1 条。"""
+        self._seed("000002", "2026-07-31")
+        n = self._run(monkeypatch, ["2026-08-03", "2026-07-31"])
+        assert n == 1
+        with db_mod.db_conn() as conn:
+            days = [r[0] for r in conn.execute(
+                "SELECT date FROM fund_nav WHERE code='000002' ORDER BY date")]
+        assert days == ["2026-07-31", "2026-08-03"]  # 边界日不重复入库
+
+    def test_two_missing_days_count_two(self, iso_db, monkeypatch):
+        """本地最新 07-30，缺失 07-31 与 08-03 两个交易日 → 写 2 条。"""
+        self._seed("000002", "2026-07-30")
+        n = self._run(monkeypatch, ["2026-08-03", "2026-07-31", "2026-07-30"])
+        assert n == 2
+        with db_mod.db_conn() as conn:
+            days = [r[0] for r in conn.execute(
+                "SELECT date FROM fund_nav WHERE code='000002' ORDER BY date")]
+        assert days == ["2026-07-30", "2026-07-31", "2026-08-03"]
+
+    def test_no_new_day_counts_zero(self, iso_db, monkeypatch):
+        """接口无新数据（本地已对齐）→ 基金跳过，新增 0 条。"""
+        self._seed("000002", "2026-07-31")
+        n = self._run(monkeypatch, ["2026-07-31"])
+        assert n == 0
