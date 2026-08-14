@@ -1,0 +1,723 @@
+"""核心纯函数测试——架构深化前的安全网。
+
+测试顺序对应 architecture-review 的候选顺序：
+  C5: 纯函数测试（本文件）
+  C2: 消除重复 _call_llm
+  C1: Repository 深化
+  C4: 防线策略链
+  C3: data_foundation 拆分
+"""
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import pytest
+import numpy as np
+import pandas as pd
+
+
+# ============================================================
+# sector_api — is_industry_code
+# ============================================================
+
+from app.features.sector import is_industry_code
+
+class TestIndustryCode:
+    def test_valid_sws_code(self):
+        """申万二级行业 BK 代码"""
+        assert is_industry_code("BK0438")  # 食品饮料
+        assert is_industry_code("BK1282")  # 饮料乳品
+        assert is_industry_code("BK1036")  # 半导体
+
+    def test_excluded_concept_range(self):
+        """概念板块密集区 BK1050-1199"""
+        assert not is_industry_code("BK1055")  # 跨镜支付
+        assert not is_industry_code("BK1076")  # AI概念
+        assert not is_industry_code("BK1100")
+
+    def test_out_of_range(self):
+        assert not is_industry_code("BK0001")
+        assert not is_industry_code("BK9999")
+        assert not is_industry_code("BK0600")
+
+    def test_invalid_format(self):
+        assert not is_industry_code("")
+        assert not is_industry_code("BK")
+        assert not is_industry_code("BK123")  # too short
+        assert not is_industry_code("BK12345")  # too long
+        assert not is_industry_code("bk0438")  # uppercase only
+        assert not is_industry_code("SH000001")
+
+    def test_boundary_codes(self):
+        """范围边界值"""
+        assert is_industry_code("BK0400")
+        assert is_industry_code("BK0555")
+        assert is_industry_code("BK0725")
+        assert is_industry_code("BK0748")
+        assert is_industry_code("BK1015")
+        assert is_industry_code("BK1049")
+        assert is_industry_code("BK1200")
+        assert is_industry_code("BK1288")
+
+
+# ============================================================
+# data.macro — _is_concept_name
+# ============================================================
+
+from app.data.macro import _is_concept_name
+
+class TestConceptName:
+    def test_known_concept_codes(self):
+        """32 个精确 BK 概念代码"""
+        assert _is_concept_name("基金重仓", "BK0536")
+        assert _is_concept_name("次新股", "BK0501")
+        assert _is_concept_name("节能环保", "BK0494")
+        assert _is_concept_name("物联网", "BK0554")
+        assert _is_concept_name("国防军工", "BK1204")
+        assert _is_concept_name("预制菜概念", "BK1025")
+
+    def test_real_industries_not_concept(self):
+        """真实申万行业不应被拦截"""
+        assert not _is_concept_name("食品饮料", "BK0438")
+        assert not _is_concept_name("半导体", "BK1036")
+        assert not _is_concept_name("游戏Ⅱ", "BK1046")
+        assert not _is_concept_name("军工电子Ⅱ", "BK1233")
+        assert not _is_concept_name("环境治理", "BK1235")
+
+    def test_empty_name(self):
+        assert _is_concept_name("", "")
+        assert _is_concept_name("", "BK0438")
+
+
+# ============================================================
+# features — calc_hurst
+# ============================================================
+
+from app.features.calculator import calc_hurst
+
+class TestHurst:
+    def test_random_walk_in_range(self):
+        """随机游走赫斯特指数在 [0,1] 范围内"""
+        np.random.seed(42)
+        steps = np.cumsum(np.random.randn(500) * 0.1)
+        h = calc_hurst(steps)
+        assert 0.0 <= h <= 1.0, f"随机游走 H={h:.3f}，期望在 [0,1]"
+
+    def test_trending_series(self):
+        """趋势序列赫斯特指数 > 0.5"""
+        steps = np.arange(1, 1001, dtype=float)
+        h = calc_hurst(steps)
+        assert h > 0.5, f"趋势序列 H={h:.3f}，期望 >0.5"
+
+    def test_small_series_fallback(self):
+        """序列太短时返回 0.5（fallback）"""
+        h = calc_hurst(np.array([1.0, 2.0, 3.0]))
+        assert h == 0.5
+
+    def test_constant_series_fallback(self):
+        """常数序列返回 0.5（fallback，避免 NaN）"""
+        steps = np.ones(500)
+        h = calc_hurst(steps)
+        assert 0.0 <= h <= 1.0, f"常数序列 H={h}，期望在 [0,1]"
+
+
+# ============================================================
+# domain — resolve_sector_name（LLM 行业名 → RBSA 行业名，推荐/监控共用单一来源）
+# ============================================================
+
+from app import domain as _domain
+
+class TestResolveSectorName:
+    def test_exact_match(self):
+        assert _domain.resolve_sector_name("食品", ["食品", "饮料", "医药"]) == "食品"
+        assert _domain.resolve_sector_name("半导体", ["半导体", "电子"]) == "半导体"
+
+    def test_alias_match(self):
+        """通过 SECTOR_ALIASES 映射"""
+        assert _domain.resolve_sector_name("风电设备", ["电源设备", "电网设备"]) == "电源设备"
+        assert _domain.resolve_sector_name("军工", ["航空航天装备", "地面兵装"]) == "航空航天装备"
+        assert _domain.resolve_sector_name("白酒", ["饮料", "食品"]) == "饮料"
+
+    def test_substring_match(self):
+        """子串匹配"""
+        assert _domain.resolve_sector_name("食品", ["食品饮料", "食品加工"]) == "食品饮料"
+        assert _domain.resolve_sector_name("饮料乳品", ["饮料", "乳品", "食品"]) == "饮料"
+
+    def test_no_match(self):
+        assert _domain.resolve_sector_name("XYZ", ["食品", "饮料"]) is None
+        assert _domain.resolve_sector_name("传媒", ["食品", "饮料"]) is None
+
+    def test_empty_candidates(self):
+        assert _domain.resolve_sector_name("食品", []) is None
+        assert _domain.resolve_sector_name("食品", [""]) is None
+
+
+# ============================================================
+# prompts — sector_selection_prompt
+# ============================================================
+
+from app.llm.prompts import sector_selection_prompt, sector_selection_system_prompt
+
+class TestPrompts:
+    def test_basic_prompt_structure(self):
+        prompt = sector_selection_prompt(
+            date_str="2026-07-30",
+            pool_text="食品(5日+3.5%, 20日+2.0%, 60日+8.0%, 基金5只)\n饮料(5日+2.8%, 20日+1.0%, 60日+5.0%, 基金4只)",
+            pool_reasoning="量化定池: 候选2个, regime=BULL",
+            top_gainers="食品(+3.5%)、饮料(+2.8%)",
+            top_losers="半导体(-1.2%)",
+            etf_net_flow="食品: 100亿",
+            news_summary="市场走强，消费板块领涨",
+            flow_summary="食品: 净流入100亿",
+        )
+        assert "2026-07-30" in prompt
+        assert "量化候选池" in prompt
+        assert "食品" in prompt
+        assert "recommended_sectors" in prompt
+        assert "risk_sectors" in prompt
+        assert "vetoed_sectors" in prompt
+        assert "否决权" in prompt
+
+    def test_no_flow_data(self):
+        prompt = sector_selection_prompt(
+            date_str="2026-07-30",
+            pool_text="食品(5日+3.5%, 20日+2.0%, 60日+8.0%, 基金5只)",
+            pool_reasoning="",
+            top_gainers="",
+            top_losers="",
+            etf_net_flow="",
+            news_summary="无数据",
+        )
+        assert "量化候选池" in prompt
+
+    def test_with_lessons(self):
+        prompt = sector_selection_prompt(
+            date_str="2026-07-30",
+            pool_text="食品(5日+3.5%, 20日+2.0%, 60日+8.0%, 基金5只)",
+            pool_reasoning="",
+            top_gainers="",
+            top_losers="",
+            etf_net_flow="",
+            news_summary="",
+            lessons="历史教训: 避免追涨杀跌",
+        )
+        assert "历史教训" in prompt
+
+    def test_system_prompt(self):
+        sp = sector_selection_system_prompt()
+        assert "JSON" in sp
+        assert "markdown" in sp.lower()
+
+
+# ============================================================
+# features — compute_fund_features（C3 公式单一来源）
+# ============================================================
+
+from app.features.calculator import compute_fund_features, combo_score, regime_combo_weights, score_frame
+import app.repo as repo
+from app.llm.macro_agent import MacroContext
+from app.engine import recommend as recommend_mod
+
+class TestComputeFundFeatures:
+    def test_returns_seven_features(self):
+        """固定单调净值序列应产出全部 7 个特征且数值有限。"""
+        navs = np.linspace(1.0, 1.5, 80)
+        idx_closes = np.linspace(3000.0, 3200.0, 80)
+        idx_vols = np.full(80, 1e8)
+        feat = compute_fund_features(navs, idx_closes, idx_vols)
+        assert feat is not None
+        for key in ("hurst_60d", "momentum_20d", "calmar", "downside_vol",
+                    "capture_up", "capture_down", "bias_60d"):
+            assert key in feat
+            assert np.isfinite(feat[key])
+        assert feat["momentum_20d"] > 0  # 单调上涨序列动量应为正
+
+    def test_insufficient_data_returns_none(self):
+        """净值不足 60 条时返回 None（与训练样本跳过逻辑一致）。"""
+        navs = np.linspace(1.0, 1.1, 30)
+        idx_closes = np.linspace(3000.0, 3200.0, 30)
+        assert compute_fund_features(navs, idx_closes, np.full(30, 1.0)) is None
+
+    def test_consistency_with_short_history(self):
+        """刚好 61 天净值的特征公式应产出有限特征，不抛异常。"""
+        navs = np.linspace(1.0, 1.2, 61)
+        idx_closes = np.linspace(3000.0, 3100.0, 61)
+        feat = compute_fund_features(navs, idx_closes, np.full(61, 1e8))
+        assert feat is not None
+        assert all(np.isfinite(feat[k]) for k in feat)
+
+
+# ============================================================
+# features — combo_score / regime_combo_weights（C3 打分收敛）
+# ============================================================
+
+class TestComboScore:
+    def test_basic_combination(self):
+        """combo_score 是各因子加权和，且权重由 w 驱动。"""
+        w = {"model": 0.5, "rs": 0.15, "cal": 0.1, "hurst": 0.1}
+        base = combo_score(1.0, 5.0, 2.0, 0.6, w)
+        higher = combo_score(1.0, 10.0, 2.0, 0.6, w)
+        assert higher > base  # rel_strength 越大 combo 越高
+
+    def test_default_sector_and_rbsa_zero(self):
+        """未传赛道相对项与 rbsa 权重时按 0 处理（降级/回测路径）。"""
+        w = {"model": 0.5, "rs": 0.15, "cal": 0.1, "hurst": 0.1}
+        a = combo_score(0.5, 0.0, 0.0, 0.5, w)
+        b = combo_score(0.5, 0.0, 0.0, 0.5, w, sector_rel_momentum=10.0)
+        assert b > a  # 赛道相对动量项为正贡献
+
+
+class TestRegimeComboWeights:
+    def test_bull_shifts_to_momentum(self):
+        cfg = {"model_weight": 0.5, "rel_strength_weight": 0.15,
+               "calmar_weight": 0.1, "hurst_weight": 0.1}
+        bull = regime_combo_weights("BULL", cfg)
+        assert bull["rs"] > cfg["rel_strength_weight"]
+        assert bull["cal"] < cfg["calmar_weight"]
+
+    def test_bear_shifts_to_calmar(self):
+        cfg = {"model_weight": 0.5, "rel_strength_weight": 0.15,
+               "calmar_weight": 0.1, "hurst_weight": 0.1}
+        bear = regime_combo_weights("BEAR", cfg)
+        assert bear["cal"] > cfg["calmar_weight"]
+
+
+class _FakeModel:
+    def predict(self, X):
+        return np.full(len(X), 2.0)
+
+
+class TestScoreFrame:
+    def _cfg(self):
+        return {"model_weight": 0.5, "rel_strength_weight": 0.15,
+                "calmar_weight": 0.1, "hurst_weight": 0.1}
+
+    def _df(self):
+        rows = []
+        for code, mom in (("A", 5.0), ("B", 3.0)):
+            r = {c: 1.0 for c in repo.FEATURE_COLS}
+            r["code"] = code
+            r["momentum_20d"] = mom
+            r["calmar"] = 2.0
+            r["hurst_60d"] = 0.6
+            r["regime"] = "BULL"
+            rows.append(r)
+        return pd.DataFrame(rows)
+
+    def test_with_model_ranks_by_combo(self):
+        out = score_frame(self._df(), _FakeModel(), self._cfg(), idx_mom=1.0)
+        assert {"score", "score_norm", "rel_strength", "combo"} <= set(out.columns)
+        a = out[out["code"] == "A"]["combo"].iloc[0]
+        b = out[out["code"] == "B"]["combo"].iloc[0]
+        assert a > b  # rel_strength 更大者 combo 更高
+
+    def test_without_model_uses_05(self):
+        out = score_frame(self._df(), None, self._cfg(), idx_mom=0.0)
+        assert (out["score_norm"] == 0.5).all()
+        assert "combo" in out.columns
+
+    def test_regime_fallback_when_column_missing(self):
+        df = self._df().drop(columns=["regime"])
+        out = score_frame(df, _FakeModel(), self._cfg(), idx_mom=1.0, default_regime="BEAR")
+        assert "combo" in out.columns
+
+
+# ============================================================
+# monitor — 防线链数据驱动（C2）与遮蔽 bug 回归
+# ============================================================
+
+import inspect
+from app.engine import monitor as monitor_mod
+
+class TestDefenseChain:
+    def test_short_circuit_exit_stops_chain(self):
+        """short_circuit=True 的规则触发 EXIT 时链立即终止。"""
+
+        class FakeExit(monitor_mod.DefenseRule):
+            severity = 10
+            short_circuit = True
+
+            def check(self, ctx):
+                return monitor_mod.DefenseResult(signal="EXIT", reason="fake exit")
+
+        class FakeWarn(monitor_mod.DefenseRule):
+            severity = 20
+            short_circuit = False
+
+            def check(self, ctx):
+                return monitor_mod.DefenseResult(signal="WARNING", reason="fake warn")
+
+        signal, detail, *_ = monitor_mod._apply_defense_chain(
+            monitor_mod.DefenseContext(code="X"), [FakeExit(), FakeWarn()]
+        )
+        assert signal == "EXIT"
+        assert detail == "fake exit"
+
+    def test_non_short_circuit_warning_finalizes(self):
+        """非短路 WARNING 规则设置最终信号，链继续但最终为 WARNING。"""
+        signal, detail, *_ = monitor_mod._apply_defense_chain(
+            monitor_mod.DefenseContext(code="X"),
+            [monitor_mod.SectorAdvantageRule()],
+        )
+        assert signal in ("WARNING", "HOLD")
+
+    def test_update_highest_nav_removed_from_monitor(self):
+        """回归：监控重构（阶段一）后 monitor 不再依赖 update_highest_nav（2×ATR 追踪止损已移除）。"""
+        assert not hasattr(monitor_mod, "update_highest_nav"), "monitor 不应再引用已废弃的 highest_nav 逻辑"
+
+
+class _FakeRankModel:
+    def predict(self, X):
+        return X["momentum_20d"].to_numpy()
+
+
+class TestRankWithinSectors:
+    """赛道覆盖回归：LLM 指定赛道即使 combo 排不进全局 top5，也必须出现在最终候选。
+
+    根因（2026-08-02）：_rank_within_sectors 每赛道取 top2 后按全局 combo 截断到 5，
+    高热度赛道（半导体 2648 只）因量化 combo 略低被整体挤出，run_recommendation
+    过滤 target_sectors 时误报"赛道无可投基金"。
+    """
+
+    # 本组测试的 DB 依赖显式 mock：隔离生产库（tests/conftest 业务库重定向后
+    # 空库会让 get_available_sectors 返回 [] → 降级全市场 → get_all_ranking_rows
+    # 空 DataFrame 触发 dropna KeyError；补齐依赖后各测试行为确定）。
+    _AVAILABLE = ["半导体", "电源设备", "消费电子设备", "通信设备", "电子元件", "贵金属", "稀有金属"]
+
+    @pytest.fixture(autouse=True)
+    def _mock_repo_deps(self, monkeypatch):
+        monkeypatch.setattr(recommend_mod.repo, "get_available_sectors", lambda: list(self._AVAILABLE))
+        monkeypatch.setattr(recommend_mod.repo, "get_index_series", lambda code, cols: [])
+        monkeypatch.setattr(recommend_mod.repo, "get_all_ranking_rows", lambda: [])
+
+    def _row(self, code, sector, mom):
+        return {
+            "code": code, "name": f"基金{code}", "regime": "BULL",
+            "rbsa_industry_1": sector, "rbsa_weight_1": 50.0,
+            "rbsa_industry_2": "", "rbsa_weight_2": 0.0,
+            "rbsa_industry_3": "", "rbsa_weight_3": 0.0,
+            "hurst_60d": 0.6, "momentum_20d": mom, "calmar": 2.0,
+            "downside_vol": 1.0, "capture_up": 1.0, "capture_down": 1.0,
+            "bias_60d": 0.0, "drawdown_60d": -5.0, "reversal_20d": 1.0,
+            "mom_5d": mom, "mom_60d": mom, "vol_20d": 10.0,
+        }
+
+    def test_llm_top_sectors_not_dropped_from_candidates(self, monkeypatch):
+        """半导体/电源设备动量最低，但作为 LLM 指定赛道必须有候选。"""
+        sectors = ["半导体", "电源设备", "消费电子设备", "通信设备", "电子元件"]
+        data = (
+            [self._row("SC_A", "半导体", 3.0), self._row("SC_B", "半导体", 2.0)]
+            + [self._row("PD_A", "电源设备", 6.0), self._row("PD_B", "电源设备", 5.0)]
+            + [self._row("CE_A", "消费电子设备", 12.0), self._row("CE_B", "消费电子设备", 11.0)]
+            + [self._row("TX_A", "通信设备", 17.0), self._row("TX_B", "通信设备", 16.0)]
+            + [self._row("EL_A", "电子元件", 15.0), self._row("EL_B", "电子元件", 14.0)]
+        )
+        monkeypatch.setattr(recommend_mod.repo, "get_sector_candidates", lambda s: data)
+        monkeypatch.setattr(recommend_mod, "_index_momentum", lambda: 5.0)
+        monkeypatch.setattr(recommend_mod, "_get_market_regime", lambda: "BULL")
+        monkeypatch.setattr(recommend_mod, "_load_ranking_cfg", lambda: {
+            "model_weight": 0.5, "rel_strength_weight": 0.15,
+            "calmar_weight": 0.1, "hurst_weight": 0.1, "momentum_guard_pct": -15.0,
+        })
+        ctx = MacroContext(recommended_sectors=sectors, risk_sectors=[], date="2026-08-02")
+        finalists = recommend_mod._rank_within_sectors(ctx, _FakeRankModel())
+        got = {f["sector"] for f in finalists}
+        assert "半导体" in got, f"半导体被挤出候选: {got}"
+        assert "电源设备" in got, f"电源设备被挤出候选: {got}"
+        assert len(finalists) <= 8
+        # C1 修复后：前 2 赛道（LLM 定论对象）各有 2 只候选，定论有真实选择空间
+        top2_covered = {f["code"] for f in finalists if f["sector"] in ("半导体", "电源设备")}
+        assert len(top2_covered) >= 4, f"前 2 赛道候选不足 2 只/赛道: {top2_covered}"
+
+    def test_negative_score_candidates_included(self, monkeypatch):
+        """阶段2 全天候出手：预测收益为负的基金不再硬过滤（风险由监控防线兜底）。"""
+        sectors = ["半导体"]
+        data = [
+            self._row("SC_A", "半导体", 3.0),
+            self._row("SC_B", "半导体", 2.0),
+        ]
+        monkeypatch.setattr(recommend_mod.repo, "get_sector_candidates", lambda s: data)
+        monkeypatch.setattr(recommend_mod.repo, "get_all_ranking_rows", lambda: data)  # 降级路径
+        monkeypatch.setattr(recommend_mod, "_index_momentum", lambda: 5.0)
+        monkeypatch.setattr(recommend_mod, "_get_market_regime", lambda: "BULL")
+        monkeypatch.setattr(recommend_mod, "_load_ranking_cfg", lambda: {
+            "model_weight": 0.7, "rel_strength_weight": 0.1,
+            "calmar_weight": 0.08, "hurst_weight": 0.08, "momentum_guard_pct": -15.0,
+        })
+
+        class _NegModel:
+            def predict(self, X):
+                return -abs(X["momentum_20d"].to_numpy()) - 0.1  # 全部预测为负
+
+        ctx = MacroContext(recommended_sectors=sectors, risk_sectors=[], date="2026-08-02")
+        finalists = recommend_mod._rank_within_sectors(ctx, _NegModel())
+        # 全天候：负预测不再清空候选池，按 combo 排序仍产出候选
+        assert finalists, f"负预测也应产出候选（全天候出手）: {finalists}"
+        assert all(f["score"] < 0 for f in finalists)
+
+    def test_first_industry_in_risk_sectors_excluded(self, monkeypatch):
+        """修复：第一行业命中回避赛道 → 整体剔除（即使次行业在推荐赛道）。
+
+        018517 场景复现：RBSA1=半导体（回避）、RBSA2=电源设备（推荐），
+        修复前以电源设备身份入选、监控按 RBSA1=半导体 否决（推荐/监控赛道不一致）。
+        """
+        sectors = ["电源设备"]
+        data = [
+            self._row("MIX_A", "半导体", 5.0),  # 第一行业=半导体（回避）
+            self._row("PD_A", "电源设备", 6.0),
+        ]
+        data[0]["rbsa_industry_2"] = "电源设备"
+        data[0]["rbsa_weight_2"] = 4.0
+        monkeypatch.setattr(recommend_mod.repo, "get_sector_candidates", lambda s: data)
+        monkeypatch.setattr(recommend_mod, "_index_momentum", lambda: 5.0)
+        monkeypatch.setattr(recommend_mod, "_get_market_regime", lambda: "BULL")
+        monkeypatch.setattr(recommend_mod, "_load_ranking_cfg", lambda: {
+            "model_weight": 0.5, "rel_strength_weight": 0.15,
+            "calmar_weight": 0.1, "hurst_weight": 0.1, "momentum_guard_pct": -15.0,
+        })
+        ctx = MacroContext(recommended_sectors=sectors, risk_sectors=["半导体"], date="2026-08-02")
+        finalists = recommend_mod._rank_within_sectors(ctx, _FakeRankModel())
+        codes = {f["code"] for f in finalists}
+        assert "MIX_A" not in codes, f"第一行业在回避赛道的基金应整体剔除: {codes}"
+        assert "PD_A" in codes
+
+    def test_ac_share_dedup_in_candidates(self, monkeypatch):
+        """同一基金 A/C 份额不得占两个候选名额（015412/015413 场景）：只保留 combo 最高者。"""
+        sectors = ["半导体"]
+        data = [
+            self._row("F1A", "半导体", 5.0),  # F1 A 类
+            self._row("F1C", "半导体", 4.9),  # F1 C 类（同基金）
+            self._row("F2", "半导体", 3.0),
+        ]
+        data[0]["name"] = "西部利得数字产业混合A"
+        data[1]["name"] = "西部利得数字产业混合C"
+        data[2]["name"] = "其他基金混合"
+        monkeypatch.setattr(recommend_mod.repo, "get_sector_candidates", lambda s: data)
+        monkeypatch.setattr(recommend_mod, "_index_momentum", lambda: 5.0)
+        monkeypatch.setattr(recommend_mod, "_get_market_regime", lambda: "BULL")
+        monkeypatch.setattr(recommend_mod, "_load_ranking_cfg", lambda: {
+            "model_weight": 0.5, "rel_strength_weight": 0.15,
+            "calmar_weight": 0.1, "hurst_weight": 0.1, "momentum_guard_pct": -15.0,
+        })
+        ctx = MacroContext(recommended_sectors=sectors, risk_sectors=[], date="2026-08-02")
+        finalists = recommend_mod._rank_within_sectors(ctx, _FakeRankModel())
+        codes = {f["code"] for f in finalists}
+        assert "F1C" not in codes, f"同基金 C 类应被去重: {codes}"
+        assert "F1A" in codes and "F2" in codes
+        assert len(finalists) == 2  # 单赛道保底 2 只（A 类 + F2）
+
+    def test_low_exposure_fund_excluded_by_purity_gate(self, monkeypatch):
+        """C4 纯度门槛：第一行业暴露 <10% 的分散基金不视为赛道基金（000011 场景）。"""
+        sectors = ["半导体"]
+        data = [
+            self._row("PURE", "半导体", 5.0),   # 暴露 50%，真赛道基金
+            self._row("MIX", "半导体", 4.0),    # 暴露 8%，分散基金
+        ]
+        data[0]["rbsa_weight_1"] = 50.0
+        data[1]["rbsa_weight_1"] = 8.0
+        monkeypatch.setattr(recommend_mod.repo, "get_sector_candidates", lambda s: data)
+        monkeypatch.setattr(recommend_mod, "_index_momentum", lambda: 5.0)
+        monkeypatch.setattr(recommend_mod, "_get_market_regime", lambda: "BULL")
+        monkeypatch.setattr(recommend_mod, "_load_ranking_cfg", lambda: {
+            "model_weight": 0.5, "rel_strength_weight": 0.15,
+            "calmar_weight": 0.1, "hurst_weight": 0.1, "momentum_guard_pct": -15.0,
+        })
+        ctx = MacroContext(recommended_sectors=sectors, risk_sectors=[], date="2026-08-02")
+        finalists = recommend_mod._rank_within_sectors(ctx, _FakeRankModel())
+        codes = {f["code"] for f in finalists}
+        assert "MIX" not in codes, f"暴露<10% 的分散基金应被纯度门槛剔除: {codes}"
+        assert "PURE" in codes
+
+
+class TestSectorCandidatesDedupe:
+    """同日推荐去重：多行业展开的基金不得在多个赛道被重复推荐（8-04 线上复现）。
+
+    根因：基金 012428 的 rbsa_industry_1=半导体、rbsa_industry_2=通信设备，
+    展开后同时进入两个赛道候选，LLM 各选一次 → 同一天两条推荐都是同一只基金。
+    """
+
+    def _row(self, code, sector, ind1):
+        return {"code": code, "name": f"基金{code}", "sector": sector,
+                "rbsa_industry_1": ind1, "combo": 5.0, "score": 0.05,
+                "momentum_20d": 5.0, "hurst_60d": 0.6, "calmar": 2.0}
+
+    def test_same_fund_in_two_sectors_deduped_per_sector(self):
+        """012428 场景：同一基金以多个 sector 展开，赛道候选只保留一条且赛道归属一致。"""
+        from app.engine.recommend import _sector_candidates
+        finalists = [
+            self._row("F1", "半导体", "半导体"),
+            self._row("F1", "通信设备", "半导体"),  # 同一基金的通信设备展开
+            self._row("F2", "半导体", "半导体"),
+        ]
+        cands = _sector_candidates(finalists, "半导体", set())
+        codes = [c["code"] for c in cands]
+        assert codes.count("F1") == 1, f"同赛道候选出现重复基金: {codes}"
+        f1 = next(c for c in cands if c["code"] == "F1")
+        assert f1["sector"] == "半导体"
+
+    def test_selected_fund_excluded_from_later_sector(self):
+        """跨赛道去重：半导体赛道已选定 F1，通信设备赛道候选不再包含 F1。"""
+        from app.engine.recommend import _sector_candidates
+        finalists = [
+            self._row("F1", "通信设备", "半导体"),  # 该基金 ind1=半导体
+            self._row("F2", "通信设备", "通信设备"),
+        ]
+        cands = _sector_candidates(finalists, "通信设备", {"F1"})
+        assert [c["code"] for c in cands] == ["F2"]
+
+    def test_sector_or_first_industry_matching_kept(self):
+        """过滤语义保持原状：sector 或 rbsa_industry_1 命中赛道即可进入候选。"""
+        from app.engine.recommend import _sector_candidates
+        finalists = [
+            self._row("F1", "电源设备", "半导体"),  # sector 命中
+            self._row("F2", "其他", "半导体"),      # ind1 命中
+            self._row("F3", "其他", "其他"),
+        ]
+        cands = _sector_candidates(finalists, "半导体", set())
+        assert {c["code"] for c in cands} == {"F1", "F2"}
+
+
+# ============================================================
+# LLM 最终定论解析 + 持仓上下文构建（候选4 胶水收敛后的测试缺口）
+# ============================================================
+
+from app.engine.recommend import _parse_llm_result
+from app.llm.context import build_holdings_text
+
+
+class TestParseLlmResult:
+    """推荐终定 LLM 返回解析：selected_code 必须在候选池内才算有效。"""
+
+    def test_valid_selection(self):
+        parsed = _parse_llm_result(
+            '{"selected_code": "000001", "selected_name": "基金A", '
+            '"reason": "理由", "decision_logic": "动量强", "vetoed": ["000002"]}',
+            {"000001": "基金A", "000002": "基金B"},
+        )
+        assert parsed == {
+            "selected_code": "000001", "selected_name": "基金A",
+            "reason": "理由", "decision_logic": "动量强", "vetoed": ["000002"],
+        }
+
+    def test_valid_selection_without_decision_logic(self):
+        """旧 prompt 无 decision_logic 字段时兼容为空串（P2-7 向后兼容）。"""
+        parsed = _parse_llm_result(
+            '{"selected_code": "000001", "selected_name": "基金A", '
+            '"reason": "理由", "vetoed": ["000002"]}',
+            {"000001": "基金A", "000002": "基金B"},
+        )
+        assert parsed == {
+            "selected_code": "000001", "selected_name": "基金A",
+            "reason": "理由", "decision_logic": "", "vetoed": ["000002"],
+        }
+
+    def test_invalid_code_returns_none(self):
+        """LLM 返回池外 code → 无效（防止幻觉选错基金）。"""
+        parsed = _parse_llm_result(
+            '{"selected_code": "999999", "selected_name": "幻觉基金"}',
+            {"000001": "基金A"},
+        )
+        assert parsed is None
+
+    def test_invalid_json_returns_none(self):
+        assert _parse_llm_result("not json", {"000001": "基金A"}) is None
+
+    def test_non_dict_returns_none(self):
+        assert _parse_llm_result("[1, 2, 3]", {"000001": "基金A"}) is None
+
+    def test_missing_selected_code_returns_none(self):
+        assert _parse_llm_result('{"reason": "无推荐"}', {"000001": "基金A"}) is None
+
+
+class TestBuildHoldingsText:
+    """持仓上下文格式单一来源：recommend/monitor 共用同一文本。"""
+
+    def test_with_holdings(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.llm.context.repo.get_holdings",
+            lambda code, limit: [
+                {"stock_name": "贵州茅台", "industry": "白酒", "weight": 12.5},
+                {"stock_name": "宁德时代", "industry": "电池", "weight": 8.0},
+            ],
+        )
+        assert build_holdings_text("000001", 5) == "贵州茅台(白酒,12.5%)；宁德时代(电池,8.0%)"
+
+    def test_industry_fallback_other(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.llm.context.repo.get_holdings",
+            lambda code, limit: [{"stock_name": "某股", "industry": "", "weight": 1.5}],
+        )
+        assert build_holdings_text("000002", 5) == "某股(其他,1.5%)"
+
+    def test_empty_holdings(self, monkeypatch):
+        monkeypatch.setattr("app.llm.context.repo.get_holdings", lambda code, limit: [])
+        assert build_holdings_text("000003", 5) == "无持仓数据"
+
+
+class TestMonitorLogicPrompt:
+    """修复 A：监控 LLM 证伪 prompt 携带基金完整 RBSA 行业分布，
+    避免只凭单一赛道（RBSA1）下结论导致与推荐理由矛盾。"""
+
+    def test_prompt_includes_rbsa_distribution(self):
+        from app.llm.prompts import monitor_logic_prompt
+        p = monitor_logic_prompt(
+            buy_reason="重仓电源设备，政策利好",
+            sector="电源设备",
+            anchor_sector="电源设备",
+            anchor_report_date="2026-06-30",
+            anchor_holdings_text="宁德时代(1.5%)",
+            holdings_text="宁德时代(1.5%)",
+            rbsa_distribution="半导体(4.6%), 通信设备(4.1%), 电源设备(4.1%)",
+        )
+        assert "该基金所属赛道: 电源设备" in p
+        assert "最新行业分布: 半导体(4.6%), 通信设备(4.1%), 电源设备(4.1%)" in p
+        assert "核心行业: 电源设备" in p
+
+    def test_prompt_without_distribution(self):
+        """无行业分布时（特征缺失）输出'无'，不影响锚点格式。"""
+        from app.llm.prompts import monitor_logic_prompt
+        p = monitor_logic_prompt(
+            buy_reason="x", sector="电源设备", anchor_sector="电源设备",
+            anchor_report_date="", anchor_holdings_text="",
+            holdings_text="h",
+        )
+        assert "最新行业分布: 无" in p
+        assert "该基金所属赛道: 电源设备" in p
+
+    def test_rbsa_distribution_formats(self):
+        """行业分布字符串格式：'行业(权重%), ...'，跳过空行业（feat 由装配层传入）。"""
+        feat = {
+            "rbsa_industry_1": "半导体", "rbsa_weight_1": 4.6,
+            "rbsa_industry_2": "通信设备", "rbsa_weight_2": 4.1,
+            "rbsa_industry_3": "", "rbsa_weight_3": 0.0,
+        }
+        assert monitor_mod._rbsa_distribution(feat) == "半导体(4.6%), 通信设备(4.1%)"
+
+    def test_rbsa_distribution_no_features(self):
+        assert monitor_mod._rbsa_distribution(None) == ""
+
+
+class TestRankingConfig:
+    """候选 4：排序配置收敛为不可变 RankingConfig（meta+默认合并单一入口）。"""
+
+    def test_defaults(self):
+        cfg = _domain.RankingConfig()
+        assert cfg.model_weight == 0.7
+        assert cfg.momentum_guard_pct == -15.0
+        assert cfg["model_weight"] == 0.7  # dict 风格下标兼容
+
+    def test_passes_momentum_guard(self):
+        cfg = _domain.RankingConfig(momentum_guard_pct=-15.0)
+        assert cfg.passes_momentum_guard(-10.0) is True
+        assert cfg.passes_momentum_guard(-20.0) is False
+
+    def test_quality_ratio_constant(self):
+        """候选质量门槛单一来源（0.6，替代硬编码）。"""
+        assert _domain.RankingConfig.QUALITY_RATIO == 0.6
+
+    def test_to_dict_roundtrip(self):
+        cfg = _domain.RankingConfig(model_weight=0.5)
+        d = cfg.to_dict()
+        assert d["model_weight"] == 0.5
+        assert _domain.RankingConfig(**d) == cfg

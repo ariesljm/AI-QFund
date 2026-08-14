@@ -1,0 +1,39 @@
+# AI-QFund 项目配置文件
+# 仅保留用户需要填写/可调的参数；数据源接口等实现细节已内置在代码中。
+
+# ============ LLM 配置（OpenAI 兼容接口） ============
+[llm]
+# API 基地址，兼容任意 OpenAI 格式服务（如本地 Ollama、第三方代理）
+base_url = "http://192.168.1.222:20128/v1"
+# API 密钥；接入 LLM 前必须填入
+api_key = "your-api-key-here"
+# 使用的模型名称
+model = "alpha-radar"
+
+# ============ 管线定时启动（每日指定时间运行推荐管线） ============
+# hour 设为空字符串表示关闭定时
+[scheduler]
+hour = 8
+minute = 0
+
+# ============ 进化引擎 ============
+[evolve]
+# 预留段：裁决损耗（LLM 选中 vs 候选池均值）连续 3 个月为负时只注入元分析自省；
+# 不做"纯量化降级"（Q8 共识：自动降级会让系统失去 LLM 宏观判断，违背设计初衷）。
+
+# ============ 日志 ============
+[logging]
+# 文件日志级别: DEBUG / INFO / WARNING / ERROR
+file_level = "INFO"
+# 控制台日志级别: DEBUG / INFO / WARNING / ERROR
+console_level = "INFO"
+# system_logs 滚动保留：先按时间删除超过 db_retention_days 天的日志；
+# 若仍超过 db_max_rows 行，再按行数兜底删除最旧日志（双条件防异常暴涨）
+db_retention_days = 30
+db_max_rows = 20000
+
+# ============ Web 服务 ============
+[web]
+port = 9123
+# 设置页面访问密码（留空则不设密码）
+settings_password = ""

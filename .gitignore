@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.*
+
+# 数据库（可再生的大文件，不入库）
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
+# runtime 产物
+data/last_*.txt
+data/logs/
+
+# 回测运行产物（可复现，不入库）
+data/backtest_*.json
+data/exit_*.csv
+data/bt_*.json
+
+# 文档 / 说明（非运行必需）
+docs/
+AGENTS.md
+CONTEXT.md
+
+# 环境与密钥
+.env
+*.local
+
+# 配置文件（含密钥），用 .example 模板代替
+config/settings.toml
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# CI / CD（工作流必须推送！）
+!.github/
+!.github/workflows/
+!.github/workflows/*# opencode（agent skills 与配置，非运行时）
+.opencode/
+.scratch/
+
+# 其他 agent 工具配置与产物（非运行时）
+.pi/
+.hallmark/
+.stitch/
+
+# 测试
+test_basic.py
+.pytest_cache/
+
+# 模型文件（运行时生成）
+models/
+
+# 前端构建（Node 依赖不入库；构建产物 output.css / fonts / app.js 已提交）
+node_modules/

@@ -1,0 +1,11 @@
+{
+  "name": "ai-qfund",
+  "private": true,
+  "description": "Web 面板静态资源构建（仅本地生成，Docker 运行时无需 Node）",
+  "scripts": {
+    "build:css": "tailwindcss -i ../app/web/static/input.css -o ../app/web/static/output.css -c tailwind.config.cjs --minify"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.17"
+  }
+}

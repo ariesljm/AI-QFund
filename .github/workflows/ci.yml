@@ -1,0 +1,57 @@
+name: Build and Push Docker Image
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ai-qfund   # GHCR 包名必须小写（与 docker-compose.yml 的 image 一致）
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags/labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=build-${{ github.run_number }},enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,format=short,prefix=sha-
+            type=ref,event=tag
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: 清理旧镜像版本（保护 latest，保留最近 6 个）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 最新版本（latest 所在）永不删除；其余按创建时间倒序保留最近 5 个，更旧的删除。
+          # 显式 sort_by 排序，避免 gh api 默认排序歧义导致 tail 误删 latest（版本数超过保留量后 latest 曾因此丢失）。
+          gh api "/user/packages/container/ai-qfund/versions?per_page=100" \
+            --jq 'sort_by(.created_at) | reverse | .[1:] | .[5:] | .[].id' \
+            | xargs -r -I{} gh api -X DELETE "/user/packages/container/ai-qfund/versions/{}" --silent || true

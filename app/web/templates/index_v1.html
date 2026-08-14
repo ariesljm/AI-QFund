@@ -1,0 +1,1153 @@
+<!DOCTYPE html>
+<html class="light" lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<meta content="AI驱动的基金智能筛选与量化投研终端，实时追踪基金推荐、板块轮动与资金流向" name="description"/>
+<meta content="AI量化投研,基金推荐,智能选基,板块轮动,资金流向" name="keywords"/>
+<meta content="AlphaSignals" property="og:title"/>
+<meta content="AI驱动的基金智能筛选与量化投研终端" property="og:description"/>
+<meta content="website" property="og:type"/>
+<link href="/static/favicon-32.png" rel="icon" sizes="32x32"/>
+<link href="/static/favicon-16.png" rel="icon" sizes="16x16"/>
+<title>AlphaSignals | AI量化投研终端</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&amp;family=Inter:wght@400;500;600;700;900&amp;family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script>
+tailwind.config = {
+  darkMode: "class",
+  theme: {
+    extend: {
+      colors: {
+        "primary": "#1A1A1A",
+        "on-primary": "#FFFFFF",
+        "primary-container": "#EAEAEA",
+        "on-primary-container": "#4A4A4A",
+        "secondary": "#5C5C5C",
+        "on-secondary": "#FFFFFF",
+        "background": "#FDFBF7",
+        "on-background": "#1A1A1A",
+        "surface": "#FDFBF7",
+        "surface-dim": "#EBE7DF",
+        "surface-bright": "#FFFFFF",
+        "surface-container": "#F4F1EA",
+        "surface-container-low": "#F9F7F2",
+        "surface-container-high": "#F0EDE4",
+        "surface-variant": "#F2F0E9",
+        "on-surface": "#1A1A1A",
+        "on-surface-variant": "#605E58",
+        "outline": "#A09B8E",
+        "outline-variant": "#D6D1C4",
+        "tertiary": "#D32F2F",
+        "on-tertiary": "#FFFFFF",
+        "up": "#D32F2F",
+        "down": "#2E7D32",
+        "error": "#B71C1C",
+        "on-error": "#FFFFFF",
+        "error-container": "#FFEBEE",
+        "on-error-container": "#B71C1C",
+        "outline-error": "#B71C1C"
+      },
+      borderRadius: { DEFAULT: "0px", lg: "2px", xl: "4px", full: "9999px" },
+      spacing: { lg: "24px", md: "16px", xl: "32px", base: "4px", xs: "8px", gutter: "20px", sm: "12px", "container-max": "1440px" },
+      fontFamily: {
+        sans: ['Inter', 'PingFang SC', 'Microsoft YaHei', 'sans-serif'],
+        "headline-xl": ["Playfair Display", "serif"],
+        "headline-lg": ["Playfair Display", "serif"],
+        "display-data": ["Inter", "sans-serif"],
+        "body-md": ["Inter", "PingFang SC", "Microsoft YaHei", "sans-serif"],
+        "label-sm": ["Inter", "PingFang SC", "Microsoft YaHei", "sans-serif"],
+        "subcaption-en": ["Inter", "sans-serif"]
+      },
+      fontSize: {
+        "headline-xl": ["48px", {"lineHeight": "52px", "letterSpacing": "-0.03em", "fontWeight": "900"}],
+        "headline-lg": ["32px", {"lineHeight": "40px", "letterSpacing": "-0.02em", "fontWeight": "800"}],
+        "display-data": ["26px", {"lineHeight": "32px", "letterSpacing": "-0.015em", "fontWeight": "700"}],
+        "body-md": ["15px", {"lineHeight": "1.7", "fontWeight": "400"}],
+        "label-sm": ["13px", {"lineHeight": "18px", "letterSpacing": "0.04em", "fontWeight": "600"}],
+        "subcaption-en": ["11px", {"lineHeight": "14px", "letterSpacing": "0.12em", "fontWeight": "700"}]
+      }
+    }
+  }
+}
+</script>
+<style>
+/* Hallmark · genre: editorial · macrostructure: Workbench (app terminal) · theme: preserve-brand (warm paper · ink · up-red/down-green) · redesigned: index_v1 */
+body { background-color: #FDFBF7; -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums; scroll-behavior: smooth; }
+section { scroll-margin-top: 6rem; }
+body::before { content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 9999; opacity: 0.3; background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); background-repeat: repeat; background-size: 256px 256px; }
+.editorial-card { background: white; border: 1px solid #E6E2D3; box-shadow: 2px 2px 0px rgba(0,0,0,0.05); transition: all 0.2s ease; }
+.editorial-card:hover { box-shadow: 4px 4px 0px rgba(0,0,0,0.08); }
+.editorial-card:active { transform: scale(0.998); }
+.marquee-vertical-container { height: 84px; overflow: hidden; position: relative; }
+.marquee-vertical-content { display: flex; flex-direction: column; animation: marquee-vertical-continuous 120s linear infinite; }
+.marquee-vertical-container:hover .marquee-vertical-content { animation-play-state: paused; }
+@keyframes marquee-vertical-continuous { 0% { transform: translateY(0); } 100% { transform: translateY(-50%); } }
+.pulse-dot { animation: pulse 2s infinite; }
+@keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(1.2); } 100% { opacity: 1; transform: scale(1); } }
+.visible-scrollbar::-webkit-scrollbar { width: 6px; }
+.visible-scrollbar::-webkit-scrollbar-track { background: transparent; }
+.visible-scrollbar::-webkit-scrollbar-thumb { background: #1A1A1A; border-radius: 3px; }
+.visible-scrollbar { scrollbar-width: thin; scrollbar-color: #1A1A1A transparent; }
+.material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
+.news-ticker-border { border-top: 2px solid #1A1A1A; border-bottom: 1px solid #1A1A1A; }
+h1, h2, h3, h4 { letter-spacing: -0.01em; text-wrap: balance; }
+p { text-wrap: pretty; }
+.bar-up { background-color: #D32F2F; }
+.bar-down { background-color: #2E7D32; }
+button:active { transform: scale(0.97); }
+button:focus-visible { outline: 2px solid #1A1A1A; outline-offset: 2px; }
+.skel { background: linear-gradient(90deg, #EBE7DF 25%, #F4F1EA 50%, #EBE7DF 75%); background-size: 200% 100%; animation: skel-shimmer 1.5s ease-in-out infinite; border-radius: 2px; }
+@keyframes skel-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+.skel-chart { position: relative; overflow: hidden; }
+.skel-chart::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.3) 50%, transparent 100%); animation: skel-sweep 2s ease-in-out infinite; }
+@keyframes skel-sweep { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
+/* 本地 SVG 纹理（替代外部 picsum 占位图，无运行时依赖） */
+.tex-hero { background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); background-size: 256px; background-position: center; }
+.tex-sector { background-image: url("data:image/svg+xml,%3Csvg width='22' height='22' viewBox='0 0 22 22' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='2' cy='2' r='1' fill='%231A1A1A'/%3E%3C/svg%3E"); background-size: 22px 22px; }
+.tex-rec { background-image: url("data:image/svg+xml,%3Csvg width='18' height='18' xmlns='http://www.w3.org/2000/svg'%3E%3Cline x1='0' y1='18' x2='18' y2='0' stroke='%231A1A1A' stroke-width='0.4'/%3E%3C/svg%3E"); background-size: 18px 18px; }
+/* 日志行级别色条 */
+.log-row-error { border-left: 3px solid #B71C1C; }
+.log-row-warn { border-left: 3px solid #D32F2F; }
+.log-row-info { border-left: 3px solid rgba(26,26,26,0.15); }
+.log-row-debug { border-left: 3px solid transparent; }
+</style>
+</head>
+<body class="bg-background text-on-background font-body-md min-h-screen">
+<a href="#main-content" class="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-[9999] focus:bg-primary focus:text-white focus:px-4 focus:py-2 focus:font-black focus:uppercase focus:tracking-widest">跳转到主要内容</a>
+<main id="main-content" class="min-h-screen flex flex-col">
+<!-- Top Bar -->
+<header class="fixed top-0 right-0 left-0 bg-background/95 backdrop-blur-md border-b-2 border-primary z-50 h-16 md:h-20 flex items-center px-md md:px-lg justify-between">
+<div class="flex items-center gap-sm md:gap-lg">
+<div class="flex flex-col">
+<h1 class="font-headline-xl text-[22px] md:text-[32px] text-primary font-black tracking-tighter leading-none">ALPHASIGNALS</h1>
+<span class="font-subcaption-en text-[11px] md:text-[14px] uppercase tracking-[0.3em] font-black text-on-surface-variant hidden md:block">AI驱动的基金智能筛选与量化投研终端</span>
+</div>
+</div>
+<div class="flex items-center gap-sm md:gap-md">
+
+<button class="w-11 h-11 md:w-10 md:h-10 hover:bg-surface-container transition-colors flex items-center justify-center relative" onclick="openModal('systemLogModal')" title="系统实时日志" aria-label="系统实时日志">
+<span class="material-symbols-outlined">terminal</span>
+<span class="absolute top-2 right-2 w-2 h-2 bg-tertiary pulse-dot"></span>
+</button>
+<button class="w-11 h-11 md:w-10 md:h-10 hover:bg-surface-container transition-colors flex items-center justify-center" onclick="openPasswordPrompt()" title="终端设置" aria-label="终端设置">
+<span class="material-symbols-outlined">settings</span>
+</button>
+</div>
+</header>
+
+<div class="mt-16 md:mt-24 px-sm md:px-lg space-y-md md:space-y-lg max-w-[1440px] mx-auto w-full">
+{% if empty_today %}
+<div class="flex items-start gap-sm border-2 border-tertiary bg-tertiary/10 text-on-surface px-md py-sm mb-md md:mb-lg">
+<span class="material-symbols-outlined text-tertiary mt-0.5">info</span>
+<div>
+<p class="font-black uppercase tracking-widest text-[13px]">今日无推荐 / NO RECOMMENDATION TODAY</p>
+<p class="text-sm mt-1">{{ empty_today.reasoning or '今日无合适机会' }}</p>
+</div>
+</div>
+{% endif %}
+<!-- 全局市场状态条 -->
+<div class="flex items-center gap-md px-md py-1 md:py-2 mb-md md:mb-lg border-2 border-primary">
+<span class="material-symbols-outlined text-[18px] text-primary">trending_up</span>
+<span class="text-[13px] font-black">大盘状态：{% if regime_label == 'BULL' %}<span class="text-up">{{ regime_labels.get('BULL') }}</span>{% elif regime_label == 'BEAR' %}<span class="text-down">{{ regime_labels.get('BEAR') }}</span>{% else %}{{ regime_labels.get('NEUTRAL') }}{% endif %}</span>
+<span class="opacity-30 mx-1">|</span>
+<span id="idx-source" class="text-[11px] font-black uppercase tracking-widest text-on-surface-variant">● 实时</span>
+</div>
+<!-- Hero Section -->
+<div class="relative -mx-sm md:-mx-lg px-sm md:px-lg pt-sm md:pt-lg pb-sm md:pb-sm mb-md md:mb-lg"
+     style="background:linear-gradient(180deg, #F4F1EA 0%, #FDFBF7 60%, transparent 100%);">
+<div class="absolute inset-0 pointer-events-none opacity-[0.04] tex-hero"></div>
+<div class="relative">
+<!-- Market Insight Row -->
+<section class="grid grid-cols-1 lg:grid-cols-12 gap-gutter border-b-2 border-primary pb-lg md:pb-xl">
+<div class="lg:col-span-4 flex flex-col justify-center pr-lg lg:border-r border-outline-variant">
+<div class="flex items-center justify-between mb-sm md:mb-md">
+<span class="text-on-surface-variant font-label-sm text-[13px] md:text-[14px] uppercase tracking-[0.2em] font-black">MARKET OVERVIEW / 核心指数</span>
+</div>
+<div class="grid grid-cols-2 gap-md md:gap-xl">
+<div class="flex flex-col">
+<span class="font-label-sm text-[11px] md:text-[13px] text-on-surface-variant font-black uppercase mb-1">CSI 300 / 沪深 300</span>
+<span id="idx-300-value" class="font-display-data text-[26px] md:text-[32px] leading-none tracking-tight text-on-surface-variant">—</span>
+<span id="idx-300-change" class="text-on-surface-variant text-[13px] font-black mt-1">
+<span id="idx-300-pct">—</span>
+<span id="idx-300-icon" class="material-symbols-outlined text-[14px] align-middle">remove</span>
+</span>
+</div>
+<div class="flex flex-col">
+<span class="font-label-sm text-[11px] md:text-[13px] text-on-surface-variant font-black uppercase mb-1">SSE / 上证指数</span>
+<span id="idx-sse-value" class="font-display-data text-[26px] md:text-[32px] leading-none tracking-tight text-on-surface-variant">—</span>
+<span id="idx-sse-change" class="text-on-surface-variant text-[13px] font-black mt-1">
+<span id="idx-sse-pct">—</span>
+<span id="idx-sse-icon" class="material-symbols-outlined text-[14px] align-middle">remove</span>
+</span>
+</div>
+</div>
+</div>
+<div class="lg:col-span-8 flex flex-col justify-center">
+<div class="news-ticker-border py-2 md:py-4 px-sm md:px-md relative overflow-hidden bg-white/50">
+<div class="flex items-start gap-sm md:gap-md">
+<div class="flex-shrink-0 flex items-center gap-xs bg-primary text-white px-2 py-0.5 md:px-3 md:py-1 font-black text-[11px] md:text-[13px] uppercase tracking-tighter mt-0.5">
+FLASH / 实时快讯
+</div>
+<div class="flex-1 marquee-vertical-container">
+<div class="marquee-vertical-content">
+{% for item in macro.news_items %}
+<div class="h-[24px] md:h-[28px] flex items-center text-primary font-bold text-[12px] md:text-[13px]">
+<span class="line-clamp-1">{{ item.summary }}</span>
+</div>
+{% endfor %}
+{% for item in macro.news_items %}
+<div class="h-[24px] md:h-[28px] flex items-center text-primary font-bold text-[12px] md:text-[13px]">
+<span class="line-clamp-1">{{ item.summary }}</span>
+</div>
+{% endfor %}
+</div>
+</div>
+</div>
+</div>
+
+</div>
+</section>
+
+<!-- Bento Stats Grid -->
+<section class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-gutter mt-lg md:mt-xl">
+<div class="editorial-card p-lg border-t-4 border-t-primary">
+<div class="flex justify-between items-start mb-sm">
+<span class="text-on-surface-variant font-label-sm text-[14px] uppercase font-black tracking-widest">今日分析 / TODAY'S ANALYSIS</span>
+<span class="material-symbols-outlined text-primary">analytics</span>
+</div>
+{% if sector_reasoning %}
+<p class="text-on-surface text-[13px] leading-snug">{{ sector_reasoning }}</p>
+{% else %}
+<p class="text-on-surface-variant text-[12px] flex items-center gap-1"><span class="material-symbols-outlined text-[14px]">info</span>暂无数据</p>
+{% endif %}
+</div>
+<div class="editorial-card p-lg border-t-4 border-t-primary">
+<div class="flex justify-between items-start mb-sm">
+<span class="text-on-surface-variant font-label-sm text-[14px] uppercase font-black tracking-widest">资金流向 / CAPITAL FLOW</span>
+<span class="material-symbols-outlined text-primary">account_balance</span>
+</div>
+{% if flow_inflows or flow_outflows %}
+<div class="grid grid-cols-2 gap-x-4 gap-y-0">
+<div>
+<p class="text-[11px] font-black uppercase tracking-wider text-up mb-0.5">净流入</p>
+{% for s in flow_inflows %}
+<div class="flex items-center justify-between py-[1px]">
+<span class="text-[12px] font-bold truncate">{{ s.name }}</span>
+<span class="text-[12px] font-black whitespace-nowrap text-up">+{{ (s.flow|float / 1e4)|round(1) }}亿</span>
+</div>
+{% endfor %}
+</div>
+<div>
+<p class="text-[11px] font-black uppercase tracking-wider text-down mb-0.5">净流出</p>
+{% for s in flow_outflows %}
+<div class="flex items-center justify-between py-[1px]">
+<span class="text-[12px] font-bold truncate">{{ s.name }}</span>
+<span class="text-[12px] font-black whitespace-nowrap text-down">{{ (s.flow|float / 1e4)|round(1) }}亿</span>
+</div>
+{% endfor %}
+</div>
+</div>
+{% set sum_in = flow_inflows|map(attribute="flow")|map("float")|sum %}
+{% set sum_out = flow_outflows|map(attribute="flow")|map("float")|sum %}
+{% set net = sum_in + sum_out %}
+<div class="flex items-center justify-between mt-1.5 pt-1 border-t border-outline-variant">
+<span class="text-[11px] font-black uppercase tracking-wider text-on-surface-variant">净额</span>
+<span class="text-[13px] font-black {% if net >= 0 %}text-up{% else %}text-down{% endif %}">{{ "+" if net >= 0 else "-" }}{{ (net|abs / 1e4)|round(1) }}亿</span>
+</div>
+{% else %}
+<p class="text-on-surface-variant text-[12px] flex items-center gap-1"><span class="material-symbols-outlined text-[14px]">info</span>暂无数据</p>
+{% endif %}
+</div>
+<div class="editorial-card p-lg bg-surface-container">
+<div class="flex justify-between items-start mb-sm">
+<span class="text-on-surface-variant font-label-sm text-[14px] uppercase font-black tracking-widest">累计收益 / TOTAL ROI</span>
+<span class="material-symbols-outlined text-up">trending_up</span>
+</div>
+<div class="grid grid-cols-2 gap-md">
+<div>
+<p class="text-on-surface-variant text-[12px] font-black uppercase mb-xs">累计收益率</p>
+<h3 class="font-headline-lg text-[32px] font-black {% if total_return >= 0 %}text-up{% else %}text-down{% endif %}">
+{% if total_return is not none %}{{ "%+.2f"|format(total_return) }}%{% else %}--{% endif %}
+</h3>
+</div>
+<div>
+<p class="text-on-surface-variant text-[12px] font-black uppercase mb-xs">累计超额收益</p>
+<h3 class="font-headline-lg text-[32px] font-black {% if alpha is not none and alpha >= 0 %}text-up{% elif alpha is not none %}text-down{% endif %}">
+{% if alpha is not none %}{{ "%+.2f"|format(alpha) }}%{% else %}--{% endif %}
+</h3>
+</div>
+</div>
+{% if alpha_svg %}
+<div class="mt-sm h-[80px] relative">
+<svg class="absolute inset-0 w-full h-full" viewBox="0 0 200 100" preserveAspectRatio="none">
+<line x1="0" y1="{{ alpha_baseline_y|round(1) }}" x2="200" y2="{{ alpha_baseline_y|round(1) }}" stroke="currentColor" stroke-width="0.3" stroke-dasharray="2" class="text-outline-variant" vector-effect="non-scaling-stroke"/>
+<path d="{{ alpha_svg }}" fill="none" stroke="currentColor" stroke-width="1.5" class="text-up" vector-effect="non-scaling-stroke"/>
+</svg>
+</div>
+{% endif %}
+<div class="mt-sm pt-sm border-t border-outline-variant flex gap-xl">
+<p class="text-on-surface-variant text-[13px] font-black uppercase">推荐数量: <span class="text-on-surface">{{ rec_count }}</span></p>
+<p class="text-on-surface-variant text-[13px] font-black uppercase">命中率: <span class="{% if hit_rate >= 50 %}text-up{% else %}text-down{% endif %}">{{ hit_rate }}%</span></p>
+</div>
+</div>
+<div class="editorial-card p-lg overflow-hidden relative">
+<div class="absolute inset-0 pointer-events-none opacity-[0.06] tex-sector"></div>
+<div class="relative">
+<div class="flex justify-between items-start mb-sm">
+<span class="text-on-surface-variant font-label-sm text-[14px] uppercase font-black tracking-widest">板块轮动 / SECTOR</span>
+<span class="material-symbols-outlined text-primary">grid_view</span>
+</div>
+{% if sector_gainers %}
+<div class="grid grid-cols-3 gap-[6px]">
+{% for s in sector_gainers %}
+<div class="rounded-[5px] py-[10px] text-center min-w-0 flex flex-col items-center justify-center bg-surface-container">
+<div class="text-[12px] font-black leading-tight truncate text-primary">{{ s.name }}</div>
+<div class="text-[13px] font-bold leading-tight text-on-surface-variant">{{ s.pct }}</div>
+</div>
+{% endfor %}
+</div>
+{% else %}
+<h3 class="font-headline-lg text-[32px] font-black">{{ uptime_days }} <span class="text-[14px] font-bold text-on-surface-variant">天</span></h3>
+{% endif %}
+</div>
+</div>
+</section>
+</div>
+</div>
+
+<!-- 推荐基金并列显示 start -->
+<div class="flex items-baseline gap-md mb-md md:mb-lg">
+<h2 class="font-headline-lg text-[24px] font-black uppercase tracking-tight flex items-center gap-xs"><span class="material-symbols-outlined text-[22px] text-primary">star</span>今日精选 / TODAY'S PICKS</h2>
+
+</div>
+<section class="grid grid-cols-1 lg:grid-cols-2 gap-gutter">
+  <section class="editorial-card overflow-hidden relative">
+    <div class="absolute inset-0 pointer-events-none opacity-[0.03] tex-rec"></div>
+    <div class="relative flex flex-col h-full">
+      <div class="px-md md:px-xl py-md md:py-lg flex flex-col justify-between flex-1">
+        <div>
+          <div class="mb-sm md:mb-lg flex flex-wrap items-baseline gap-x-sm gap-y-0">
+            <span class="font-display-data text-on-surface-variant text-[20px] md:text-[24px] font-bold">{{ latest.code if latest else '--' }}</span>
+            <h2 class="font-headline-xl text-primary font-black text-[24px] md:text-[28px] leading-tight">{{ latest.name if latest else '暂无推荐数据' }}</h2>
+            {% if latest and latest.type %}
+            <span class="text-[13px] md:text-[14px] text-on-surface-variant font-bold">{{ latest.type }}</span>
+            {% endif %}
+          </div>
+          {% if latest and latest.regime_text %}
+          <div class="mt-sm mb-sm">
+            <span class="inline-block bg-surface-container-high text-on-surface px-2 py-0.5 font-black text-[11px] uppercase tracking-wider">{{ latest.regime_text }}</span>
+          </div>
+          {% endif %}
+        </div>
+        {% if latest %}
+        <div class="mt-md">
+          <h3 class="text-[14px] font-black uppercase mb-xs text-on-surface-variant">推荐理由 / REASON</h3>
+          <p class="text-on-surface text-[13px] leading-snug">
+            {{ latest.reason if latest else '暂无推荐，请先运行推荐引擎。' }}
+          </p>
+        </div>
+        {% endif %}
+      </div>
+      {% if top_holdings %}
+      <div class="px-md md:px-xl pb-md md:pb-lg border-t border-outline-variant pt-md">
+        <h3 class="text-[14px] font-black uppercase mb-xs text-on-surface-variant">前十大持仓 / TOP HOLDINGS</h3>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-x-lg gap-y-1">
+          {% for h in top_holdings %}
+          <div class="flex items-center gap-xs text-[14px]">
+            <span class="font-bold w-[5.5em] truncate text-on-surface" title="{{ h.name }}">{{ h.name }}</span>
+            <div class="flex-1 h-2 bg-surface-container relative">
+              <div class="absolute inset-y-0 left-0 bg-primary/50" style="width: {{ h.weight * 3 }}%;"></div>
+            </div>
+            <span class="font-black w-[3em] text-right text-on-surface-variant">{{ "%.1f"|format(h.weight) }}%</span>
+            {% if h.industry %}
+            <span class="text-[13px] text-on-surface-variant ml-xs uppercase">{{ h.industry[:4] }}</span>
+            {% endif %}
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+    </div>
+  </section>
+  <section class="editorial-card overflow-hidden relative">
+    <div class="relative flex flex-col h-full">
+      <div class="px-md md:px-xl py-md md:py-lg flex flex-col justify-between flex-1">
+        {% if latest_list|length > 1 %}
+        {% set rec2 = latest_list[1] %}
+        <div>
+          <div class="mb-sm md:mb-lg flex flex-wrap items-baseline gap-x-sm gap-y-0">
+            <span class="font-display-data text-on-surface-variant text-[20px] md:text-[24px] font-bold">{{ rec2.code }}</span>
+            <h2 class="font-headline-xl text-on-surface font-black text-[24px] md:text-[28px] leading-tight">{{ rec2.name }}</h2>
+            {% if rec2.type %}
+            <span class="text-[13px] md:text-[14px] text-on-surface-variant font-bold">{{ rec2.type }}</span>
+            {% endif %}
+          </div>
+        </div>
+        <div class="mt-md">
+          <h3 class="text-[14px] font-black uppercase mb-xs text-on-surface-variant">推荐理由 / REASON</h3>
+          <p class="text-on-surface text-[13px] leading-snug">{{ rec2.reason }}</p>
+        </div>
+        {% if top_holdings2 %}
+        <div class="border-t border-outline-variant pt-md mt-md">
+          <h3 class="text-[14px] font-black uppercase mb-xs text-on-surface-variant">前十大持仓 / TOP HOLDINGS</h3>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-x-lg gap-y-1">
+            {% for h in top_holdings2 %}
+            <div class="flex items-center gap-xs text-[14px]">
+              <span class="font-bold w-[5.5em] truncate text-on-surface" title="{{ h.name }}">{{ h.name }}</span>
+              <div class="flex-1 h-2 bg-surface-container relative">
+                <div class="absolute inset-y-0 left-0 bg-primary/50" style="width: {{ h.weight * 3 }}%;"></div>
+              </div>
+              <span class="font-black w-[3em] text-right text-on-surface-variant">{{ "%.1f"|format(h.weight) }}%</span>
+              {% if h.industry %}
+              <span class="text-[13px] text-on-surface-variant ml-xs uppercase">{{ h.industry[:4] }}</span>
+              {% endif %}
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
+        {% else %}
+        <div class="flex items-center justify-center flex-1">
+          <p class="text-on-surface-variant text-[13px] font-bold">今日暂无其他精选</p>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </section>
+</section>
+<!-- Quality Metrics -->
+<section class="editorial-card" id="qualitySection">
+<div class="p-lg border-b border-primary flex items-baseline gap-md">
+<h2 class="font-headline-lg text-[24px] font-black uppercase tracking-tight flex items-center gap-xs"><span class="material-symbols-outlined text-[22px] text-primary">query_stats</span>推荐质量 / RECOMMENDATION QUALITY</h2>
+<span class="text-[13px] font-black text-on-surface-variant uppercase tracking-widest">IC · 超额胜率 · 累计超额（进化闭环）</span>
+</div>
+{% if quality_curve_svg %}
+<div class="px-lg py-md border-b border-outline-variant">
+<p class="text-[12px] font-black uppercase tracking-widest text-on-surface-variant mb-2">累计超额曲线（最近一期） / CUMULATIVE EXCESS</p>
+<div class="h-[80px] relative max-w-[360px]">
+<svg class="absolute inset-0 w-full h-full" viewBox="0 0 200 100" preserveAspectRatio="none">
+<line x1="0" y1="{{ quality_curve_baseline|round(1) }}" x2="200" y2="{{ quality_curve_baseline|round(1) }}" stroke="currentColor" stroke-width="0.3" stroke-dasharray="2" class="text-outline-variant" vector-effect="non-scaling-stroke"/>
+<path d="{{ quality_curve_svg }}" fill="none" stroke="currentColor" stroke-width="1.5" class="text-up" vector-effect="non-scaling-stroke"/>
+</svg>
+</div>
+</div>
+{% endif %}
+<div class="overflow-x-auto">
+<table class="w-full text-left border-collapse">
+<thead>
+<tr class="text-on-surface font-black text-[13px] uppercase tracking-wider bg-surface-container-high border-b border-primary">
+<th class="px-sm md:px-lg py-2 md:py-4 whitespace-nowrap">计算日期</th>
+<th class="px-sm md:px-lg py-2 md:py-4 whitespace-nowrap">统计区间</th>
+<th class="px-sm md:px-lg py-2 md:py-4 whitespace-nowrap">IC</th>
+<th class="px-sm md:px-lg py-2 md:py-4 whitespace-nowrap">超额胜率</th>
+<th class="px-sm md:px-lg py-2 md:py-4 whitespace-nowrap">累计超额</th>
+<th class="px-sm md:px-lg py-2 md:py-4 whitespace-nowrap">样本</th>
+</tr>
+</thead>
+<tbody class="text-[13px] font-bold divide-y divide-outline-variant">
+{% for q in quality_metrics %}
+<tr>
+<td class="px-sm md:px-lg py-3 md:py-5 font-display-data whitespace-nowrap">{{ q.computed_date }}</td>
+<td class="px-sm md:px-lg py-3 md:py-5 whitespace-nowrap">{{ q.period_start }} ~ {{ q.period_end }}</td>
+<td class="px-sm md:px-lg py-3 md:py-5 font-display-data whitespace-nowrap {% if q.ic is not none and q.ic >= 0 %}text-up{% elif q.ic is not none %}text-down{% endif %}">{% if q.ic is not none %}{{ "%.3f"|format(q.ic) }}{% else %}--{% endif %}</td>
+<td class="px-sm md:px-lg py-3 md:py-5 font-display-data whitespace-nowrap {% if q.excess_win_rate is not none and q.excess_win_rate >= 0.5 %}text-up{% elif q.excess_win_rate is not none %}text-down{% endif %}">{% if q.excess_win_rate is not none %}{{ "%.1f"|format(q.excess_win_rate * 100) }}%{% else %}--{% endif %}</td>
+<td class="px-sm md:px-lg py-3 md:py-5 font-display-data whitespace-nowrap {% if q.cum_excess is not none and q.cum_excess >= 0 %}text-up{% elif q.cum_excess is not none %}text-down{% endif %}">{% if q.cum_excess is not none %}{{ "%+.2f"|format(q.cum_excess * 100) }}%{% else %}--{% endif %}</td>
+<td class="px-sm md:px-lg py-3 md:py-5 whitespace-nowrap">{{ q.sample_count }}</td>
+</tr>
+{% else %}
+<tr><td colspan="6" class="px-lg py-10 text-center">
+<div class="flex flex-col items-center gap-sm">
+<span class="material-symbols-outlined text-outline-variant text-[32px]">insights</span>
+<p class="text-on-surface-variant font-bold text-[14px]">暂无质量度量</p>
+<p class="text-on-surface-variant text-[13px]">月末进化引擎运行后自动生成</p>
+</div>
+</td></tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+</section>
+
+<!-- Signal Table -->
+<section class="editorial-card" id="trackingSection">
+<div class="p-lg border-b border-primary flex items-baseline gap-md">
+<h2 class="font-headline-lg text-[24px] font-black uppercase tracking-tight flex items-center gap-xs"><span class="material-symbols-outlined text-[22px] text-primary">radar</span>追踪监控 / TRACKING</h2>
+<span class="text-[13px] font-black text-on-surface-variant uppercase tracking-widest">实时 Alpha 监控系统</span>
+</div>
+<div class="overflow-x-auto">
+<table class="w-full text-left border-collapse" id="trackingTable">
+<thead>
+<tr class="text-on-surface font-black text-[13px] uppercase tracking-wider bg-surface-container-high border-b border-primary">
+<th class="px-sm md:px-lg py-2 md:py-4 whitespace-nowrap">基金代码</th>
+<th class="px-sm md:px-lg py-2 md:py-4 whitespace-nowrap">基金名称</th>
+<th class="px-sm md:px-lg py-2 md:py-4 whitespace-nowrap">推荐日期</th>
+<th class="px-sm md:px-lg py-2 md:py-4 whitespace-nowrap">推荐净值</th>
+<th class="px-sm md:px-lg py-2 md:py-4 whitespace-nowrap">当前净值</th>
+<th class="px-sm md:px-lg py-2 md:py-4 whitespace-nowrap">累计收益率</th>
+<th class="px-sm md:px-lg py-2 md:py-4 whitespace-nowrap text-center">推荐次数</th>
+<th class="px-sm md:px-lg py-2 md:py-4 whitespace-nowrap">信号</th>
+</tr>
+</thead>
+<tbody class="text-[13px] font-bold divide-y divide-outline-variant" id="trackingBody">
+{% for c in candidates %}
+<tr data-page="{{ (loop.index0 // 15) + 1 }}" class="hover:bg-surface-container-low transition-colors cursor-pointer" onclick="openFundDetail('{{ c.code }}')">
+<td class="px-sm md:px-lg py-3 md:py-5 font-display-data whitespace-nowrap">{{ c.code }}</td>
+<td class="px-sm md:px-lg py-3 md:py-5 text-primary whitespace-nowrap max-w-[120px] md:max-w-none truncate">{{ c.name }}</td>
+<td class="px-sm md:px-lg py-3 md:py-5 font-display-data whitespace-nowrap">{{ c.first_date[:10] if c.first_date else '--' }}</td>
+<td class="px-sm md:px-lg py-3 md:py-5 font-display-data whitespace-nowrap">{% if c.first_nav is not none %}{{ "%.4f"|format(c.first_nav) }}{% else %}--{% endif %}</td>
+<td class="px-sm md:px-lg py-3 md:py-5 font-display-data whitespace-nowrap">{% if c.cur_nav is not none %}{{ "%.4f"|format(c.cur_nav) }}{% else %}--{% endif %}</td>
+<td class="px-sm md:px-lg py-3 md:py-5 font-display-data whitespace-nowrap {% if c.return is not none and c.return >= 0 %}text-up{% elif c.return is not none and c.return < 0 %}text-down{% endif %}">
+{% if c.return is not none %}{{ "%+.2f"|format(c.return) }}%{% else %}--{% endif %}
+</td>
+<td class="px-sm md:px-lg py-3 md:py-5 text-center whitespace-nowrap">{{ c.rec_count }}</td>
+<td class="px-sm md:px-lg py-3 md:py-5 whitespace-nowrap">
+{% if c.status == 'HOLD' or c.status == 'PASS' %}
+<span class="border-2 border-up text-up px-2 md:px-3 py-0.5 md:py-1 text-[11px] md:text-[14px] font-black uppercase inline-flex items-center gap-1"><span class="material-symbols-outlined text-[13px] md:text-[14px]">check</span>{{ signal_labels.get(c.status, '持有') }}</span>
+{% elif c.status == 'ADD' or c.status == 'BUY_MORE' %}
+<span class="border-2 border-primary text-primary px-2 md:px-3 py-0.5 md:py-1 text-[11px] md:text-[14px] font-black uppercase inline-flex items-center gap-1"><span class="material-symbols-outlined text-[13px] md:text-[14px]">add_circle</span>{{ signal_labels.get(c.status, '加仓') }}</span>
+{% elif c.status == 'CAUTION' or c.status == 'WARNING' %}
+<span class="border-2 border-tertiary text-tertiary px-2 md:px-3 py-0.5 md:py-1 text-[11px] md:text-[14px] font-black uppercase inline-flex items-center gap-1"><span class="material-symbols-outlined text-[13px] md:text-[14px]">warning</span>{{ signal_labels.get(c.status, '警惕') }}</span>
+{% elif c.status == 'EXIT' or c.status == 'REJECT' %}
+<span class="border-2 border-down text-down px-2 md:px-3 py-0.5 md:py-1 text-[11px] md:text-[14px] font-black uppercase inline-flex items-center gap-1"><span class="material-symbols-outlined text-[13px] md:text-[14px]">logout</span>{{ signal_labels.get(c.status, '离场') }}</span>
+{% else %}
+<span class="border-2 border-outline text-on-surface-variant px-2 md:px-3 py-0.5 md:py-1 text-[11px] md:text-[14px] font-black uppercase">{{ c.status }}</span>
+{% endif %}
+</td>
+</tr>
+{% else %}
+<tr><td colspan="8" class="px-lg py-10 text-center">
+<div class="flex flex-col items-center gap-sm">
+<span class="material-symbols-outlined text-outline-variant text-[32px]">database</span>
+<p class="text-on-surface-variant font-bold text-[14px]">暂无追踪数据</p>
+<p class="text-on-surface-variant text-[13px]">运行推荐引擎后自动填充</p>
+</div>
+</td></tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+<div class="flex items-center justify-between px-lg py-3 border-t border-outline-variant" id="paginationBar">
+<div class="text-[12px] text-on-surface-variant font-bold"><span id="totalCount">{{ candidates|length }}</span> 只基金</div>
+<div class="flex items-center gap-1" id="paginationControls"></div>
+</div>
+</section>
+</div>
+
+<!-- Footer -->
+<footer class="mt-xl border-t-2 border-primary py-lg px-lg bg-surface-container-high">
+<div class="max-w-[1440px] mx-auto flex flex-col md:flex-row justify-between items-center gap-md">
+<p class="font-subcaption-en text-[13px] uppercase tracking-[0.4em] font-black text-on-surface-variant">© 2026 AI量化投研终端 · 智能选基系统</p>
+<div class="flex gap-lg text-[13px] font-black uppercase tracking-widest">
+<a href="#" class="text-on-surface-variant hover:text-primary transition-colors">隐私政策</a>
+<a href="#" class="text-on-surface-variant hover:text-primary transition-colors">服务条款</a>
+<a href="#" class="text-on-surface-variant hover:text-primary transition-colors">数据来源</a>
+</div>
+</div>
+<p class="max-w-[1440px] mx-auto text-[13px] text-on-surface-variant mt-3 font-bold tracking-wider text-center">风险提示：投资有风险，入市需谨慎。数据仅供参考，不作为决策依据。</p>
+</footer>
+</main>
+
+<!-- System Log Modal -->
+<div class="fixed inset-0 bg-primary/80 backdrop-blur-sm z-[10000] hidden flex items-center justify-center p-sm md:p-md" id="systemLogModal">
+<div class="bg-background w-full max-w-5xl border-2 border-primary flex flex-col shadow-[12px_12px_0px_rgba(0,0,0,1)] overflow-hidden max-h-[90vh]">
+<div class="p-md border-b border-primary flex justify-between items-center bg-primary text-white select-none">
+<h3 class="font-label-sm text-[14px] uppercase font-black flex items-center gap-xs tracking-widest">
+<span class="material-symbols-outlined text-[18px]">terminal</span>
+LIVE LOG STREAM / 系统实时日志
+</h3>
+<div class="flex items-center gap-sm">
+<span class="text-[12px] opacity-60" id="logCount">0 条</span>
+<button class="text-[12px] font-bold uppercase tracking-wider px-sm py-1 border border-white/30 hover:bg-white/10 transition-colors" onclick="clearLogs()">清空</button>
+<button class="material-symbols-outlined hover:rotate-90 transition-transform" onclick="closeModal('systemLogModal')">close</button>
+</div>
+</div>
+<div class="flex gap-1 px-md pt-sm pb-1 border-b border-primary/10 select-none flex-wrap" id="logFilters">
+<button class="log-filter text-[11px] font-bold uppercase tracking-wider px-sm py-1 border border-primary/20 bg-primary/5 hover:bg-primary/10 transition-colors active inline-flex items-center gap-1" data-level="all"><span class="material-symbols-outlined text-[13px]">apps</span>全部</button>
+<button class="log-filter text-[11px] font-bold uppercase tracking-wider px-sm py-1 border border-primary/20 hover:bg-primary/10 transition-colors inline-flex items-center gap-1" data-level="ERROR" style="color:#B71C1C"><span class="material-symbols-outlined text-[13px]">error</span>ERROR</button>
+<button class="log-filter text-[11px] font-bold uppercase tracking-wider px-sm py-1 border border-primary/20 hover:bg-primary/10 transition-colors inline-flex items-center gap-1" data-level="WARNING" style="color:#D32F2F"><span class="material-symbols-outlined text-[13px]">warning</span>WARNING</button>
+<button class="log-filter text-[11px] font-bold uppercase tracking-wider px-sm py-1 border border-primary/20 hover:bg-primary/10 transition-colors inline-flex items-center gap-1" data-level="INFO" style="color:#1A1A1A"><span class="material-symbols-outlined text-[13px]">info</span>INFO</button>
+<button class="log-filter text-[11px] font-bold uppercase tracking-wider px-sm py-1 border border-primary/20 hover:bg-primary/10 transition-colors inline-flex items-center gap-1" data-level="DEBUG" style="color:#888"><span class="material-symbols-outlined text-[13px]">bug_report</span>DEBUG</button>
+<div class="flex-1"></div>
+<input class="text-[12px] font-mono border border-primary/20 bg-surface-container-low px-sm py-1 outline-none focus:border-primary w-48" placeholder="搜索日志..." id="logSearch" oninput="applyLogFilter()">
+</div>
+<div class="flex-1 font-mono text-[13px] overflow-y-auto bg-surface-container-low text-primary relative visible-scrollbar" id="logContainer">
+<button class="absolute bottom-2 right-2 z-10 w-8 h-8 bg-primary text-white rounded-full flex items-center justify-center shadow-lg opacity-70 hover:opacity-100 transition-opacity hidden" id="logScrollBtn" title="滚动到底部" onclick="document.getElementById('logContainer').scrollTop=document.getElementById('logContainer').scrollHeight;document.getElementById('logScrollBtn').classList.add('hidden');">
+<span class="material-symbols-outlined text-[18px]">arrow_downward</span>
+</button>
+<div id="logLines"></div>
+</div>
+</div>
+</div>
+
+
+<!-- Password Prompt Modal -->
+<div class="fixed inset-0 bg-primary/80 backdrop-blur-sm z-[10000] hidden flex items-center justify-center p-sm md:p-md" id="passwordModal">
+<div class="bg-background w-full max-w-sm border-2 border-primary flex flex-col shadow-[12px_12px_0px_rgba(0,0,0,1)]">
+<div class="p-md border-b border-primary flex justify-between items-center bg-primary text-white">
+<h3 class="font-label-sm text-[14px] uppercase font-black flex items-center gap-xs tracking-widest">
+<span class="material-symbols-outlined text-[18px]">lock</span>
+访问验证
+</h3>
+<button class="material-symbols-outlined hover:rotate-90 transition-transform" onclick="closeModal('passwordModal')">close</button>
+</div>
+<div class="p-lg space-y-md">
+<p class="text-[13px] font-bold text-on-surface-variant">请输入设置密码</p>
+<input id="passwordInput" type="password" class="w-full p-lg border border-outline-variant bg-background font-bold text-[14px] focus:border-primary focus:outline-none" placeholder="密码" onkeydown="if(event.key==='Enter')submitPassword()"/>
+<p id="passwordError" class="text-error font-black text-[13px] hidden">密码错误</p>
+</div>
+<div class="p-lg border-t border-outline-variant">
+<button class="w-full bg-primary text-white py-3 font-black uppercase tracking-[0.2em] hover:bg-black transition-all" onclick="submitPassword()">确认</button>
+</div>
+</div>
+</div>
+
+<!-- Settings Modal -->
+<div class="fixed inset-0 bg-primary/80 backdrop-blur-sm z-[10000] hidden flex items-center justify-center md:items-center md:justify-end" id="settingsModal">
+<div class="bg-background w-full md:w-full md:max-w-md md:h-full border-l-2 border-primary md:shadow-[-20px_0px_0px_rgba(0,0,0,0.2)] flex flex-col md:max-h-none max-h-screen overflow-y-auto">
+<div class="p-xl border-b-2 border-primary flex justify-between items-center">
+<h2 class="font-headline-lg text-[24px] font-black uppercase">终端设置</h2>
+<button class="material-symbols-outlined" onclick="closeModal('settingsModal')">close</button>
+</div>
+<div class="p-xl flex-1 overflow-y-auto space-y-xl">
+<section>
+<h3 class="font-black text-[13px] uppercase tracking-[0.2em] mb-md border-b border-outline-variant pb-1">PIPELINE SCHEDULE / 管线定时启动</h3>
+<p class="text-[13px] font-bold text-on-surface-variant mb-sm">选择每日定时执行推荐管线的时间</p>
+<div class="flex items-center gap-md">
+<select id="schedHour" class="flex-1 p-lg border border-outline-variant bg-background font-bold text-[14px] focus:border-primary focus:outline-none">
+<option value="">关闭</option>
+<script>for(var i=0;i<24;i++){var h=('0'+i).slice(-2);document.write('<option value="'+h+'">'+h+' 时</option>')}</script>
+</select>
+<select id="schedMinute" class="flex-1 p-lg border border-outline-variant bg-background font-bold text-[14px] focus:border-primary focus:outline-none">
+<script>{[0,15,30,45].forEach(function(m){var s=('0'+m).slice(-2);document.write('<option value="'+s+'">'+s+' 分</option>')})}</script>
+</select>
+</div>
+<p class="text-[13px] font-bold text-on-surface-variant mt-2">下次执行时间可在系统日志中查看</p>
+</section>
+<section>
+<h3 class="font-black text-[13px] uppercase tracking-[0.2em] mb-md border-b border-outline-variant pb-1">MANUAL TRIGGER / 手动执行</h3>
+          <button class="w-full bg-primary text-white py-3 font-black uppercase tracking-[0.2em] hover:bg-black transition-all" onclick="triggerPipeline()">立即启动推荐管线</button>
+</section>
+<section>
+<h3 class="font-black text-[13px] uppercase tracking-[0.2em] mb-md border-b border-outline-variant pb-1">DANGER ZONE / 数据管理</h3>
+<p class="text-[13px] font-bold text-on-surface-variant mb-sm">永久删除全部推荐记录、赛道选择、监控事件与进化洞察（保留基金/净值底层数据）</p>
+<button class="w-full bg-error text-white py-3 font-black uppercase tracking-[0.2em] hover:bg-black transition-all" onclick="clearRecommendationsFlow()">清除全部推荐数据</button>
+</section>
+<section>
+<h3 class="font-black text-[13px] uppercase tracking-[0.2em] mb-md border-b border-outline-variant pb-1">LLM CONFIG / 大模型配置</h3>
+<div class="space-y-md">
+<div><label class="font-bold text-[13px] block mb-xs">API 地址</label><input id="llmBaseUrl" class="w-full p-lg border border-outline-variant bg-background font-bold text-[14px] focus:border-primary focus:outline-none" placeholder="http://localhost:11434/v1"/></div>
+<div><label class="font-bold text-[13px] block mb-xs">API 密钥</label><input id="llmApiKey" type="password" class="w-full p-lg border border-outline-variant bg-background font-bold text-[14px] focus:border-primary focus:outline-none" placeholder="sk-..."/></div>
+<div><label class="font-bold text-[13px] block mb-xs">模型名称</label><input id="llmModel" class="w-full p-lg border border-outline-variant bg-background font-bold text-[14px] focus:border-primary focus:outline-none" placeholder="gpt-4o-mini"/></div>
+</div>
+</section>
+</div>
+<div class="p-xl border-t-2 border-primary">
+<button class="w-full bg-primary text-white py-4 font-black uppercase tracking-[0.2em] hover:bg-black transition-all" id="saveSettingsBtn" onclick="saveSettings()">保存并更新配置</button>
+</div>
+</div>
+</div>
+
+<!-- Fund Detail Slide Panel -->
+<div class="fixed inset-0 bg-primary/80 backdrop-blur-sm z-[10000] hidden flex justify-end" id="fundDetailModal">
+<div class="bg-background w-full md:max-w-lg border-l-2 border-primary shadow-[-20px_0px_0px_rgba(0,0,0,0.2)] flex flex-col h-full overflow-y-auto transform translate-x-full transition-transform duration-300" id="fundDetailPanel">
+<div class="p-lg border-b-2 border-primary flex justify-between items-center sticky top-0 bg-background z-10">
+<h2 class="font-headline-lg text-[20px] font-black uppercase tracking-tight" id="fundDetailTitle">基金详情</h2>
+<button class="material-symbols-outlined w-10 h-10 flex items-center justify-center hover:bg-surface-container transition-colors" onclick="closeFundDetail()">close</button>
+</div>
+<div class="flex-1 p-lg space-y-lg" id="fundDetailContent">
+<div class="space-y-md">
+<div class="skel h-6 w-3/4"></div>
+<div class="skel h-4 w-1/2"></div>
+<div class="skel h-4 w-full"></div>
+<div class="skel h-4 w-5/6"></div>
+<div class="skel h-20 w-full"></div>
+<div class="skel h-40 w-full"></div>
+</div>
+</div>
+</div>
+</div>
+
+<script>
+function _esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+var logInterval = null;
+var _logCount = 0;
+var _lastId = 0;
+var _fetching = false;
+var FUND_SKEL = '<div class="space-y-md"><div class="skel h-6 w-3/4"></div><div class="skel h-4 w-1/2"></div><div class="skel h-4 w-full"></div><div class="skel h-4 w-5/6"></div><div class="skel h-20 w-full"></div><div class="skel h-40 w-full"></div></div>';
+
+function _parseLogLine(str) {
+    try { var j = JSON.parse(str); return { level: j.level || 'INFO', ts: (j.timestamp || '').substring(0, 19), msg: j.message || j.event || '' }; }
+    catch(e) {
+        var s = str.indexOf('['), e2 = str.indexOf(']', s);
+        var level = (s >= 0 && e2 > s) ? str.substring(s + 1, e2).trim() : 'INFO';
+        if (['ERROR','WARNING','INFO','DEBUG'].indexOf(level) < 0) level = 'INFO';
+        var ts = s > 0 ? str.substring(0, s - 1).trim() : str.substring(0, 19).trim();
+        var tail = e2 >= 0 ? str.substring(e2 + 1).trim() : str.substring(19).trim();
+        var colon = tail.indexOf(':');
+        var msg = colon > 0 ? tail.substring(colon + 1).trim() : tail;
+        return { level: level, ts: ts, msg: msg };
+    }
+}
+
+function applyLogFilter() {
+    var btn = document.querySelector('.log-filter.active');
+    var level = btn ? btn.getAttribute('data-level') : 'all';
+    var query = (document.getElementById('logSearch').value || '').toLowerCase();
+    document.querySelectorAll('#logLines .log-row').forEach(function(el) {
+        var show = true;
+        if (level !== 'all' && el.getAttribute('data-level') !== level) show = false;
+        if (show && query && !el.textContent.toLowerCase().includes(query)) show = false;
+        el.style.display = show ? '' : 'none';
+    });
+}
+
+function resetLogFilter() {
+    document.querySelectorAll('.log-filter').forEach(function(b) { b.classList.remove('active'); b.style.background = ''; });
+    var allBtn = document.querySelector('.log-filter[data-level="all"]');
+    if (allBtn) { allBtn.classList.add('active'); allBtn.style.background = 'rgba(0,0,0,0.1)'; }
+}
+
+function clearLogs() {
+    document.getElementById('logLines').innerHTML = '';
+    resetLogFilter();
+}
+
+function openModal(id) {
+    document.getElementById(id).classList.remove('hidden');
+    if (id === 'systemLogModal') {
+        if (logInterval) { clearInterval(logInterval); logInterval = null; }
+        _logCount = 0;
+        _lastId = 0;
+        document.getElementById('logLines').innerHTML = '';
+        resetLogFilter();
+        fetchLogs();
+        logInterval = setInterval(fetchLogs, 5000);
+        var container = document.getElementById('logContainer');
+        container.addEventListener('scroll', function() {
+            var btn = document.getElementById('logScrollBtn');
+            if (!btn) return;
+            var atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
+            if (atBottom) btn.classList.add('hidden');
+            else btn.classList.remove('hidden');
+        });
+    }
+    if (id === 'settingsModal') {
+        loadSettings();
+    }
+}
+
+document.addEventListener('click', function(e) {
+    if (e.target.classList.contains('log-filter')) {
+        document.querySelectorAll('.log-filter').forEach(function(b) { b.classList.remove('active'); b.style.background = ''; });
+        e.target.classList.add('active');
+        e.target.style.background = 'rgba(0,0,0,0.1)';
+        applyLogFilter();
+    }
+});
+
+function closeModal(id) {
+    document.getElementById(id).classList.add('hidden');
+    if (id === 'systemLogModal' && logInterval) {
+        clearInterval(logInterval);
+        logInterval = null;
+    }
+}
+function openFundDetail(code) {
+    var modal = document.getElementById('fundDetailModal');
+    var panel = document.getElementById('fundDetailPanel');
+    modal.classList.remove('hidden');
+    setTimeout(function() { panel.classList.remove('translate-x-full'); }, 10);
+    document.getElementById('fundDetailTitle').textContent = code + ' 详情';
+    document.getElementById('fundDetailContent').innerHTML = FUND_SKEL;
+    fetchFundDetail(code);
+}
+function closeFundDetail() {
+    var panel = document.getElementById('fundDetailPanel');
+    panel.classList.add('translate-x-full');
+    setTimeout(function() { document.getElementById('fundDetailModal').classList.add('hidden'); }, 300);
+}
+async function fetchFundDetail(code) {
+    var container = document.getElementById('fundDetailContent');
+    try {
+        var r = await fetch('/api/fund-detail/' + encodeURIComponent(code));
+        var d = await r.json();
+        if (d.error) { container.innerHTML = '<p class="text-error font-black">' + _esc(d.error) + '</p>'; return; }
+        var f = d.fund;
+
+        var holdingsHtml = '';
+        if (d.top_holdings && d.top_holdings.length) {
+            holdingsHtml = '<div class="space-y-2">';
+            for (var i = 0; i < d.top_holdings.length; i++) {
+                var h = d.top_holdings[i];
+                var pct = (h.weight || 0).toFixed(2);
+                holdingsHtml += '<div class="flex items-center gap-sm text-[13px] font-bold">' +
+                    '<span class="w-8 text-right font-display-data text-[12px] text-on-surface-variant">#' + (i+1) + '</span>' +
+                    '<span class="flex-1 truncate">' + _esc(h.stock_name) + '</span>' +
+                    '<span class="text-[11px] text-on-surface-variant bg-surface-container px-2 py-0.5">' + _esc(h.industry || '--') + '</span>' +
+                    '<span class="w-16 text-right font-display-data">' + pct + '%</span>' +
+                    '<div class="w-20 h-2 bg-surface-container">' +
+                    '<div class="h-full bg-primary" style="width:' + Math.min(pct * 3, 100) + '%"></div>' +
+                    '</div>' +
+                    '</div>';
+            }
+            holdingsHtml += '</div>';
+        } else {
+            holdingsHtml = '<p class="text-on-surface-variant text-[13px]">暂无持仓数据</p>';
+        }
+
+        var navChartHtml = '';
+        if (d.nav_data && d.nav_data.length >= 2) {
+            var navs = d.nav_data.map(function(x) { return x.nav; }).filter(function(v) { return v !== null; });
+            if (navs.length >= 2) {
+                var nMin = Math.min.apply(null, navs);
+                var nMax = Math.max.apply(null, navs);
+                var nRange = nMax - nMin || 1;
+                var pad = nRange * 0.05;
+                nMin -= pad;
+                nMax += pad;
+                nRange = nMax - nMin;
+                var pts = navs.map(function(v, i) {
+                    var x = (i / (navs.length - 1)) * 100;
+                    var y = 100 - ((v - nMin) / nRange) * 100;
+                    return x + ',' + y;
+                }).join(' ');
+                navChartHtml = '<div class="relative h-[200px] bg-surface-container-low border border-outline-variant p-2">' +
+                    '<svg class="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none">' +
+                    '<polyline points="' + pts + '" fill="none" stroke="#1A1A1A" stroke-width="0.5" vector-effect="non-scaling-stroke"/>' +
+                    '</svg>' +
+                    '<div class="flex justify-between text-[10px] font-bold text-on-surface-variant mt-1">' +
+                    '<span>' + _esc(d.nav_data[0].date) + '</span>' +
+                    '<span>' + _esc(d.nav_data[d.nav_data.length-1].date) + '</span>' +
+                    '</div>' +
+                    '</div>';
+            } else {
+                navChartHtml = '<p class="text-on-surface-variant text-[13px]">净值数据不足，无法绘制走势图</p>';
+            }
+        } else {
+            navChartHtml = '<p class="text-on-surface-variant text-[13px]">暂无净值走势数据</p>';
+        }
+
+        container.innerHTML =
+            '<div class="space-y-lg">' +
+            '<div class="border-b border-outline-variant pb-md">' +
+            '<h3 class="font-label-sm text-[14px] uppercase tracking-widest font-black mb-xs">' + _esc(f.name) + '</h3>' +
+            '<p class="text-[12px] text-on-surface-variant">' + _esc(f.type || '--') + ' | ' + _esc(f.first_date || '--') + ' | 状态: <span class="font-black">' + _esc(f.status) + '</span></p>' +
+            '</div>' +
+            (d.current_signal ? (
+                '<div class="border-b border-outline-variant pb-md">' +
+                '<h4 class="font-label-sm text-[13px] uppercase tracking-widest font-black mb-sm border-b border-primary pb-1">当前信号 / SIGNAL</h4>' +
+                '<div class="flex items-center gap-sm mb-xs">' +
+                '<span class="px-2 py-0.5 text-[11px] font-black uppercase border-2 ' + (
+                    d.current_signal.signal === 'HOLD' ? 'border-up text-up' :
+                    d.current_signal.signal === 'WARNING' ? 'border-tertiary text-tertiary' :
+                    d.current_signal.signal === 'BUY_MORE' ? 'border-up text-up' :
+                    'border-outline text-on-surface-variant'
+                ) + '">' + (
+                    d.current_signal.signal === 'HOLD' ? '持有' :
+                    d.current_signal.signal === 'WARNING' ? '警惕' :
+                    d.current_signal.signal === 'BUY_MORE' ? '加仓' :
+                    d.current_signal.signal === 'EXIT' ? '离场' :
+                    _esc(d.current_signal.signal)
+                ) + '</span>' +
+                '<span class="text-[12px] text-on-surface-variant font-bold">' + _esc(d.current_signal.logic_verdict) + '</span>' +
+                '<span class="text-[11px] text-on-surface-variant">' + _esc(d.current_signal.date) + '</span>' +
+                '</div>' +
+                '<p class="text-[13px] font-bold leading-relaxed">' + _esc(d.current_signal.reason || '无详细原因') + '</p>' +
+                (d.current_signal.sector_risk ? '<p class="text-[12px] text-down mt-1">⚠ 赛道风险</p>' : '') +
+                (d.current_signal.holding_risk ? '<p class="text-[12px] text-down mt-1">⚠ 持仓风险</p>' : '') +
+                '</div>'
+            ) : '' ) +
+            '<div>' +
+            '<h4 class="font-label-sm text-[13px] uppercase tracking-widest font-black mb-sm border-b border-primary pb-1">推荐理由</h4>' +
+            '<p class="text-[13px] font-bold leading-relaxed whitespace-pre-wrap">' + _esc(f.buy_reason || '暂无推荐理由') + '</p>' +
+            '</div>' +
+            '<div>' +
+            '<h4 class="font-label-sm text-[13px] uppercase tracking-widest font-black mb-sm border-b border-primary pb-1">前十大重仓</h4>' +
+            holdingsHtml +
+            '</div>' +
+            '<div>' +
+            '<h4 class="font-label-sm text-[13px] uppercase tracking-widest font-black mb-sm border-b border-primary pb-1">净值走势（近90日）</h4>' +
+            navChartHtml +
+            '</div>' +
+            '</div>';
+    } catch(e) {
+        container.innerHTML = '<p class="text-error font-black">加载失败: ' + _esc(String(e.message || e)) + '</p>';
+    }
+}
+window.onclick = function(event) {
+    if (event.target.classList.contains('bg-primary/80')) {
+        if (event.target.id === 'fundDetailModal') {
+            closeFundDetail();
+        } else {
+            event.target.classList.add('hidden');
+            if (logInterval) { clearInterval(logInterval); logInterval = null; }
+        }
+    }
+}
+
+async function fetchLogs() {
+    if (_fetching) return;
+    _fetching = true;
+    var container = document.getElementById('logContainer');
+    var linesEl = document.getElementById('logLines');
+    if (!container || !linesEl) { _fetching = false; return; }
+    var atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
+    try {
+        var r = await fetch('/api/logs?lines=200&after=' + _lastId);
+        var data = await r.json();
+        if (!data.lines || !data.lines.length) { _fetching = false; return; }
+        for (var i = 0; i < data.lines.length; i++) {
+            var p = _parseLogLine(data.lines[i]);
+            var row = document.createElement('div');
+            row.className = 'log-row flex items-start gap-1 px-md py-[3px] hover:bg-surface-container transition-colors';
+            row.setAttribute('data-level', p.level);
+            var ts = _esc(p.ts);
+            var msg = _esc(p.msg);
+            if (p.level === 'ERROR') {
+                row.style.background = '#FFF0F0';
+                row.classList.add('log-row-error');
+                row.innerHTML = '<span class="material-symbols-outlined shrink-0 text-[14px] text-error">error</span><span class="shrink-0 w-[56px] text-[11px] font-black text-error uppercase">ERROR</span><span class="shrink-0 whitespace-nowrap text-[11px] opacity-50 w-[160px]">' + ts + '</span><span class="break-all text-error font-medium">' + msg + '</span>';
+            } else if (p.level === 'WARNING') {
+                row.classList.add('log-row-warn');
+                row.innerHTML = '<span class="material-symbols-outlined shrink-0 text-[14px] text-tertiary">warning</span><span class="shrink-0 w-[56px] text-[11px] font-black text-tertiary uppercase">WARN</span><span class="shrink-0 whitespace-nowrap text-[11px] opacity-50 w-[160px]">' + ts + '</span><span class="break-all text-primary">' + msg + '</span>';
+            } else if (p.level === 'DEBUG') {
+                row.classList.add('log-row-debug');
+                row.innerHTML = '<span class="material-symbols-outlined shrink-0 text-[14px] opacity-40">bug_report</span><span class="shrink-0 w-[56px] text-[11px] font-black opacity-40 uppercase">DEBUG</span><span class="shrink-0 whitespace-nowrap text-[11px] opacity-30 w-[160px]">' + ts + '</span><span class="break-all opacity-50">' + msg + '</span>';
+            } else {
+                row.classList.add('log-row-info');
+                row.innerHTML = '<span class="material-symbols-outlined shrink-0 text-[14px] opacity-60">info</span><span class="shrink-0 w-[56px] text-[11px] font-black opacity-60 uppercase">INFO</span><span class="shrink-0 whitespace-nowrap text-[11px] opacity-50 w-[160px]">' + ts + '</span><span class="break-all">' + msg + '</span>';
+            }
+            linesEl.appendChild(row);
+        }
+        _lastId = data.last_id;
+        _logCount = data.total;
+        document.getElementById('logCount').textContent = _logCount + ' 条';
+        if (atBottom) container.scrollTop = container.scrollHeight;
+        else {
+            var btn = document.getElementById('logScrollBtn');
+            if (btn) btn.classList.remove('hidden');
+        }
+        applyLogFilter();
+    } catch(e) {
+        console.error('日志加载失败:', e);
+    }
+    _fetching = false;
+}
+
+function val(id) { return document.getElementById(id).value; }
+
+var _pendingClear = false;
+
+function openPasswordPrompt(action) {
+    _pendingClear = (action === 'clear');
+    document.getElementById('passwordInput').value = '';
+    document.getElementById('passwordError').classList.add('hidden');
+    openModal('passwordModal');
+}
+
+async function submitPassword() {
+    var pwd = val('passwordInput');
+    if (!pwd) { document.getElementById('passwordError').classList.remove('hidden'); return; }
+    try {
+        var r = await fetch('/api/check-password', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({password:pwd}) });
+        var d = await r.json();
+        if (d.ok) {
+            sessionStorage.setItem('settingsAuth', pwd);
+            closeModal('passwordModal');
+            if (_pendingClear) { _pendingClear = false; doClearRecommendations(); }
+            else { openModal('settingsModal'); }
+        }
+        else { document.getElementById('passwordError').classList.remove('hidden'); }
+    } catch(e) { document.getElementById('passwordError').classList.remove('hidden'); }
+}
+
+function clearRecommendationsFlow() {
+    openPasswordPrompt('clear');
+}
+
+async function doClearRecommendations() {
+    try {
+        var r = await fetch('/api/clear-recommendations', { method:'POST', headers:{'Content-Type':'application/json', 'X-Settings-Password': sessionStorage.getItem('settingsAuth') || ''}, body: JSON.stringify({dry_run:true}) });
+        if (r.status === 403) { alert('密码已变更，请重新验证'); openPasswordPrompt(); return; }
+        var d = await r.json();
+        if (d.status !== 'ok') { alert(d.message || '请求失败'); return; }
+        var del = d.deleted || {};
+        var rec = del.recommend_log || 0;
+        var total = rec + (del.sector_selections || 0) + (del.monitor_events || 0) + (del.evolution_insights || 0) + (del.quality_metrics || 0);
+        if (!confirm('将永久删除 ' + rec + ' 条推荐记录及关联数据（共 ' + total + ' 条），此操作不可恢复。确定继续吗？')) return;
+        var r2 = await fetch('/api/clear-recommendations', { method:'POST', headers:{'Content-Type':'application/json', 'X-Settings-Password': sessionStorage.getItem('settingsAuth') || ''}, body: JSON.stringify({dry_run:false}) });
+        if (r2.status === 403) { alert('密码已变更，请重新验证'); openPasswordPrompt(); return; }
+        var d2 = await r2.json();
+        if (d2.status === 'ok') { alert('已清除全部推荐数据'); location.reload(); }
+        else { alert('清除失败: ' + (d2.message || '未知错误')); }
+    } catch(e) { alert('请求失败: ' + e.message); }
+}
+
+async function loadSettings() {
+    try {
+        var r = await fetch('/api/settings');
+        var s = await r.json();
+        var llm = s.llm || {};
+        document.getElementById('llmBaseUrl').value = llm.base_url || '';
+        document.getElementById('llmApiKey').value = llm.api_key || '';
+        document.getElementById('llmModel').value = llm.model || '';
+        var sched = s.scheduler || {};
+        var h = sched.hour != null ? ('0' + sched.hour).slice(-2) : '';
+        var m = sched.minute != null ? ('0' + sched.minute).slice(-2) : '00';
+        document.getElementById('schedHour').value = h;
+        document.getElementById('schedMinute').value = m;
+    } catch(e) { console.error('settings load failed', e); }
+}
+
+async function saveSettings() {
+    var btn = document.getElementById('saveSettingsBtn');
+    btn.textContent = '保存中...';
+    btn.disabled = true;
+    try {
+        var h = val('schedHour'), m = val('schedMinute');
+        var body = {
+            llm: {
+                base_url: val('llmBaseUrl'),
+                api_key: val('llmApiKey'),
+                model: val('llmModel'),
+            },
+            scheduler: {
+                hour: h !== '' ? parseInt(h) : '',
+                minute: h !== '' ? parseInt(m) : 0,
+            },
+        };
+        var r = await fetch('/api/settings', { method: 'POST', headers: {'Content-Type':'application/json', 'X-Settings-Password': sessionStorage.getItem('settingsAuth') || ''}, body: JSON.stringify(body) });
+        if (r.status === 403) { btn.textContent = '密码已变更，请重新验证'; btn.disabled = false; openPasswordPrompt(); return; }
+        var d = await r.json();
+        if (d.status === 'ok') { btn.textContent = '已保存 ✓'; setTimeout(function(){ btn.textContent = '保存并更新配置'; btn.disabled = false; }, 1500); }
+        else { btn.textContent = '保存失败'; btn.disabled = false; }
+    } catch(e) { btn.textContent = '保存失败'; btn.disabled = false; console.error(e); }
+}
+
+async function triggerPipeline() {
+    try {
+        var r = await fetch('/api/run-pipeline', { method: 'POST', headers: {'X-Settings-Password': sessionStorage.getItem('settingsAuth') || ''} });
+        if (r.status === 403) { alert('密码已变更，请重新验证'); openPasswordPrompt(); return; }
+        var d = await r.json();
+        if (d.status === 'started') {
+            openModal('systemLogModal');
+        } else {
+            alert('管线启动失败');
+        }
+    } catch(e) {
+        alert('请求失败: ' + e.message);
+    }
+}
+</script>
+
+<script type="module">
+// 实时指数走后端 /api/indices 代理（15s 缓存 + 降级收盘 + 非交易时段跳过），无第三方 CDN 依赖
+function _upd(el, v) { if (el) el.textContent = v; }
+
+function _color(dir) {
+  if (dir === 'flat') return 'text-on-surface-variant';
+  return dir === 'up' ? 'text-up' : 'text-down';
+}
+
+async function _updateIndices() {
+  try {
+    const r = await fetch('/api/indices');
+    const d = await r.json();
+    for (const q of (d.items || [])) {
+      const pfx = q.code === 'sh000001' ? 'sse' : '300';
+      const pct = q.change_percent ?? 0;
+      const dir = pct > 0.01 ? 'up' : pct < -0.01 ? 'down' : 'flat';
+      const pctStr = (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
+      const valStr = q.price != null ? Number(q.price).toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
+
+      const valEl = document.getElementById('idx-' + pfx + '-value');
+      if (valEl) {
+        valEl.textContent = valStr;
+        valEl.className = valEl.className.replace(/(text-up|text-down)/g, '') + ' ' + _color(dir);
+      }
+
+      const chgEl = document.getElementById('idx-' + pfx + '-change');
+      if (chgEl) {
+        chgEl.className = chgEl.className.replace(/(text-up|text-down|text-on-surface-variant)/g, '') + ' ' + _color(dir);
+      }
+
+      _upd(document.getElementById('idx-' + pfx + '-pct'), pctStr);
+      const iconEl = document.getElementById('idx-' + pfx + '-icon');
+      if (iconEl) iconEl.textContent = dir === 'up' ? 'north_east' : dir === 'down' ? 'south_east' : 'remove';
+    }
+    const srcEl = document.getElementById('idx-source');
+    if (srcEl) {
+      const live = d.source === 'live';
+      srcEl.textContent = live ? '● 实时' : '○ 收盘';
+      srcEl.className = 'text-[11px] font-black uppercase tracking-widest ' + (live ? 'text-up' : 'text-on-surface-variant');
+    }
+  } catch (e) {
+    console.error('实时指数更新失败:', e);
+  }
+}
+
+_updateIndices();
+setInterval(_updateIndices, 15000);
+
+
+
+// ── 表格分页 ──
+(function() {
+  var PAGE_SIZE = 15;
+  var rows = document.querySelectorAll('#trackingBody tr[data-page]');
+  var totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  var currentPage = 1;
+
+  function renderPage(page) {
+    rows.forEach(function(r) {
+      var p = parseInt(r.getAttribute('data-page'));
+      r.style.display = (p === page) ? '' : 'none';
+    });
+    var btns = document.querySelectorAll('#paginationControls button');
+    btns.forEach(function(b) {
+      var p = parseInt(b.getAttribute('data-page'));
+      b.className = (p === page)
+        ? 'px-3 py-1 text-[12px] font-black bg-primary text-white border border-primary'
+        : 'px-3 py-1 text-[12px] font-black text-on-surface-variant border border-outline-variant hover:bg-surface-container transition-colors';
+    });
+  }
+
+  function buildControls() {
+    var container = document.getElementById('paginationControls');
+    if (!container) return;
+    if (totalPages <= 1) { container.innerHTML = ''; return; }
+    var html = '';
+    for (var i = 1; i <= totalPages; i++) {
+      html += '<button data-page="' + i + '" class="px-3 py-1 text-[12px] font-black border">' + i + '</button>';
+    }
+    container.innerHTML = html;
+    container.addEventListener('click', function(e) {
+      var btn = e.target.closest('button');
+      if (!btn) return;
+      var p = parseInt(btn.getAttribute('data-page'));
+      if (p === currentPage) return;
+      currentPage = p;
+      renderPage(p);
+    });
+  }
+
+  buildControls();
+  if (rows.length > 0) renderPage(1);
+})();
+
+// ── 推荐结果自动刷新 ──
+var _initialRecId = {{ latest_rec_id }};
+setInterval(function() {
+  fetch('/api/recommendation-status')
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.id && d.id !== _initialRecId) {
+        location.reload();
+      }
+    })
+    .catch(function() {});
+}, 30000);
+</script>
+</body>
+</html>

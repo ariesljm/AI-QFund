@@ -1,0 +1,269 @@
+/* AI-QFund Web 面板样式入口（C1 Tailwind 静态化）
+ * 构建：npm run build:css（产物 output.css 提交仓库，运行时无 Node 依赖） */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* v3 对 oklch 自定义色的 /opacity 修饰符不生成样式（withAlphaVariable 仅支持 hex/rgb/hsl），
+ * 手工用 color-mix 补齐模板中使用的透明度类。当前模板仅用到 from-accent/10
+ * （其余透明度类已全部由 tailwind 原生 hex 色板生成，勿重复添加）。 */
+@layer utilities {
+  .from-accent\/10 { --tw-gradient-from: color-mix(in oklab, var(--color-accent) 10%, transparent) var(--tw-gradient-from-position); --tw-gradient-to: transparent var(--tw-gradient-to-position); --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to); }
+}
+
+/* Hallmark · genre: corporate-modern · macrostructure: Workbench · theme: Institutional Intelligence (stitch) · enrichment: none · nav: N1b (bordered, app) · footer: Ft2
+ * tone: institutional · audience: 量化投研用户 · use: 一眼定位今日推荐 + 快速盯盘
+ * 保留：信息架构 / 数据接口 / 红涨绿跌 / Material Symbols 单图标库
+ * 变更：按 docs/stitch_smart_fund_recommender 设计稿迁移 —— Terminal Blue（primary #001e40 藏青 / primary-container #003366 海军蓝）、
+ *       surface #f7f9fb 冷灰纸面、标题 Hanken Grotesk + 正文 Inter + 数据 JetBrains Mono、卡片 8px 圆角 + 1px 边框 */
+html, body { margin: 0; padding: 0; overflow-x: clip; }
+html { scroll-behavior: smooth; }
+:root {
+  /* 颜色 token —— 全部样式经由 var() 引用，禁止内联值（docs/stitch_smart_fund_recommender 色板） */
+  --color-paper:         #f7f9fb;   /* surface 页面底 */
+  --color-paper-2:       #f2f4f6;   /* surface-container-low（表头/次级底） */
+  --color-paper-raised:  #ffffff;   /* surface-container-lowest 卡片 */
+  --color-surface-tint:  #eceef0;   /* surface-container（内嵌块/滤镜激活） */
+  --color-ink:           #191c1e;   /* on-surface */
+  --color-ink-2:         #43474f;   /* on-surface-variant */
+  --color-muted:         #64748b;   /* text-muted */
+  --color-rule:          #e2e8f0;   /* surface-border hairline */
+  --color-rule-2:        #c3c6d1;   /* outline-variant */
+  --color-primary:       #001e40;   /* primary 深藏青（标题/品牌/主按钮） */
+  --color-primary-container: #003366; /* primary-container 海军蓝（结构导航） */
+  --color-on-primary:    #ffffff;   /* 主按钮文字 */
+  --color-accent:        #0070eb;   /* secondary-container 活力蓝（交互/数据高亮） */
+  --color-accent-2:      #0058bc;   /* secondary hover 蓝 */
+  --color-accent-ink:    #ffffff;
+  --color-focus:         #0070eb;
+  --color-graphite:      #2d3133;   /* inverse-surface 日志终端深色带 */
+  --color-up:            #e74c3c;   /* 红涨（danger-losses） */
+  --color-down:          #2ecc71;   /* 绿跌（success-gains） */
+  --color-warn:          #f39c12;   /* warning-amber */
+  --color-warn-bright:   #f5b041;   /* 深色日志区内的 WARN 亮琥珀 */
+  --color-rule-soft:     rgba(226, 232, 240, 0.6);   /* 网格线 / 表格分隔 */
+  --color-scrim:         rgba(45, 49, 51, 0.55);     /* 弹层背板 */
+  --color-log-ink:       #e0e3e5;   /* 日志终端区正文 */
+  --color-log-hover:     rgba(255, 255, 255, 0.05);  /* 日志行 hover */
+  --color-err-bg:        rgba(231, 76, 60, 0.14);    /* 日志 ERROR 行背景 */
+  --color-err-bg-hover:  rgba(231, 76, 60, 0.2);
+  --color-up-soft:       rgba(231, 76, 60, 0.08);    /* 徽章浅底 */
+  --color-down-soft:     rgba(46, 204, 113, 0.08);
+  --color-warn-soft:     rgba(243, 156, 18, 0.10);
+  --color-accent-soft:   rgba(0, 112, 235, 0.10);
+  --color-accent-soft-2: rgba(0, 112, 235, 0.07);
+  --color-skel-a:        #eceef0;
+  --color-skel-b:        #f7f9fb;
+  --color-cyan:          oklch(0.55 0.11 215);
+  --color-violet:        oklch(0.55 0.14 290);
+  /* 字体 token（设计稿：Hanken Grotesk 标题 / Inter 正文 / JetBrains Mono 数据） */
+  --font-display: "Hanken Grotesk", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-body: "Inter", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", monospace;
+  /* 间距 token（4pt 语义刻度） */
+  --space-3xs: 0.125rem; --space-2xs: 0.25rem; --space-xs: 0.5rem;
+  --space-sm:  0.75rem;  --space-md:  1rem;    --space-lg:  1.5rem;
+  --space-xl:  2.5rem;   --space-2xl: 4rem;    --space-3xl: 6rem;
+  /* 动效 token */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-micro: 120ms; --dur-short: 220ms; --dur-long: 420ms;
+  /* 圆角 token（设计稿 Soft 0.25rem 系：按钮 4px / 卡片 8px） */
+  --radius-control: 4px; --radius-card: 8px; --radius-inset: 6px;
+  /* 阴影 token（whisper 级，4% 低透明，永不叠加多层） */
+  --shadow-whisper: 0 1px 4px rgba(0, 0, 0, 0.04);
+  --shadow-hover: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+body {
+  background-color: var(--color-paper);
+  -webkit-font-smoothing: antialiased;
+  font-variant-numeric: tabular-nums;
+}
+h1, h2, h3, h4 { text-wrap: balance; letter-spacing: -0.01em; }
+p { text-wrap: pretty; }
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-thumb { background: var(--color-rule-2); border-radius: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+/* 表面卡：hairline 边框 + 单层 whisper 阴影，无玻璃、无渐变 */
+.surface-panel {
+  background: var(--color-paper-raised);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-whisper);
+  transition: border-color var(--dur-short) var(--ease-out);
+}
+.surface-panel:hover { border-color: var(--color-rule-2); }
+.surface-inset {
+  background: var(--color-surface-tint);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-inset);
+}
+.btn-outline {
+  background: transparent;
+  border: 1px solid var(--color-rule-2);
+  border-radius: var(--radius-control);
+  color: var(--color-ink-2);
+  transition: border-color var(--dur-short) var(--ease-out), color var(--dur-short) var(--ease-out), background-color var(--dur-short) var(--ease-out);
+}
+.btn-outline:hover { border-color: var(--color-accent); color: var(--color-accent); background: var(--color-accent-soft); }
+.btn-outline:active { transform: scale(0.96); }
+.btn-primary {
+  background: var(--color-primary);
+  border: 1px solid var(--color-primary);
+  border-radius: var(--radius-control);
+  color: var(--color-on-primary);
+  transition: background-color var(--dur-short) var(--ease-out), transform var(--dur-micro) var(--ease-out);
+}
+.btn-primary:hover { background: var(--color-primary-container); }
+.btn-primary:active { transform: scale(0.96); }
+.btn-danger {
+  background: var(--color-up);
+  border: 1px solid var(--color-up);
+  border-radius: var(--radius-control);
+  color: var(--color-accent-ink);
+  transition: background-color var(--dur-short) var(--ease-out), transform var(--dur-micro) var(--ease-out);
+}
+.btn-danger:hover { opacity: 0.88; }
+.btn-danger:active { transform: scale(0.96); }
+/* 今日推荐卡（设计稿卡片：纯白底 + 1px surface-border + 低透明阴影，无顶部色条） */
+.fund-card {
+  position: relative;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--color-rule);
+  background: var(--color-paper-raised);
+  box-shadow: var(--shadow-whisper);
+  transition: border-color var(--dur-short) var(--ease-out), box-shadow var(--dur-short) var(--ease-out);
+}
+.fund-card:hover { border-color: var(--color-rule-2); box-shadow: var(--shadow-hover); }
+.data-grid-line {
+  background-image: linear-gradient(to right, var(--color-rule-soft) 1px, transparent 1px),
+                    linear-gradient(to bottom, var(--color-rule-soft) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+.pulse-dot { animation: pulse 2s infinite; }
+@keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
+/* 快讯摘要向左滚动（设计稿 ticker：滚动完成后由 animationend 切换下一条） */
+@keyframes news-marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(-100%); }
+}
+.news-marquee-anim {
+  animation-name: news-marquee;
+  animation-timing-function: linear;
+  animation-iteration-count: 1;
+  will-change: transform;
+}
+.visible-scrollbar::-webkit-scrollbar { width: 6px; }
+.visible-scrollbar::-webkit-scrollbar-thumb { background: var(--color-rule-2); border-radius: 4px; }
+.visible-scrollbar { scrollbar-width: thin; scrollbar-color: var(--color-rule-2) transparent; }
+.material-symbols-outlined {
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal;
+  font-style: normal;
+  font-size: 24px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  -webkit-font-feature-settings: 'liga';
+  -webkit-font-smoothing: antialiased;
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20;
+}
+.skel { background: linear-gradient(90deg, var(--color-skel-a) 25%, var(--color-skel-b) 50%, var(--color-skel-a) 75%); background-size: 200% 100%; animation: skel-shimmer 1.5s ease-in-out infinite; }
+@keyframes skel-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+/* 键盘导航焦点环（可访问性，即时出现，不渐变） */
+:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+/* 交互元素统一过渡：仅 background-color / border-color / color / opacity / transform */
+button, a, input, select { transition-property: background-color, border-color, color, opacity, transform; transition-duration: 0.15s; transition-timing-function: var(--ease-out); }
+/* 弹层背板：石墨半透明 + 轻 blur，非纯黑 */
+.modal-backdrop {
+  background: var(--color-scrim);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  animation: modal-in var(--dur-short) var(--ease-out);
+}
+/* 弹层面板：轻微上移 + 淡入（fundDetail 有独立滑入动画，排除） */
+.modal-backdrop:not(#fundDetailModal) > div {
+  animation: modal-panel-in var(--dur-short) var(--ease-out);
+}
+@keyframes modal-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes modal-panel-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+/* 退出：比入场更轻（纯淡出，无位移） */
+.modal-backdrop.modal-closing { animation: modal-out var(--dur-short) var(--ease-out); }
+.modal-backdrop.modal-closing > div { animation: modal-panel-out var(--dur-short) var(--ease-out); }
+@keyframes modal-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes modal-panel-out {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateY(4px); }
+}
+/* 单次入场（仅首屏推荐区，一处 orchestrated entrance） */
+@keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.rise { animation: rise 0.5s var(--ease-out) both; }
+/* 表格 hairline 分隔 + hover 浅灰（不做 shadow）；表头随设计稿 label-caps + 浅灰底 */
+.data-table thead th {
+  font-family: var(--font-body); font-size: 11px; font-weight: 700;
+  letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--color-muted);
+  background: var(--color-paper-2);
+  border-bottom: 1px solid var(--color-rule);
+}
+.data-table tbody tr { border-bottom: 1px solid var(--color-rule-soft); transition: background-color var(--dur-micro) var(--ease-out); }
+.data-table tbody tr:hover { background: var(--color-paper-2); }
+.data-table td { font-family: var(--font-body); font-size: 13px; }
+/* 主题语义类：值取自 --color-* 变量，供 app.js 动态注入的类名使用。 */
+.tab-nav-btn { color: var(--color-ink-2); }
+.tab-nav-btn:hover { color: var(--color-accent-2); }
+.tab-nav-btn.active { color: var(--color-accent-2); border-color: var(--color-accent-2); }
+.t-fill-accent { background-color: var(--color-accent); border-color: var(--color-accent); }
+.t-border-accent { border-color: var(--color-accent); }
+.t-bg-accent-soft { background-color: var(--color-accent-soft); }
+.t-text-primary { color: var(--color-primary); }
+.t-border-primary { border-color: var(--color-primary); }
+/* 信号徽章：描边徽章（设计稿语义：Hold=灰 / Add=红 / Warn=琥珀 / Exit=绿） */
+.badge { display: inline-block; padding: 2px 8px; border-radius: 4px; border: 1px solid; font-family: var(--font-mono); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; line-height: 1.4; white-space: nowrap; }
+.badge--hold { color: var(--color-ink-2); border-color: var(--color-rule-2); background: var(--color-paper-2); }
+.badge--add { color: var(--color-up); border-color: var(--color-up); background: var(--color-up-soft); }
+.badge--warn { color: var(--color-warn); border-color: var(--color-warn); background: var(--color-warn-soft); }
+.badge--exit { color: var(--color-down); border-color: var(--color-down); background: var(--color-down-soft); }
+.badge--muted { color: var(--color-muted); border-color: var(--color-rule-2); }
+/* 日志区：石墨终端带（Cobalt 全页唯一的暗色区） */
+.log-shell { background: var(--color-graphite); color: var(--color-log-ink); font-family: var(--font-mono); }
+.log-row:hover { background: var(--color-log-hover); }
+.log-row--error { background: var(--color-err-bg); }
+.log-row--error:hover { background: var(--color-err-bg-hover); }
+@media (prefers-reduced-motion: reduce) {
+  .rise { animation: none; }
+  *, *::before, *::after { animation-duration: 150ms !important; animation-iteration-count: 1 !important; transition-duration: 150ms !important; }
+}
+/* 触控目标：触屏设备上可点元素最小 44px（iOS 人机界面指南）；header 图标按钮与快讯轮播一并扩大点击区 */
+@media (pointer: coarse) {
+  .btn-outline, .btn-primary, .btn-danger, .tab-btn, .log-filter { min-height: 44px; }
+  header button, #newsCarousel button, .modal-backdrop button { min-width: 44px; min-height: 44px; }
+}
+/* 安全区：iOS 刘海/底部手势条适配（viewport-fit=cover 已声明） */
+body { padding-bottom: max(0px, env(safe-area-inset-bottom, 0px)); }
+@media (min-width: 40rem) {
+  body { padding-inline: max(0px, env(safe-area-inset-left, 0px)); }
+}
+/* 顶部安全区：fixed header 增高补偿 + 主区同步下移（设计稿 header h-14=56px 全断点一致） */
+@supports (padding-top: env(safe-area-inset-top)) {
+  header { padding-top: env(safe-area-inset-top); height: calc(56px + env(safe-area-inset-top)); }
+  main { padding-top: calc(56px + env(safe-area-inset-top)); }
+}
+/* 移动端弹层贴近边缘，不留大边距 */
+@media (max-width: 39.9375rem) {
+  .modal-backdrop.p-sm { padding: 0.5rem; }
+}

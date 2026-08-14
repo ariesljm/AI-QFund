@@ -1,0 +1,28 @@
+services:
+  ai-qfund:
+    image: ghcr.io/ariesljm/ai-qfund:latest
+    pull_policy: always
+    container_name: ai-qfund
+    restart: unless-stopped
+    ports:
+      - "9123:9123"
+    volumes:
+      - /root/workspace/ai-qfund/data:/app/data
+      - /root/workspace/ai-qfund/config/settings.toml:/app/config/settings.toml
+      - /root/workspace/ai-qfund/models:/app/models
+    environment:
+      - TZ=Asia/Shanghai
+      - ENABLE_SCHEDULER=true
+      # 全流程定时时间（数据基座→推荐→监控→进化，T-1 数据完整后跑）
+      - SCHEDULER_HOUR=14
+      - SCHEDULER_MINUTE=30
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_BASE_URL=${LLM_BASE_URL:-}
+      - LLM_MODEL=${LLM_MODEL:-}
+      - WEB_PORT=9123
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9123/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0, viewport-fit=cover" name="viewport"/>
+<meta content="AI驱动的基金智能筛选与量化投研终端，实时追踪基金推荐、板块轮动与资金流向" name="description"/>
+<meta content="AI量化投研,基金推荐,智能选基,板块轮动,资金流向" name="keywords"/>
+<meta content="AI量化投研终端" property="og:title"/>
+<meta content="AI驱动的基金智能筛选与量化投研终端" property="og:description"/>
+<meta content="website" property="og:type"/>
+<link href="/static/favicon-32.png" rel="icon" sizes="32x32"/>
+<link href="/static/favicon-16.png" rel="icon" sizes="16x16"/>
+<link href="/static/apple-touch-icon.png" rel="apple-touch-icon"/>
+<title>AI量化投研终端</title>
+<link href="/static/output.css?v=18" rel="stylesheet"/>
+<link href="/static/fonts.css" rel="stylesheet"/>
+<link href="/static/fonts/fonts-noto-sans.css" rel="stylesheet"/>
+<link href="/static/fonts/fonts-noto-serif.css" rel="stylesheet"/>
+<link href="/static/fonts/fonts-material-symbols.css" rel="stylesheet"/>
+</head>
+<body class="bg-background font-body-md text-on-surface" data-rec-id="{{ latest_rec_id }}">
+<a href="#main-content" class="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[10001] focus:bg-graphite focus:text-white focus:px-3 focus:py-1 focus:font-bold focus:text-sm">跳转到主要内容</a>
+
+<!-- ============ 顶部导航（设计稿 Institutional Intelligence：固定 56px + 指数块 + 用户区） ============ -->
+<header class="fixed top-0 w-full z-[100] h-14 bg-surface-container-lowest/95 backdrop-blur-md shadow-[0_1px_8px_rgba(0,0,0,0.04)] border-b border-surface-border flex items-center justify-between">
+  <div class="max-w-[1440px] mx-auto w-full h-full flex items-center justify-between px-margin-page gap-4 min-w-0">
+    <div class="flex items-center gap-6 min-w-0">
+      <div class="flex items-center gap-2.5 shrink-0">
+        <img src="/static/logo.png" alt="AI量化投研终端" class="w-8 h-8 rounded-full object-cover shrink-0"/>
+        <span class="font-headline-sm text-headline-sm text-primary tracking-tight whitespace-nowrap hidden sm:inline">AI 量化投研终端</span>
+      </div>
+      <nav class="flex items-center gap-4 lg:gap-5 h-full min-w-0" aria-label="主导航">
+        <button id="tabBtn-today" onclick="switchTab('today')" aria-current="page" class="tab-nav-btn active h-full flex items-center gap-1 border-b-2 border-transparent font-body-md text-body-md font-bold whitespace-nowrap">
+          今日投研
+        </button>
+        <button id="tabBtn-quality" onclick="switchTab('quality')" class="tab-nav-btn h-full flex items-center gap-1 border-b-2 border-transparent font-body-md text-body-md font-bold whitespace-nowrap">
+          推荐质量
+        </button>
+        <button onclick="openModal('systemLogModal')" class="tab-nav-btn h-full flex items-center gap-1 border-b-2 border-transparent font-body-md text-body-md font-bold whitespace-nowrap">
+          系统日志
+        </button>
+      </nav>
+    </div>
+    <div class="flex items-center gap-4 shrink-0">
+      <!-- 实时指数块（保留：/api/indices 15s 轮询） -->
+      <div class="hidden lg:flex items-center gap-4 py-1 px-3 bg-surface-container rounded-lg" title="实时行情（15 秒轮询）">
+        <div class="flex flex-col leading-none">
+          <span class="font-label-caps text-label-caps text-on-surface-variant">沪深300</span>
+          <span class="font-data-tabular text-data-tabular text-on-surface-variant mt-0.5"><span id="idx-300-value">—</span> <span id="idx-300-pct" class="font-data-sm">—</span></span>
+        </div>
+        <div class="w-px h-6 bg-outline-variant"></div>
+        <div class="flex flex-col leading-none">
+          <span class="font-label-caps text-label-caps text-on-surface-variant">上证指数</span>
+          <span class="font-data-tabular text-data-tabular text-on-surface-variant mt-0.5"><span id="idx-sse-value">—</span> <span id="idx-sse-pct" class="font-data-sm">—</span></span>
+        </div>
+      </div>
+      <span class="hidden xl:flex items-center gap-1.5 font-data-tabular text-data-tabular text-on-surface-variant whitespace-nowrap" title="行情更新时间">
+        <span class="material-symbols-outlined text-[15px]">update</span>
+        <span id="quoteUpdated" class="font-label-xs text-label-xs">--:--:--</span>
+      </span>
+      <div class="w-px h-6 bg-outline-variant hidden md:block"></div>
+      <a href="/v1" class="font-body-sm text-body-sm text-primary hover:underline hidden md:inline" title="切换至旧版界面">旧版</a>
+      <button class="w-8 h-8 flex items-center justify-center rounded-md hover:bg-surface-container transition-colors" onclick="openPasswordPrompt()" title="终端设置">
+        <span class="material-symbols-outlined text-on-surface-variant text-[18px]">lock</span>
+      </button>
+      <div class="hidden sm:flex items-center gap-2.5">
+        <div class="flex flex-col items-end leading-none">
+          <span class="font-label-caps text-label-caps text-primary uppercase">Senior Analyst</span>
+          <span class="font-body-sm text-body-sm text-on-surface-variant mt-0.5">Terminal 01</span>
+        </div>
+        <div class="w-8 h-8 rounded-full bg-primary flex items-center justify-center ring-2 ring-surface-border">
+          <span class="material-symbols-outlined text-on-primary text-[18px]">person</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main id="main-content" class="pt-14 w-full min-h-screen bg-background">
+<div class="flex flex-col w-full max-w-[1440px] mx-auto">
+
+  <!-- ============ 今日投研 ============ -->
+  <div id="tab-today" class="flex flex-col gap-stack-lg px-margin-page pt-stack-lg pb-16">
+    {% if empty_today %}
+    <div class="border border-error bg-error-container/30 p-3 flex items-start gap-3 rounded-lg">
+      <span class="material-symbols-outlined text-error text-[18px] mt-0.5">info</span>
+      <div>
+        <p class="font-label-caps text-error">今日无推荐</p>
+        <p class="text-on-surface-variant text-[13px] mt-1">{{ empty_today.reasoning or '今日无合适机会' }}</p>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- AI 赛道报告（设计稿 AI Track Report：通栏卡 + 大盘状态指示卡） -->
+    <section class="bg-surface-container-lowest rounded-xl border border-surface-border p-stack-lg shadow-sm relative overflow-hidden">
+      <div class="absolute -right-20 -top-20 w-64 h-64 bg-primary/5 rounded-full blur-3xl pointer-events-none"></div>
+      <div class="relative z-10 flex flex-col md:flex-row justify-between items-center gap-stack-lg">
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-3 mb-stack-sm">
+            <span class="material-symbols-outlined text-accent text-[22px]" style="font-variation-settings: 'FILL' 1;">psychology</span>
+            <h1 class="font-headline-md text-headline-md text-primary">AI 赛道报告</h1>
+            <span class="font-data-tabular text-data-tabular text-[12px] text-on-surface-variant bg-surface-container px-2 py-1 rounded whitespace-nowrap">{{ macro_date or today }}</span>
+          </div>
+          {% if sector_reasoning %}
+          <p class="font-body-md text-body-md text-on-surface-variant leading-relaxed">{{ sector_reasoning }}</p>
+          {% else %}
+          <p class="font-body-md text-body-md text-on-surface-variant text-[13px]">暂无赛道分析数据</p>
+          {% endif %}
+        </div>
+        <!-- 大盘状态指示卡（设计稿 Bull/Bear Indicator，红涨绿跌）：显示在卡片右侧、垂直居中 -->
+        {% set _r = regime_label or 'NEUTRAL' %}
+        {% if _r == 'BULL' %}
+        <div class="flex flex-col items-center justify-center p-stack-md bg-up-soft rounded-lg border border-up/30 min-w-[160px] shrink-0">
+          <span class="material-symbols-outlined text-up text-4xl mb-1">trending_up</span>
+          <span class="font-headline-sm text-headline-sm text-up">{{ regime_labels.get(_r, '牛市') }}</span>
+          <span class="font-label-caps text-label-caps text-on-surface-variant mt-2">可适度进取</span>
+        </div>
+        {% elif _r == 'BEAR' %}
+        <div class="flex flex-col items-center justify-center p-stack-md bg-down-soft rounded-lg border border-down/30 min-w-[160px] shrink-0">
+          <span class="material-symbols-outlined text-down text-4xl mb-1">trending_down</span>
+          <span class="font-headline-sm text-headline-sm text-down">{{ regime_labels.get(_r, '熊市') }}</span>
+          <span class="font-label-caps text-label-caps text-on-surface-variant mt-2">建议控制仓位</span>
+        </div>
+        {% else %}
+        <div class="flex flex-col items-center justify-center p-stack-md bg-warn-soft rounded-lg border border-warning-amber/30 min-w-[160px] shrink-0">
+          <span class="material-symbols-outlined text-warn text-4xl mb-1">trending_flat</span>
+          <span class="font-headline-sm text-headline-sm text-warn">{{ regime_labels.get(_r, '中性') }}</span>
+          <span class="font-label-caps text-label-caps text-on-surface-variant mt-2">保持中性仓位</span>
+        </div>
+        {% endif %}
+      </div>
+    </section>
+
+    <!-- 实时快讯轮播（标题 + 摘要单行：摘要向左滚动，滚动完成后切下一条） -->
+    <section class="bg-surface-container-lowest rounded-xl border border-surface-border px-4 md:px-5 py-2.5 shadow-sm flex flex-wrap items-center gap-x-3 gap-y-1.5 min-w-0" id="newsCarousel">
+      <span class="material-symbols-outlined text-[16px] text-accent shrink-0">campaign</span>
+      <button class="shrink-0 max-w-[120px] sm:max-w-[260px] lg:max-w-[340px] text-left overflow-hidden" onclick="openNewsDetail()" title="点击查看完整快讯">
+        <span class="block truncate font-data-sm font-bold text-on-surface" id="newsCurrentText"></span>
+      </button>
+      <span class="shrink-0 w-1 h-1 rounded-full bg-outline-strong/60 hidden sm:block"></span>
+      <!-- 手机端独占整行，避免被压缩至不可见；桌面端回归同行 -->
+      <div class="order-2 w-full sm:order-none sm:w-auto sm:flex-1 sm:min-w-0 overflow-hidden whitespace-nowrap cursor-pointer" id="newsMarquee" onclick="openNewsDetail()" title="点击查看完整快讯">
+        <span class="inline-block font-data-sm text-on-surface-variant pr-10" id="newsSummaryText"></span>
+      </div>
+      <span class="font-data-sm text-[11px] text-on-surface-variant shrink-0" id="newsIdx"></span>
+      <div class="flex items-center gap-1 shrink-0">
+        <button class="w-7 h-7 flex items-center justify-center rounded-md border border-surface-border hover:border-accent hover:text-accent transition-colors" onclick="newsPrev()" aria-label="上一条">
+          <span class="material-symbols-outlined text-[15px]">chevron_left</span>
+        </button>
+        <button class="w-7 h-7 flex items-center justify-center rounded-md border border-surface-border hover:border-accent hover:text-accent transition-colors" onclick="newsNext()" aria-label="下一条">
+          <span class="material-symbols-outlined text-[15px]">chevron_right</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- 主区 + 侧栏（设计稿 8+4 网格） -->
+    <div class="grid grid-cols-12 gap-stack-lg items-start">
+      <!-- ======== 主区（8 列） ======== -->
+      <div class="col-span-12 xl:col-span-8 flex flex-col gap-stack-lg">
+
+        <!-- 今日精选（设计稿 Top Picks：双卡并排） -->
+        <section class="flex flex-col gap-stack-md">
+          <div class="flex items-center justify-between border-b border-surface-border pb-2">
+            <h2 class="font-headline-sm text-headline-sm text-primary flex items-center gap-2">
+              <span class="material-symbols-outlined text-accent text-[20px]">workspace_premium</span>
+              今日精选
+            </h2>
+            <span class="font-label-caps text-label-caps text-outline-strong">V.{{ latest.date if latest else today }}</span>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-stack-md items-stretch">
+            {% if latest %}
+            <div class="fund-card">
+              <div class="p-5 md:p-stack-lg flex flex-col h-full relative">
+                <span class="material-symbols-outlined absolute top-3 right-3 text-6xl opacity-10 text-primary pointer-events-none select-none">query_stats</span>
+                <div class="flex justify-between items-start gap-3 mb-4 relative min-w-0">
+                  <div class="min-w-0">
+                    <span class="font-data-tabular text-data-tabular text-[12px] text-secondary bg-accent-soft px-2 py-0.5 rounded mb-2 inline-block">{{ latest.code }}</span>
+                    <h3 class="font-headline-sm text-headline-sm text-on-surface leading-tight [overflow-wrap:anywhere] min-w-0" title="{{ latest.name }}">{{ latest.name }}</h3>
+                    <span class="font-body-sm text-body-sm text-on-surface-variant">{{ latest.type }}</span>
+                  </div>
+                  <div class="text-right flex flex-col shrink-0">
+                    {% if latest.pred_alpha is not none %}
+                    <span class="font-label-caps text-label-caps text-on-surface-variant whitespace-nowrap">预测超额（1月）</span>
+                    <span class="text-[24px] md:text-display-lg leading-none mt-1 {% if latest.pred_alpha >= 0 %}text-up{% else %}text-down{% endif %}">{{ "%+.1f"|format(latest.pred_alpha * 100) }}%</span>
+                    {% endif %}
+                  </div>
+                </div>
+                <div class="grid grid-cols-4 gap-2 mb-4 p-3 bg-surface rounded-lg">
+                  {% for label in ['1周', '1月', '3月', '6月'] %}
+                  <div class="flex flex-col items-center">
+                    <span class="font-label-caps text-label-caps text-on-surface-variant">近{{ label }}</span>
+                    <span class="font-data-tabular text-data-tabular mt-1 {% if period_ret.get(label) is not none and period_ret.get(label) >= 0 %}text-up{% elif period_ret.get(label) is not none %}text-down{% endif %}">
+                      {% if period_ret.get(label) is not none %}{{ "%+.2f"|format(period_ret.get(label)) }}%{% else %}--{% endif %}
+                    </span>
+                  </div>
+                  {% endfor %}
+                </div>
+                <div class="font-body-sm text-body-sm text-on-surface-variant bg-surface/50 p-3 rounded-md border-l-2 border-accent mb-4 flex-grow">
+                  {{ latest.reason }}
+                </div>
+                <div>
+                  <div class="font-label-caps text-label-caps text-on-surface mb-2 border-b border-surface-border pb-1">前十大持仓</div>
+                  {% if top_holdings %}
+                  <div class="flex flex-wrap gap-2">
+                    {% for h in top_holdings[:8] %}
+                    <span class="bg-surface-container-high px-2 py-1 rounded text-xs text-on-surface-variant flex items-baseline gap-1" title="{{ h.name }} {{ "%.1f"|format(h.weight) }}%">
+                      <span class="truncate max-w-[110px]">{{ h.name }}</span>
+                      <span class="font-data-tabular text-on-surface font-medium">{{ "%.1f"|format(h.weight) }}%</span>
+                    </span>
+                    {% endfor %}
+                  </div>
+                  {% else %}
+                  <p class="font-body-sm text-body-sm text-on-surface-variant">暂无持仓数据</p>
+                  {% endif %}
+                </div>
+              </div>
+            </div>
+            {% endif %}
+
+            {% if latest_list|length > 1 %}
+            {% set rec2 = latest_list[1] %}
+            <div class="fund-card">
+              <div class="p-5 md:p-stack-lg flex flex-col h-full relative">
+                <span class="material-symbols-outlined absolute top-3 right-3 text-6xl opacity-10 text-primary pointer-events-none select-none">memory</span>
+                <div class="flex justify-between items-start gap-3 mb-4 relative min-w-0">
+                  <div class="min-w-0">
+                    <span class="font-data-tabular text-data-tabular text-[12px] text-secondary bg-accent-soft px-2 py-0.5 rounded mb-2 inline-block">{{ rec2.code }}</span>
+                    <h3 class="font-headline-sm text-headline-sm text-on-surface leading-tight [overflow-wrap:anywhere] min-w-0" title="{{ rec2.name }}">{{ rec2.name }}</h3>
+                    <span class="font-body-sm text-body-sm text-on-surface-variant">{{ rec2.type }}</span>
+                  </div>
+                  <div class="text-right flex flex-col shrink-0">
+                    {% if rec2.pred_alpha is not none %}
+                    <span class="font-label-caps text-label-caps text-on-surface-variant whitespace-nowrap">预测超额（1月）</span>
+                    <span class="text-[24px] md:text-display-lg leading-none mt-1 {% if rec2.pred_alpha >= 0 %}text-up{% else %}text-down{% endif %}">{{ "%+.1f"|format(rec2.pred_alpha * 100) }}%</span>
+                    {% endif %}
+                  </div>
+                </div>
+                <div class="grid grid-cols-4 gap-2 mb-4 p-3 bg-surface rounded-lg">
+                  {% for label in ['1周', '1月', '3月', '6月'] %}
+                  <div class="flex flex-col items-center">
+                    <span class="font-label-caps text-label-caps text-on-surface-variant">近{{ label }}</span>
+                    <span class="font-data-tabular text-data-tabular mt-1 {% if period_ret2.get(label) is not none and period_ret2.get(label) >= 0 %}text-up{% elif period_ret2.get(label) is not none %}text-down{% endif %}">
+                      {% if period_ret2.get(label) is not none %}{{ "%+.2f"|format(period_ret2.get(label)) }}%{% else %}--{% endif %}
+                    </span>
+                  </div>
+                  {% endfor %}
+                </div>
+                <div class="font-body-sm text-body-sm text-on-surface-variant bg-surface/50 p-3 rounded-md border-l-2 border-accent mb-4 flex-grow">
+                  {{ rec2.reason }}
+                </div>
+                <div>
+                  <div class="font-label-caps text-label-caps text-on-surface mb-2 border-b border-surface-border pb-1">前十大持仓</div>
+                  {% if top_holdings2 %}
+                  <div class="flex flex-wrap gap-2">
+                    {% for h in top_holdings2[:8] %}
+                    <span class="bg-surface-container-high px-2 py-1 rounded text-xs text-on-surface-variant flex items-baseline gap-1" title="{{ h.name }} {{ "%.1f"|format(h.weight) }}%">
+                      <span class="truncate max-w-[110px]">{{ h.name }}</span>
+                      <span class="font-data-tabular text-on-surface font-medium">{{ "%.1f"|format(h.weight) }}%</span>
+                    </span>
+                    {% endfor %}
+                  </div>
+                  {% else %}
+                  <p class="font-body-sm text-body-sm text-on-surface-variant">暂无持仓数据</p>
+                  {% endif %}
+                </div>
+              </div>
+            </div>
+            {% endif %}
+
+            {% if not latest %}
+            <div class="col-span-full">
+              <div class="flex flex-col items-center justify-center gap-2 py-10 bg-paper-raised rounded-xl border border-dashed border-outline-strong">
+                <span class="material-symbols-outlined text-[28px] text-on-surface-variant opacity-50">analytics</span>
+                <p class="font-body-md text-body-md text-on-surface-variant">暂无推荐数据，请先运行推荐管线。</p>
+              </div>
+            </div>
+            {% endif %}
+          </div>
+        </section>
+
+        <!-- 追踪监控（设计稿 Tracking Monitor） -->
+        <section class="flex flex-col gap-stack-md">
+          <div class="flex items-center justify-between border-b border-surface-border pb-2">
+            <h2 class="font-headline-sm text-headline-sm text-primary flex items-center gap-2">
+              <span class="material-symbols-outlined text-accent text-[20px]">radar</span>
+              追踪监控
+            </h2>
+            <button class="flex items-center gap-1 font-label-caps text-label-caps text-on-surface hover:text-accent transition-colors border border-surface-border px-2 py-1 rounded bg-surface-container-lowest" onclick="openModal('systemLogModal')">
+              <span class="material-symbols-outlined text-[14px]">terminal</span> 实时日志
+            </button>
+          </div>
+          <div class="bg-surface-container-lowest rounded-xl border border-surface-border shadow-sm overflow-hidden">
+            <div class="overflow-x-auto">
+              <table class="w-full sm:min-w-[640px] text-left border-collapse data-table">
+                <thead>
+                  <tr>
+                    <th class="px-4 py-2.5 whitespace-nowrap">代码</th>
+                    <th class="px-4 py-2.5 whitespace-nowrap">名称</th>
+                    <th class="px-4 py-2.5 whitespace-nowrap hidden sm:table-cell">推荐日期</th>
+                    <th class="px-4 py-2.5 text-right whitespace-nowrap hidden sm:table-cell">推荐净值</th>
+                    <th class="px-4 py-2.5 text-right whitespace-nowrap hidden sm:table-cell">当前净值</th>
+                    <th class="px-4 py-2.5 text-right whitespace-nowrap">累计收益</th>
+                    <th class="px-4 py-2.5 text-center whitespace-nowrap hidden sm:table-cell">推荐次数</th>
+                    <th class="px-4 py-2.5 text-center whitespace-nowrap">信号</th>
+                  </tr>
+                </thead>
+                <tbody id="trackingBody">
+                  {% for c in candidates %}
+                  <tr data-page="{{ (loop.index0 // 15) + 1 }}" class="cursor-pointer" onclick="openFundDetail('{{ c.code }}')">
+                    <td class="px-4 py-2 text-accent whitespace-nowrap font-data-tabular">{{ c.code }}</td>
+                    <td class="px-4 py-2 font-semibold truncate max-w-[120px] sm:max-w-[150px] text-on-surface" title="{{ c.name }}">{{ c.name }}</td>
+                    <td class="px-4 py-2 text-on-surface-variant hidden sm:table-cell font-data-tabular">{{ c.first_date[:10] if c.first_date else '--' }}</td>
+                    <td class="px-4 py-2 text-right hidden sm:table-cell font-data-tabular">{% if c.first_nav is not none %}{{ "%.4f"|format(c.first_nav) }}{% else %}--{% endif %}</td>
+                    <td class="px-4 py-2 text-right hidden sm:table-cell font-data-tabular">{% if c.cur_nav is not none %}{{ "%.4f"|format(c.cur_nav) }}{% else %}--{% endif %}</td>
+                    <td class="px-4 py-2 text-right font-bold whitespace-nowrap font-data-tabular {% if c.return is not none and c.return >= 0 %}text-up{% elif c.return is not none %}text-down{% endif %}">
+                      {% if c.return is not none %}{{ "%+.2f"|format(c.return) }}%{% else %}--{% endif %}
+                    </td>
+                    <td class="px-4 py-2 text-center hidden sm:table-cell font-data-tabular">{{ c.rec_count }}</td>
+                    <td class="px-4 py-2 text-center">
+                      {% if c.status == 'HOLD' or c.status == 'PASS' %}
+                      <span class="badge badge--hold">{{ signal_labels.get(c.status, '持有') }}</span>
+                      {% elif c.status == 'ADD' or c.status == 'BUY_MORE' %}
+                      <span class="badge badge--add">{{ signal_labels.get(c.status, '加仓') }}</span>
+                      {% elif c.status == 'CAUTION' or c.status == 'WARNING' %}
+                      <span class="badge badge--warn">{{ signal_labels.get(c.status, '警惕') }}</span>
+                      {% elif c.status == 'EXIT' or c.status == 'REJECT' %}
+                      <span class="badge badge--exit">{{ signal_labels.get(c.status, '离场') }}</span>
+                      {% else %}
+                      <span class="badge badge--muted">{{ c.status }}</span>
+                      {% endif %}
+                    </td>
+                  </tr>
+                  {% else %}
+                  <tr>
+                    <td colspan="8" class="px-4 py-10 text-center text-on-surface-variant font-body-sm">暂无追踪数据，运行推荐引擎后自动填充。</td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            <div class="bg-surface-container-low p-2 border-t border-surface-border flex items-center justify-between gap-3">
+              <div class="text-[11px] text-on-surface-variant font-bold">共计 <span id="totalCount">{{ candidates|length }}</span> 只基金处于追踪池</div>
+              <div class="flex items-center gap-1" id="paginationControls"></div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- ======== 侧栏（4 列） ======== -->
+      <div class="col-span-12 xl:col-span-4 flex flex-col gap-stack-lg">
+
+        <!-- 策略 KPI（设计稿 Strategy KPI） -->
+        <section class="bg-surface-container-lowest rounded-xl border border-surface-border p-stack-md shadow-sm">
+          <h2 class="font-headline-sm text-headline-sm text-primary mb-4 border-b border-surface-border pb-2">策略 KPI</h2>
+          <div class="grid grid-cols-2 gap-4">
+            <div class="bg-surface-container-low p-3 rounded-lg flex flex-col">
+              <span class="font-label-caps text-label-caps text-outline-strong mb-1">累计收益</span>
+              <span class="font-headline-md text-headline-md leading-none {% if total_return is not none and total_return >= 0 %}text-up{% else %}text-down{% endif %}">{% if total_return is not none %}{{ "%+.2f"|format(total_return) }}%{% else %}--{% endif %}</span>
+            </div>
+            <div class="bg-surface-container-low p-3 rounded-lg flex flex-col">
+              <span class="font-label-caps text-label-caps text-outline-strong mb-1">累计超额</span>
+              <span class="font-headline-md text-headline-md leading-none {% if alpha is not none and alpha >= 0 %}text-up{% elif alpha is not none %}text-down{% endif %}">{% if alpha is not none %}{{ "%+.2f"|format(alpha) }}%{% else %}--{% endif %}</span>
+            </div>
+            <div class="bg-surface-container-low p-3 rounded-lg flex flex-col">
+              <span class="font-label-caps text-label-caps text-outline-strong mb-1">命中率</span>
+              <span class="font-headline-md text-headline-md leading-none text-on-surface">{{ hit_rate }}%</span>
+            </div>
+            <div class="bg-surface-container-low p-3 rounded-lg flex flex-col">
+              <span class="font-label-caps text-label-caps text-outline-strong mb-1">推荐数</span>
+              <span class="font-headline-md text-headline-md leading-none text-on-surface">{{ rec_count }}</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- 板块动量（设计稿 Sector Momentum，真实数据：板块领涨） -->
+        <section class="bg-surface-container-lowest rounded-xl border border-surface-border p-stack-md shadow-sm">
+          <h2 class="font-headline-sm text-headline-sm text-primary mb-3 border-b border-surface-border pb-2">板块动量</h2>
+          <div class="flex flex-col gap-3 mt-2">
+            {% if sector_gainers %}
+            {% for s in sector_gainers[:4] %}
+            <div class="flex justify-between items-center">
+              <span class="font-body-md text-body-md text-on-surface truncate pr-2">{{ s.name }}</span>
+              <span class="font-data-tabular text-data-tabular {% if s.pct is not none %}{% set _p = s.pct|replace('%','')|float %}{% if _p >= 0 %}text-up bg-up-soft{% else %}text-down bg-down-soft{% endif %}{% else %}text-on-surface-variant{% endif %} px-2 py-0.5 rounded text-sm font-bold">{{ s.pct }}</span>
+            </div>
+            {% endfor %}
+            {% else %}
+            <p class="font-body-sm text-body-sm text-on-surface-variant">暂无领涨数据</p>
+            {% endif %}
+          </div>
+        </section>
+
+        <!-- 主力资金流（设计稿 Capital Flow：横向条 + 全市场净额） -->
+        <section class="bg-surface-container-lowest rounded-xl border border-surface-border p-stack-md shadow-sm">
+          <h2 class="font-headline-sm text-headline-sm text-primary mb-3 border-b border-surface-border pb-2">主力资金流</h2>
+          <div class="flex flex-col gap-3 mt-2">
+            {% for s in flow_inflows[:2] %}
+            <div class="flex justify-between items-center">
+              <span class="font-body-md text-body-md text-on-surface truncate pr-2">{{ s.name }}</span>
+              <div class="flex items-center gap-2 shrink-0">
+                <div class="w-16 h-1.5 bg-surface-container rounded-full overflow-hidden flex justify-end">
+                  <div class="h-full bg-up rounded-full" style="width:{% if max_inflow and max_inflow > 0 %}{{ (s.flow / max_inflow * 100)|round|int }}%{% else %}0%{% endif %}"></div>
+                </div>
+                <span class="font-data-tabular text-data-tabular text-up w-16 text-right font-bold">+{{ (s.flow|float / 1e4)|round(1) }}亿</span>
+              </div>
+            </div>
+            {% endfor %}
+            {% for s in flow_outflows[:2] %}
+            <div class="flex justify-between items-center">
+              <span class="font-body-md text-body-md text-on-surface truncate pr-2">{{ s.name }}</span>
+              <div class="flex items-center gap-2 shrink-0">
+                <div class="w-16 h-1.5 bg-surface-container rounded-full overflow-hidden">
+                  <div class="h-full bg-down rounded-full" style="width:{% if max_outflow and max_outflow > 0 %}{{ (s.abs / max_outflow * 100)|round|int }}%{% else %}0%{% endif %}"></div>
+                </div>
+                <span class="font-data-tabular text-data-tabular text-down w-16 text-right font-bold">{{ (s.flow|float / 1e4)|round(1) }}亿</span>
+              </div>
+            </div>
+            {% endfor %}
+            {% set flow_net_f = flow_net_total|float if flow_net_total is not none else none %}
+            <div class="mt-2 pt-3 border-t border-surface-border border-dashed flex justify-between items-center bg-surface-container-low p-2 rounded">
+              <span class="font-label-caps text-outline-strong">全市场净额</span>
+              <span class="font-data-tabular text-data-tabular font-bold {% if flow_net_f is not none and flow_net_f >= 0 %}text-up{% elif flow_net_f is not none %}text-down{% else %}text-on-surface-variant{% endif %}">
+                {% if flow_net_f is not none %}{{ "+" if flow_net_f >= 0 else "-" }}{{ (flow_net_f|abs / 1e4)|round(1) }}亿{% else %}--{% endif %}
+              </span>
+            </div>
+          </div>
+        </section>
+
+        <!-- 管线状态（设计稿 Pipeline & System Status，真实管线调度数据 + 系统信息） -->
+        <section class="bg-surface-container-lowest rounded-xl border border-surface-border p-stack-md shadow-sm">
+          <div class="flex items-center justify-between mb-4 border-b border-surface-border pb-2">
+            <h2 class="font-headline-sm text-headline-sm text-primary">管线状态</h2>
+            <span id="pipeStateDot" class="w-3 h-3 rounded-full bg-accent"></span>
+          </div>
+          <div class="flex flex-col gap-2 mb-4">
+            <div class="flex justify-between text-[13px]">
+              <span class="text-outline-strong">状态</span>
+              <span id="pipeStateText" class="text-accent font-bold">--</span>
+            </div>
+            <div class="flex justify-between text-[13px]">
+              <span class="text-outline-strong">上次执行</span>
+              <span id="pipeLastRun" class="font-data-tabular text-on-surface">--</span>
+            </div>
+            <div class="flex justify-between text-[13px]">
+              <span class="text-outline-strong">下次触发</span>
+              <span id="pipeNextRun" class="font-data-tabular text-on-surface">--</span>
+            </div>
+            <div class="flex justify-between text-[13px]">
+              <span class="text-outline-strong">运行累计</span>
+              <span id="pipeUptime" class="font-data-tabular text-on-surface">--</span>
+            </div>
+          </div>
+          <div class="bg-surface-container p-3 rounded-lg border border-outline-variant/30">
+            <h3 class="font-label-caps text-secondary mb-2 flex items-center gap-1">
+              <span class="material-symbols-outlined text-[14px]">info</span> 系统信息
+            </h3>
+            <div class="font-body-sm text-body-sm text-on-surface-variant flex flex-col gap-1">
+              <p class="flex items-center gap-2"><span class="w-1.5 h-1.5 rounded-full bg-success"></span> 基金池 <span class="font-data-tabular text-on-surface font-medium">{{ fund_pool }}</span> 只</p>
+              <p>数据更新：<span class="font-data-tabular">{{ data_latest_date or '--' }}</span></p>
+              <p>模型训练：<span class="font-data-tabular">{{ model_last_trained or '--' }}</span></p>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 推荐质量 ============ -->
+  <div id="tab-quality" class="hidden flex flex-col gap-stack-lg px-margin-page pt-stack-lg pb-16">
+    <!-- 页面标题区 -->
+    <div class="flex items-end justify-between gap-4 flex-wrap">
+      <div class="min-w-0">
+        <h1 class="font-display-lg text-display-lg text-primary mb-1.5 tracking-tight [overflow-wrap:anywhere]">推荐质量评估</h1>
+        <p class="font-body-md text-body-md text-on-surface-variant max-w-2xl">本页面展示最新统计周期内推荐组合的表现评估，包括信息系数（Rank IC）、赚钱胜率、累计收益与回撤等核心指标，数据每日盘后更新。</p>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-12 gap-stack-lg items-start">
+      <!-- Alpha 累计收益曲线（真实组合 vs 沪深300） -->
+      <div class="col-span-12 xl:col-span-8 bg-surface-container-lowest rounded-xl border border-surface-border shadow-sm p-stack-md">
+        <div class="flex items-center justify-between mb-4 gap-3 flex-wrap">
+          <div class="flex items-center gap-2">
+            <div class="w-2 h-2 rounded-full bg-accent animate-pulse"></div>
+            <h2 class="font-headline-md text-headline-md text-primary">Alpha 累计收益曲线</h2>
+          </div>
+          <div class="flex gap-4 font-label-xs text-label-xs text-on-surface-variant">
+            <span class="flex items-center gap-1.5"><span class="w-3 h-1 bg-accent rounded-full"></span>组合策略</span>
+            <span class="flex items-center gap-1.5"><span class="w-3 h-1 border border-dashed border-outline-strong rounded-full bg-transparent"></span>沪深300基准</span>
+          </div>
+        </div>
+        <div class="relative w-full h-[260px] md:h-[280px] rounded-lg bg-surface-container-low overflow-hidden">
+          {% if portfolio_svg %}
+          <div class="absolute inset-0 flex flex-col justify-between py-4 opacity-10 pointer-events-none">
+            <div class="w-full h-px bg-on-surface"></div>
+            <div class="w-full h-px bg-on-surface"></div>
+            <div class="w-full h-px bg-on-surface"></div>
+            <div class="w-full h-px bg-on-surface"></div>
+            <div class="w-full h-px bg-on-surface"></div>
+          </div>
+          <svg class="w-full h-full text-accent" viewBox="0 0 200 100" preserveAspectRatio="none">
+            <line x1="0" y1="{{ portfolio_baseline_y|round(1) }}" x2="200" y2="{{ portfolio_baseline_y|round(1) }}" stroke="var(--color-rule-2)" stroke-width="0.2" stroke-dasharray="2" vector-effect="non-scaling-stroke"/>
+            <path d="{{ portfolio_svg }}" fill="none" stroke="currentColor" stroke-width="1.5" vector-effect="non-scaling-stroke"/>
+            <path d="{{ portfolio_hs_svg }}" fill="none" stroke="var(--color-rule-2)" stroke-dasharray="2 2" stroke-width="1" vector-effect="non-scaling-stroke"/>
+          </svg>
+          {% else %}
+          <div class="flex items-center justify-center h-full">
+            <p class="text-on-surface-variant font-body-sm">暂无组合绩效数据（推荐运行数日后再看）</p>
+          </div>
+          {% endif %}
+          <div class="absolute bottom-3 left-3 md:left-4 flex flex-wrap gap-2">
+            <div class="bg-surface-container-lowest border border-surface-border rounded-md px-2.5 py-1.5">
+              <span class="font-label-xs text-label-xs text-on-surface-variant block">IC 信息系数</span>
+              <span class="font-data-tabular text-data-tabular font-bold text-on-surface">{% if latest_ic is not none %}{{ "%.3f"|format(latest_ic) }}{% else %}--{% endif %}</span>
+            </div>
+            <div class="bg-surface-container-lowest border border-surface-border rounded-md px-2.5 py-1.5">
+              <span class="font-label-xs text-label-xs text-on-surface-variant block">赚钱胜率</span>
+              <span class="font-data-tabular text-data-tabular font-bold text-on-surface">{% if latest_profit_rate is not none %}{{ "%.1f"|format(latest_profit_rate * 100) }}%{% else %}--{% endif %}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 侧栏（4 列） -->
+      <div class="col-span-12 xl:col-span-4 flex flex-col gap-stack-lg">
+        <!-- 核心评估指标（真实数据） -->
+        <div class="bg-surface-container-lowest rounded-xl border border-surface-border shadow-sm p-stack-md">
+          <h3 class="font-headline-sm text-headline-sm text-primary mb-4 border-b border-surface-border pb-2">核心评估指标</h3>
+          <div class="grid grid-cols-2 gap-4">
+            <div class="bg-surface-container-low p-3 rounded-lg">
+              <span class="font-label-caps text-label-caps text-outline-strong block mb-1.5">信息系数 (Rank IC)</span>
+              <span class="font-headline-md text-headline-md text-primary leading-none">{% if latest_ic is not none %}{{ "%.3f"|format(latest_ic) }}{% else %}--{% endif %}</span>
+            </div>
+            <div class="bg-surface-container-low p-3 rounded-lg">
+              <span class="font-label-caps text-label-caps text-outline-strong block mb-1.5">赚钱胜率</span>
+              <span class="font-headline-md text-headline-md text-on-surface leading-none">{% if latest_profit_rate is not none %}{{ "%.1f"|format(latest_profit_rate * 100) }}%{% else %}--{% endif %}</span>
+            </div>
+            <div class="bg-surface-container-low p-3 rounded-lg">
+              <span class="font-label-caps text-label-caps text-outline-strong block mb-1.5">最大回撤</span>
+              <span class="font-headline-md text-headline-md text-down leading-none">{% if max_drawdown is not none %}{{ max_drawdown }}%{% else %}--{% endif %}</span>
+            </div>
+            <div class="bg-surface-container-low p-3 rounded-lg">
+              <span class="font-label-caps text-label-caps text-outline-strong block mb-1.5">夏普比率</span>
+              <span class="font-headline-md text-headline-md text-on-surface leading-none">{% if sharpe_ratio is not none %}{{ sharpe_ratio }}{% else %}--{% endif %}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 最近一期评估（quality_metrics 真实数据） -->
+        {% if quality_metrics %}
+        {% set q0 = quality_metrics[0] %}
+        <div class="bg-surface-container rounded-xl border border-surface-border shadow-sm p-stack-md relative overflow-hidden">
+          <div class="absolute -right-12 -top-12 w-40 h-40 bg-gradient-to-br from-accent/10 to-transparent rounded-full blur-xl pointer-events-none"></div>
+          <div class="relative z-10 flex flex-col gap-3">
+            <div class="flex items-center gap-2">
+              <span class="material-symbols-outlined text-accent text-[24px]">auto_awesome</span>
+              <h4 class="font-headline-sm text-headline-sm text-on-surface">最近一期评估</h4>
+            </div>
+            <div class="grid grid-cols-3 gap-2">
+              <div class="flex flex-col gap-0.5">
+                <span class="font-label-xs text-label-xs text-on-surface-variant">超额胜率</span>
+                <span class="font-data-tabular text-data-tabular font-bold text-on-surface">{% if q0.excess_win_rate is not none %}{{ "%.1f"|format(q0.excess_win_rate * 100) }}%{% else %}--{% endif %}</span>
+              </div>
+              <div class="flex flex-col gap-0.5">
+                <span class="font-label-xs text-label-xs text-on-surface-variant">期望收益</span>
+                <span class="font-data-tabular text-data-tabular font-bold {% if q0.mean_abs_ret is not none and q0.mean_abs_ret >= 0 %}text-up{% elif q0.mean_abs_ret is not none %}text-down{% endif %}">{% if q0.mean_abs_ret is not none %}{{ "%+.2f"|format(q0.mean_abs_ret * 100) }}%{% else %}--{% endif %}</span>
+              </div>
+              <div class="flex flex-col gap-0.5">
+                <span class="font-label-xs text-label-xs text-on-surface-variant">盈亏比</span>
+                <span class="font-data-tabular text-data-tabular font-bold text-on-surface">{% if q0.payoff_ratio is not none %}{{ "%.2f"|format(q0.payoff_ratio) }}{% else %}--{% endif %}</span>
+              </div>
+            </div>
+            <p class="font-body-sm text-body-sm text-on-surface-variant leading-relaxed">统计区间 {{ q0.period_start }} ~ {{ q0.period_end }}，由进化引擎按赚钱口径度量推荐组合质量。</p>
+          </div>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- 月度质量指标统计（真实数据 6 列） -->
+    <div class="bg-surface-container-lowest rounded-xl border border-surface-border shadow-sm overflow-hidden">
+      <div class="px-4 md:px-5 py-3 border-b border-surface-border bg-surface-container-low">
+        <h3 class="font-headline-sm text-headline-sm text-primary">月度质量指标统计</h3>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full sm:min-w-[600px] text-left border-collapse data-table">
+          <thead>
+            <tr>
+              <th class="px-4 py-2.5 whitespace-nowrap">计算日期</th>
+              <th class="px-4 py-2.5 whitespace-nowrap hidden sm:table-cell">统计区间</th>
+              <th class="px-4 py-2.5 text-right whitespace-nowrap">IC</th>
+              <th class="px-4 py-2.5 text-right whitespace-nowrap">赚钱胜率</th>
+              <th class="px-4 py-2.5 text-right whitespace-nowrap">累计收益</th>
+              <th class="px-4 py-2.5 text-center whitespace-nowrap">样本</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for q in quality_metrics %}
+            <tr>
+              <td class="px-4 py-2 whitespace-nowrap font-data-tabular">{{ q.computed_date }}</td>
+              <td class="px-4 py-2 text-on-surface-variant hidden sm:table-cell">{{ q.period_start }} ~ {{ q.period_end }}</td>
+              <td class="px-4 py-2 text-right font-data-tabular {% if q.ic is not none and q.ic >= 0 %}text-up{% elif q.ic is not none %}text-down{% endif %}">{% if q.ic is not none %}{{ "%.3f"|format(q.ic) }}{% else %}--{% endif %}</td>
+              <td class="px-4 py-2 text-right font-data-tabular {% if q.profit_rate is not none and q.profit_rate >= 0.5 %}text-up{% elif q.profit_rate is not none %}text-down{% endif %}">{% if q.profit_rate is not none %}{{ "%.1f"|format(q.profit_rate * 100) }}%{% else %}--{% endif %}</td>
+              <td class="px-4 py-2 text-right font-data-tabular {% if q.cum_excess is not none and q.cum_excess >= 0 %}text-up{% elif q.cum_excess is not none %}text-down{% endif %}">{% if q.cum_excess is not none %}{{ "%+.2f"|format(q.cum_excess * 100) }}%{% else %}--{% endif %}</td>
+              <td class="px-4 py-2 text-center font-data-tabular">{{ q.sample_count }}</td>
+            </tr>
+            {% else %}
+            <tr>
+              <td colspan="6" class="px-4 py-10 text-center">
+                <div class="flex flex-col items-center gap-2">
+                  <span class="material-symbols-outlined text-accent text-[28px]">insights</span>
+                  <p class="text-on-surface-variant font-bold">暂无质量度量</p>
+                  <p class="text-on-surface-variant text-[11px]">月末进化引擎运行后自动生成</p>
+                </div>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Footer（设计稿样式，中文） -->
+  <footer class="bg-surface-container-low border-t border-surface-border py-stack-lg mt-auto">
+    <div class="max-w-[1440px] mx-auto px-margin-page flex flex-col md:flex-row justify-between items-center gap-stack-md">
+      <div class="flex flex-col items-center md:items-start gap-1">
+        <p class="font-body-sm text-body-sm text-on-surface-variant">© 2026 AI 量化投研终端 · Institutional Grade License</p>
+        <p class="font-body-sm text-body-sm text-outline-strong">风险提示：投资有风险，入市需谨慎。AI模型预测仅供参考，不作为投资依据。</p>
+      </div>
+      <div class="flex gap-gutter items-center">
+        <a href="/v1" class="font-label-caps text-label-caps text-on-surface-variant hover:text-accent uppercase transition-colors">旧版界面</a>
+        <span class="w-1.5 h-1.5 rounded-full bg-success"></span>
+      </div>
+    </div>
+  </footer>
+
+</div>
+</main>
+
+<!-- 快讯全文弹层 -->
+<div class="fixed inset-0 modal-backdrop z-[10000] hidden flex items-center justify-center p-sm" id="newsModal">
+  <div class="bg-paper-raised w-full max-w-lg border border-outline rounded-xl overflow-hidden flex flex-col">
+    <div class="p-3 border-b border-outline flex justify-between items-center">
+      <h2 class="font-label-caps text-[13px] uppercase font-bold flex items-center gap-2 tracking-widest text-primary">
+        <span class="material-symbols-outlined text-[16px] text-accent">campaign</span>
+        市场快讯
+      </h2>
+      <button class="material-symbols-outlined text-on-surface-variant hover:rotate-90 transition-transform" onclick="closeModal('newsModal')">close</button>
+    </div>
+    <div class="p-4 flex-1 overflow-y-auto space-y-3 visible-scrollbar max-h-[55dvh]" id="newsList"></div>
+    <div class="p-3 border-t border-outline flex items-center justify-between">
+      <span class="font-data-sm text-[11px] text-on-surface-variant" id="newsDetailIdx"></span>
+      <span class="font-label-caps text-[11px] text-on-surface-variant">点击条目展开摘要</span>
+    </div>
+  </div>
+</div>
+
+<!-- 系统日志弹层 -->
+<div class="fixed inset-0 modal-backdrop z-[10000] hidden flex items-center justify-center p-sm" id="systemLogModal">
+  <div class="bg-paper-raised w-full max-w-5xl border border-outline rounded-xl flex flex-col overflow-hidden max-h-[90dvh]">
+    <div class="p-3 border-b border-outline flex justify-between items-center log-shell select-none">
+      <h2 class="font-label-caps text-[12px] sm:text-[13px] uppercase font-bold flex items-center gap-2 tracking-widest text-white">
+        <span class="material-symbols-outlined text-[16px]">terminal</span>
+        系统实时日志
+      </h2>
+      <div class="flex items-center gap-3">
+        <span class="text-[12px] opacity-60 text-white" id="logCount">0 条</span>
+        <button class="text-[12px] font-bold uppercase tracking-wider px-2 py-1 border border-white/30 rounded-md hover:bg-white/10 transition-colors text-white" onclick="clearLogs()">清空</button>
+        <button class="material-symbols-outlined text-white hover:rotate-90 transition-transform" onclick="closeModal('systemLogModal')">close</button>
+      </div>
+    </div>
+    <div class="flex gap-1 px-3 pt-2 pb-1 border-b border-outline select-none flex-wrap bg-surface" id="logFilters">
+      <button class="log-filter text-[12px] font-bold uppercase tracking-wider px-2 py-1 rounded-md border border-outline hover:bg-surface-container transition-colors active" data-level="all" style="background:var(--color-surface-tint)">全部</button>
+      <button class="log-filter text-[12px] font-bold uppercase tracking-wider px-2 py-1 rounded-md border border-outline hover:bg-surface-container transition-colors" data-level="ERROR" style="color:var(--color-up)">ERROR</button>
+      <button class="log-filter text-[12px] font-bold uppercase tracking-wider px-2 py-1 rounded-md border border-outline hover:bg-surface-container transition-colors" data-level="WARNING" style="color:var(--color-warn)">WARNING</button>
+      <button class="log-filter text-[12px] font-bold uppercase tracking-wider px-2 py-1 rounded-md border border-outline hover:bg-surface-container transition-colors" data-level="INFO" style="color:var(--color-ink-2)">INFO</button>
+      <button class="log-filter text-[12px] font-bold uppercase tracking-wider px-2 py-1 rounded-md border border-outline hover:bg-surface-container transition-colors" data-level="DEBUG" style="color:var(--color-muted)">DEBUG</button>
+      <div class="flex-1"></div>
+      <input class="text-base sm:text-sm font-mono rounded-md border border-outline bg-paper-raised px-2 py-1 outline-none focus:border-accent w-full sm:w-48" placeholder="搜索日志..." id="logSearch" oninput="applyLogFilter()">
+    </div>
+    <div class="flex-1 font-mono text-[13px] overflow-y-auto log-shell relative visible-scrollbar" id="logContainer">
+      <button class="absolute bottom-2 right-2 z-10 w-8 h-8 bg-paper-raised text-graphite rounded-full flex items-center justify-center shadow-lg opacity-70 hover:opacity-100 transition-opacity hidden" id="logScrollBtn" title="滚动到底部" onclick="document.getElementById('logContainer').scrollTop=document.getElementById('logContainer').scrollHeight;document.getElementById('logScrollBtn').classList.add('hidden');">
+        <span class="material-symbols-outlined text-[16px]">arrow_downward</span>
+      </button>
+      <div id="logLines"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 密码弹层 -->
+<div class="fixed inset-0 modal-backdrop z-[10001] hidden flex items-center justify-center p-sm" id="passwordModal">
+  <div class="bg-paper-raised w-full max-w-sm border border-outline rounded-xl overflow-hidden flex flex-col">
+    <div class="p-3 border-b border-outline flex justify-between items-center log-shell">
+      <h2 class="font-label-caps text-[13px] uppercase font-bold flex items-center gap-2 tracking-widest text-white">
+        <span class="material-symbols-outlined text-[16px]">lock</span>
+        访问验证
+      </h2>
+      <button class="material-symbols-outlined text-white hover:rotate-90 transition-transform" onclick="closeModal('passwordModal')">close</button>
+    </div>
+    <div class="p-4 space-y-3">
+      <p class="text-[13px] font-bold text-on-surface-variant">请输入设置密码</p>
+      <input id="passwordInput" type="password" class="w-full p-2 rounded-md border border-outline bg-surface text-primary font-bold text-base sm:text-sm focus:border-accent focus:outline-none" placeholder="密码" onkeydown="if(event.key==='Enter')submitPassword()"/>
+      <p id="passwordError" class="text-error font-bold text-[13px] hidden">密码错误</p>
+    </div>
+    <div class="p-4 border-t border-outline">
+      <button class="w-full btn-primary py-2 rounded-md font-bold uppercase tracking-[0.2em]" onclick="submitPassword()">确认</button>
+    </div>
+  </div>
+</div>
+
+<!-- 设置弹层 -->
+<div class="fixed inset-0 modal-backdrop z-[10000] hidden flex items-center justify-center md:items-center md:justify-end" id="settingsModal">
+  <div class="bg-paper-raised w-full md:max-w-md md:h-full border-l border-outline rounded-l-xl flex flex-col max-h-dvh overflow-y-auto">
+    <div class="p-4 border-b border-outline flex justify-between items-center">
+      <h2 class="font-display-md font-bold uppercase">终端设置</h2>
+      <button class="material-symbols-outlined" onclick="closeModal('settingsModal')">close</button>
+    </div>
+    <div class="p-4 flex-1 overflow-y-auto space-y-6">
+      <section>
+        <h3 class="font-bold text-[13px] uppercase tracking-[0.2em] mb-2 border-b border-outline pb-1 text-primary">管线定时启动</h3>
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <p class="text-[13px] font-bold text-on-surface-variant">每日自动执行全流程管线（数据→推荐→监控→进化）</p>
+            <p class="text-[11px] font-data-sm text-on-surface-variant mt-0.5">仅在交易日运行（周末/节假日自动跳过）</p>
+          </div>
+          <button id="schedToggle" class="relative w-11 h-6 rounded-full border border-outline bg-surface transition-colors shrink-0" onclick="toggleSchedule()" role="switch" aria-checked="false" aria-label="定时开关">
+            <span id="schedToggleKnob" class="absolute top-0.5 left-0.5 w-[18px] h-[18px] rounded-full bg-on-surface-variant transition-[left,background-color] duration-200"></span>
+          </button>
+        </div>
+        <div id="schedBody">
+          <div class="flex items-center gap-2">
+            <select id="schedHour" class="flex-1 p-2 rounded-md border border-outline bg-surface text-primary font-bold text-base sm:text-sm focus:border-accent focus:outline-none" onchange="onSchedHourChange()" aria-label="定时小时"></select>
+            <select id="schedMinute" class="flex-1 p-2 rounded-md border border-outline bg-surface text-primary font-bold text-base sm:text-sm focus:border-accent focus:outline-none" onchange="onSchedMinuteChange()" aria-label="定时分钟"></select>
+          </div>
+          <div class="mt-3 flex items-center gap-2 p-2 rounded-md bg-surface border border-outline">
+            <span class="material-symbols-outlined text-[16px] text-accent">schedule</span>
+            <p class="text-[12px] font-bold text-on-surface-variant" id="schedNextRun">定时未启用</p>
+          </div>
+        </div>
+      </section>
+      <section>
+        <h3 class="font-bold text-[13px] uppercase tracking-[0.2em] mb-2 border-b border-outline pb-1 text-primary">手动执行</h3>
+        <button class="w-full btn-primary py-2 rounded-md font-bold uppercase tracking-[0.2em]" onclick="triggerPipeline()">立即启动推荐管线</button>
+      </section>
+      <section>
+        <h3 class="font-bold text-[13px] uppercase tracking-[0.2em] mb-2 border-b border-outline pb-1 text-primary">数据管理</h3>
+        <p class="text-[13px] font-bold text-on-surface-variant mb-2">永久删除全部推荐记录、赛道选择、监控事件与进化洞察（保留基金/净值底层数据）</p>
+        <button class="w-full btn-danger py-2 rounded-md font-bold uppercase tracking-[0.2em]" onclick="clearRecommendationsFlow()">清除全部推荐数据</button>
+      </section>
+      <section>
+        <h3 class="font-bold text-[13px] uppercase tracking-[0.2em] mb-2 border-b border-outline pb-1 text-primary">大模型配置</h3>
+        <div class="space-y-3">
+          <div><label class="font-bold text-[13px] block mb-1">API 地址</label><input id="llmBaseUrl" class="w-full p-2 rounded-md border border-outline bg-surface text-primary font-bold text-base sm:text-sm focus:border-accent focus:outline-none" placeholder="http://localhost:11434/v1"/></div>
+          <div><label class="font-bold text-[13px] block mb-1">API 密钥</label><input id="llmApiKey" type="password" class="w-full p-2 rounded-md border border-outline bg-surface text-primary font-bold text-base sm:text-sm focus:border-accent focus:outline-none" placeholder="sk-..."/></div>
+          <div><label class="font-bold text-[13px] block mb-1">模型名称</label><input id="llmModel" class="w-full p-2 rounded-md border border-outline bg-surface text-primary font-bold text-base sm:text-sm focus:border-accent focus:outline-none" placeholder="gpt-4o-mini"/></div>
+        </div>
+      </section>
+    </div>
+    <div class="p-4 border-t border-outline">
+      <button class="w-full btn-primary py-3 rounded-md font-bold uppercase tracking-[0.2em]" id="saveSettingsBtn" onclick="saveSettings()">保存并更新配置</button>
+    </div>
+  </div>
+</div>
+
+<!-- 基金详情滑出面板 -->
+<div class="fixed inset-0 modal-backdrop z-[10000] hidden flex justify-end" id="fundDetailModal">
+  <div class="bg-paper-raised w-full md:max-w-lg border-l border-outline rounded-l-xl flex flex-col h-full overflow-y-auto transform translate-x-full transition-transform duration-300" id="fundDetailPanel">
+    <div class="p-4 border-b border-outline flex justify-between items-center sticky top-0 bg-paper-raised z-10">
+      <h2 class="font-display-md font-bold uppercase tracking-tight" id="fundDetailTitle">基金详情</h2>
+      <button class="material-symbols-outlined w-9 h-9 flex items-center justify-center hover:bg-surface transition-colors" onclick="closeFundDetail()">close</button>
+    </div>
+    <div class="flex-1 p-4 space-y-4" id="fundDetailContent">
+      <div class="space-y-3">
+        <div class="skel h-5 w-3/4"></div>
+        <div class="skel h-4 w-1/2"></div>
+        <div class="skel h-4 w-full"></div>
+        <div class="skel h-4 w-5/6"></div>
+        <div class="skel h-16 w-full"></div>
+        <div class="skel h-32 w-full"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<script>window.__NEWS_ITEMS__ = {{ macro.news_items|tojson }};</script>
+<script>window.SIGNAL_LABELS = {{ signal_labels|tojson }};</script>
+<script src="/static/app.js"></script>
+</body>
+</html>
