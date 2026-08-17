@@ -197,7 +197,7 @@ class TestCandidateSummary:
     def test_return_stats(self, monkeypatch):
         """累计收益/命中率统计。"""
         def fake_summaries(items):
-            return {c: {"entry_nav": 1.0, "nav_at_first": None,
+            return {c: {"entry_nav": 1.0, "nav_at_first": 1.0,
                         "latest_nav": 1.2, "signal": None} for c, _ in items}
         monkeypatch.setattr(webapp.repo, "get_candidate_nav_summaries", fake_summaries)
         candidates = [
@@ -223,6 +223,19 @@ class TestCandidateSummary:
              "status": "HOLD", "exit_date": ""},
         ])
         assert lst[0]["status"] == "EXIT"
+        assert lst[0]["return"] is None
+
+    def test_first_nav_no_fallback_to_entry_nav(self, monkeypatch):
+        """推荐当日净值未出时显示 --（不回退 entry_nav 标记的前一日净值）。"""
+        def fake_summaries(items):
+            return {c: {"entry_nav": 0.9, "nav_at_first": None,
+                        "latest_nav": 1.2, "signal": None} for c, _ in items}
+        monkeypatch.setattr(webapp.repo, "get_candidate_nav_summaries", fake_summaries)
+        lst, total, n, hit = dashboard.candidate_summary([
+            {"code": "AAA", "name": "甲", "first_date": "2026-07-01", "rec_count": 1,
+             "status": "HOLD", "exit_date": ""},
+        ])
+        assert lst[0]["first_nav"] is None  # 当日净值未出 → 不显示
         assert lst[0]["return"] is None
 
 

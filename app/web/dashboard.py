@@ -27,8 +27,8 @@ def candidate_summary(candidates: list[dict]) -> tuple[list[dict], float, int, f
         # 展示状态与基金详情一致：取 monitor_events 最新监控信号（无信号时回退推荐状态）
         status = s["signal"] or (c["status"] or "HOLD")
         exit_date = c["exit_date"] or ""
-        # 首次推荐净值（优先读 recommend_log.entry_nav，缺失时查 fund_nav 当日净值，无则 --）
-        first_nav = s["entry_nav"] or s["nav_at_first"]
+        # 首次推荐净值 = 推荐当日的 fund_nav 净值（盘中运行当天净值未出时无记录，显示 --，不回退前一日）
+        first_nav = s["nav_at_first"]
         # 当前净值（取最新盘后净值，今日无则自动回退到前一日）
         cur_nav = s["latest_nav"] if first_nav is not None else None        # 累计收益
         ret = None
