@@ -362,6 +362,46 @@ class TestDefenseChain:
         )
         assert signal in ("WARNING", "HOLD")
 
+    def test_hold_default_detail_when_no_rule_triggered(self):
+        """HOLD 且无任何防线触发时 detail 不应为空（Web 展示"无详细原因"误导）。
+
+        回归：8-17 监控 R4 因报告期未更新跳过、其余规则未触发时 detail 为空，
+        Web 详情弹窗显示"无详细原因"。HOLD 是正常持有状态，需默认中性文案。
+        """
+        signal, detail, *_ = monitor_mod._apply_defense_chain(
+            monitor_mod.DefenseContext(code="X"), rules=[])
+        assert signal == "HOLD"
+        assert detail  # 非空，不能再是空串
+        assert "持有" in detail
+
+    def test_hold_with_reason_keeps_reason(self):
+        """已有防线 reason 的 HOLD 保留原原因，不覆盖为默认文案。"""
+        class FakeRule(monitor_mod.DefenseRule):
+            severity = 5
+            short_circuit = False
+
+            def check(self, ctx):
+                return monitor_mod.DefenseResult(signal="HOLD", reason="维持: 结构未变")
+
+        signal, detail, *_ = monitor_mod._apply_defense_chain(
+            monitor_mod.DefenseContext(code="X"), [FakeRule()])
+        assert signal == "HOLD"
+        assert detail == "维持: 结构未变"
+
+    def test_exit_warning_detail_not_affected(self):
+        """EXIT/WARNING 的 detail 来自防线 reason，不受默认文案逻辑影响。"""
+        class FakeExit(monitor_mod.DefenseRule):
+            severity = 5
+            short_circuit = True
+
+            def check(self, ctx):
+                return monitor_mod.DefenseResult(signal="EXIT", reason="模型连续转负")
+
+        signal, detail, *_ = monitor_mod._apply_defense_chain(
+            monitor_mod.DefenseContext(code="X"), [FakeExit()])
+        assert signal == "EXIT"
+        assert detail == "模型连续转负"
+
     def test_update_highest_nav_removed_from_monitor(self):
         """回归：监控重构（阶段一）后 monitor 不再依赖 update_highest_nav（2×ATR 追踪止损已移除）。"""
         assert not hasattr(monitor_mod, "update_highest_nav"), "monitor 不应再引用已废弃的 highest_nav 逻辑"

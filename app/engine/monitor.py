@@ -584,6 +584,10 @@ def _apply_defense_chain(ctx: DefenseContext,
             final_signal = result.signal
 
     detail = "; ".join(filter(None, reasons))
+    # HOLD 且无任何防线触发时补充中性文案：detail 为空会让 Web 展示"无详细原因"
+    # （误读为系统异常）；HOLD 是正常持有状态，需给出可读说明。
+    if final_signal == domain.SIGNAL_HOLD and not detail:
+        detail = "未触发任何异常信号，维持持有"
     return (final_signal, detail, trailing, drift, sector_adv)
 
 
