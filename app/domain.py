@@ -156,11 +156,11 @@ REGIME_BEAR = "BEAR"
 REGIME_NEUTRAL = "NEUTRAL"
 
 
-def regime_from_close_ma60(close, ma60) -> str:
-    """沪深300 close vs MA60 → BULL/BEAR/NEUTRAL（回测/生产共用，避免两套判定漂移）。"""
-    if close is None or ma60 is None or ma60 <= 0:
+def regime_from_close_ema60(close, ema60) -> str:
+    """沪深300 close vs EMA60 → BULL/BEAR/NEUTRAL（回测/生产共用，避免两套判定漂移）。"""
+    if close is None or ema60 is None or ema60 <= 0:
         return REGIME_NEUTRAL
-    return REGIME_BULL if close > ma60 else REGIME_BEAR
+    return REGIME_BULL if close > ema60 else REGIME_BEAR
 
 
 # 大盘状态中文文案（Web 模板/前端展示单一来源）

@@ -134,7 +134,7 @@ def get_index_rows(code: str='sh000300', conn=None) -> list[tuple]:
     with db_conn() as conn:
         return conn.execute(sql, (code,)).fetchall()
 
-def get_index_series(code: str='sh000300', columns: tuple[str, ...]=('date', 'close', 'volume', 'ma60'), since: str | None=None) -> list[tuple]:
+def get_index_series(code: str='sh000300', columns: tuple[str, ...]=('date', 'close', 'volume', 'ema60'), since: str | None=None) -> list[tuple]:
     """宽基指数日线序列（按日期升序），供特征/训练/回测/Web 共用。"""
     cols = ', '.join(columns)
     sql = f'SELECT {cols} FROM index_daily WHERE code = ?'
@@ -185,26 +185,26 @@ def get_latest_holdings_rows(conn=None) -> list[tuple]:
     return list(rows)
 
 def get_market_regime(conn=None) -> str:
-    """沪深300 close vs ma60 → BULL/BEAR/NEUTRAL（大盘状态机单一来源）。"""
+    """沪深300 close vs EMA60 → BULL/BEAR/NEUTRAL（大盘状态机单一来源）。"""
     with conn or db_conn() as conn:
-        row = conn.execute("SELECT close, ma60 FROM index_daily WHERE code='sh000300' AND close IS NOT NULL AND ma60 IS NOT NULL ORDER BY date DESC LIMIT 1").fetchone()
-    return domain.regime_from_close_ma60(row[0] if row else None, row[1] if row else None)
+        row = conn.execute("SELECT close, ema60 FROM index_daily WHERE code='sh000300' AND close IS NOT NULL AND ema60 IS NOT NULL ORDER BY date DESC LIMIT 1").fetchone()
+    return domain.regime_from_close_ema60(row[0] if row else None, row[1] if row else None)
 
 def get_market_technical() -> dict | None:
     """沪深300最新技术面快照（结构化数据），供 LLM regime 判定注入 prompt；数据不足返回 None。
 
-    返回 {"date", "close", "chg_pct", "ma60", "closes"}；文案拼装由消费方（LLM 装配）负责。
+    返回 {"date", "close", "chg_pct", "ema60", "closes"}；文案拼装由消费方（LLM 装配）负责。
     """
     with db_conn() as conn:
-        rows = conn.execute("SELECT date, close, ma60 FROM index_daily WHERE code='sh000300' AND close IS NOT NULL ORDER BY date DESC LIMIT 6").fetchall()
+        rows = conn.execute("SELECT date, close, ema60 FROM index_daily WHERE code='sh000300' AND close IS NOT NULL ORDER BY date DESC LIMIT 6").fetchall()
     if not rows or not rows[0][2]:
         return None
-    latest_date, close, ma60 = rows[0]
+    latest_date, close, ema60 = rows[0]
     prev_close = rows[1][1] if len(rows) > 1 and rows[1][1] else close
     chg = (close - prev_close) / prev_close * 100 if prev_close else 0.0
     return {
         "date": latest_date, "close": close, "chg_pct": chg,
-        "ma60": ma60, "closes": [r[1] for r in reversed(rows)],
+        "ema60": ema60, "closes": [r[1] for r in reversed(rows)],
     }
 
 def get_meta(key: str) -> str | None:

@@ -128,15 +128,15 @@ def _score_at(bst: lgb.Booster, bt_date: pd.Timestamp, idx_close: pd.Series,
 
 
 def _regime_at(idx_close: pd.Series, bt_date: pd.Timestamp) -> str:
-    """回测日 regime：收盘 vs 当日 EMA60（读指数表 ma60 列，与线上口径一致）。"""
-    rows = repo.get_index_series("sh000300", ("date", "close", "ma60"),
+    """回测日 regime：收盘 vs 当日 EMA60（读指数表 ema60 列，与线上口径一致）。"""
+    rows = repo.get_index_series("sh000300", ("date", "close", "ema60"),
                                  since=bt_date.strftime("%Y-%m-%d"))
     if not rows or rows[0][0] != bt_date.strftime("%Y-%m-%d"):
         return domain.REGIME_NEUTRAL
-    _, close, ma60 = rows[0]
-    if ma60 is None:
+    _, close, ema60 = rows[0]
+    if ema60 is None:
         return domain.REGIME_NEUTRAL
-    return domain.regime_from_close_ma60(float(close), float(ma60))
+    return domain.regime_from_close_ema60(float(close), float(ema60))
 
 
 # ========== 3. 规则门（可回测的绝对门 + 防追高护栏） ==========
@@ -157,11 +157,11 @@ def _pctile_ret(idx_close: pd.Series, bt_pos: int, pct_window: int,
     return float((roll < cur).mean() * 100)
 
 
-def gate_verdict(close: float, ma60: float, mom20: float, pctile: float | None,
+def gate_verdict(close: float, ema60: float, mom20: float, pctile: float | None,
                  mom_threshold: float, pct_threshold: float) -> tuple[bool, list[str]]:
     """规则门：任一条件触发 → 不可投。返回 (是否可投, 触发原因列表)。"""
     reasons: list[str] = []
-    if ma60 is not None and close < ma60:
+    if ema60 is not None and close < ema60:
         reasons.append("BEAR(收盘<EMA60)")
     if mom20 * 100 < mom_threshold:
         reasons.append(f"指数20日动量{mom20 * 100:.1f}%<{mom_threshold}%")
@@ -239,10 +239,10 @@ def _process_point(bt_date_str: str, gate: str, mom_threshold: float,
     避免跨进程传递大对象与全局状态。
     """
     bt_date = pd.Timestamp(bt_date_str)
-    idx_rows = repo.get_index_series("sh000300", ("date", "close", "volume", "ma60"))
+    idx_rows = repo.get_index_series("sh000300", ("date", "close", "volume", "ema60"))
     if not idx_rows:
         return None
-    idx_df = pd.DataFrame(idx_rows, columns=["date", "close", "volume", "ma60"])
+    idx_df = pd.DataFrame(idx_rows, columns=["date", "close", "volume", "ema60"])
     idx_df["date"] = pd.to_datetime(idx_df["date"])
     idx_df = idx_df.set_index("date").sort_index()
     idx_close, idx_vol = idx_df["close"], idx_df["volume"]
@@ -303,11 +303,11 @@ def _process_point(bt_date_str: str, gate: str, mom_threshold: float,
     # 规则门
     bt_pos = idx_close.index.get_indexer([bt_date])[0]
     close = float(idx_close.iloc[bt_pos])
-    ma60 = float(idx_df["ma60"].iloc[bt_pos]) if pd.notna(idx_df["ma60"].iloc[bt_pos]) else None
+    ema60 = float(idx_df["ema60"].iloc[bt_pos]) if pd.notna(idx_df["ema60"].iloc[bt_pos]) else None
     mom20 = close / float(idx_close.iloc[bt_pos - _STEP_DAYS]) - 1.0 if bt_pos >= _STEP_DAYS else 0.0
     pctile = _pctile_ret(idx_close, bt_pos, pct_window, pct_lookback)
     if gate == "rules":
-        investable, reasons = gate_verdict(close, ma60, mom20, pctile,
+        investable, reasons = gate_verdict(close, ema60, mom20, pctile,
                                            mom_threshold, pct_threshold)
     else:
         investable, reasons = True, []
@@ -337,10 +337,10 @@ def run_walkforward(start: str, end: str, gate: str, mom_threshold: float,
                     out_stem: str = "backtest_walkforward",
                     workers: int = 4, train_pool: int = 1200,
                     mode: str = "market", profit_threshold: float = domain.PROFIT_THRESHOLD * 100) -> dict:
-    idx_rows = repo.get_index_series("sh000300", ("date", "close", "volume", "ma60"))
+    idx_rows = repo.get_index_series("sh000300", ("date", "close", "volume", "ema60"))
     if not idx_rows:
         raise RuntimeError("沪深300指数数据缺失")
-    idx_df = pd.DataFrame(idx_rows, columns=["date", "close", "volume", "ma60"])
+    idx_df = pd.DataFrame(idx_rows, columns=["date", "close", "volume", "ema60"])
     idx_df["date"] = pd.to_datetime(idx_df["date"])
     idx_df = idx_df.set_index("date").sort_index()
 

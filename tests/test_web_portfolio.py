@@ -34,7 +34,7 @@ def _fake_nav_rows(codes):
     return [r for r in FUND_NAV_ROWS if r[0] in codes]
 
 
-def _fake_index_series(code="sh000300", columns=("date", "close", "volume", "ma60"), since=None):
+def _fake_index_series(code="sh000300", columns=("date", "close", "volume", "ema60"), since=None):
     return HS_ROWS
 
 

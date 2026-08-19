@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS index_daily (
     low REAL,
     close REAL,
     volume REAL,
-    ma60 REAL,
+    ema60 REAL,
     PRIMARY KEY (code, date)
 );
 

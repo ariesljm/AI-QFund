@@ -35,7 +35,7 @@ def _regime_at_date(idx_df: pd.DataFrame, date: pd.Timestamp) -> str:
     if len(row) == 0:
         return domain.REGIME_NEUTRAL
     last = row.iloc[-1]
-    return domain.regime_from_close_ma60(last["close"], last["ma60"])
+    return domain.regime_from_close_ema60(last["close"], last["ema60"])
 
 
 def _score_funds_at_date(nav_df: pd.DataFrame, idx_df: pd.DataFrame,
@@ -155,10 +155,10 @@ def run_backtest(start_date: str | None = None, end_date: str | None = None,
     stop_mode/stop_param：止损模拟（"none"/"atr"=ATR倍数/"hard"=回撤百分比），
     供止损参数扫描（阶段6 续）；none 时 forward_stop == forward_abs。
     """
-    idx_rows = repo.get_index_series("sh000300", columns=("date", "close", "volume", "ma60"))
+    idx_rows = repo.get_index_series("sh000300", columns=("date", "close", "volume", "ema60"))
     if not idx_rows:
         raise RuntimeError("指数数据缺失")
-    idx_df = pd.DataFrame(idx_rows, columns=["date", "close", "volume", "ma60"])
+    idx_df = pd.DataFrame(idx_rows, columns=["date", "close", "volume", "ema60"])
     idx_df["date"] = pd.to_datetime(idx_df["date"])
     idx_df = idx_df.set_index("date").sort_index()
 

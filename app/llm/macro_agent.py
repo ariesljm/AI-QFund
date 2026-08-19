@@ -85,10 +85,10 @@ def _load_available_sectors() -> list[str]:
 
 def _format_market_technical(tech: dict) -> str:
     """把结构化技术面快照拼成 LLM prompt 中文段落（repo 只返回数据，文案归装配方）。"""
-    pos = "上方" if tech["close"] > tech["ma60"] else "下方"
+    pos = "上方" if tech["close"] > tech["ema60"] else "下方"
     trend = " / ".join(f"{c:,.0f}" for c in tech["closes"])
     return (f"最新交易日 {tech['date']} 沪深300：收盘 {tech['close']:,.2f} 点"
-            f"（较上交易日 {tech['chg_pct']:+.2f}%），EMA60={tech['ma60']:,.2f} 点，"
+            f"（较上交易日 {tech['chg_pct']:+.2f}%），EMA60={tech['ema60']:,.2f} 点，"
             f"收盘价位于 EMA60 {pos}；近6个交易日收盘点 {trend}")
 
 
@@ -196,7 +196,7 @@ def _resolve_sector_selections(
         raise RuntimeError("LLM 赛道选择未返回 JSON 对象（返回数组或其他结构）")
     pool_names = set(pool.candidate_names) if pool else None
 
-    # regime：纯技术规则（close vs MA60）以代码判定为准，量化覆盖 LLM 输出
+    # regime：纯技术规则（close vs EMA60）以代码判定为准，量化覆盖 LLM 输出
     quant_regime = repo.get_market_regime()
     llm_regime = parsed.get("regime_label", "neutral")
     regime_label = quant_regime if quant_regime else domain.normalize_regime_label(llm_regime)

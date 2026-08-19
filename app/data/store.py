@@ -57,12 +57,12 @@ _EMA_K = 2 / (_EMA_PERIOD + 1)
 
 
 def save_index_daily(index_code: str, data: list[dict], full_refresh: bool = False) -> int:
-    """写入指数日线（ma60 用 60 日 EMA 近似，增量递推）。
+    """写入指数日线（ema60 用 60 日 EMA 递推，增量写入）。
 
     full_refresh=True 时删除该 code 旧数据后按全量重算（用于补拉历史）；
     否则增量：插入本地最新日期之后的新数据，并补齐接口窗口内本地缺失的历史
     缺口（指数表行数小，用日期集合判断，成本可忽略）。补齐缺口后自动全量
-    重算 ma60，保持 EMA 递推连续（缺口插入会破坏增量递推的连续性）。
+    重算 ema60，保持 EMA 递推连续（缺口插入会破坏增量递推的连续性）。
     """
     with db_conn() as conn:
         local_dates = {
@@ -78,7 +78,7 @@ def save_index_daily(index_code: str, data: list[dict], full_refresh: bool = Fal
             local_max_date = None
         else:
             row = conn.execute(
-                "SELECT date, ma60 FROM index_daily WHERE code = ? ORDER BY date DESC LIMIT 1",
+                "SELECT date, ema60 FROM index_daily WHERE code = ? ORDER BY date DESC LIMIT 1",
                 (index_code,),
             ).fetchone()
             prev_ema = row[1] if row and row[1] is not None else None
@@ -120,7 +120,7 @@ def save_index_daily(index_code: str, data: list[dict], full_refresh: bool = Fal
                     ema = None
 
             conn.execute(
-                "INSERT OR REPLACE INTO index_daily (code, date, open, high, low, close, volume, ma60) "
+                "INSERT OR REPLACE INTO index_daily (code, date, open, high, low, close, volume, ema60) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (index_code, d["date"], d["open"], d["high"], d["low"], d["close"], d["volume"], ema),
             )
@@ -130,13 +130,13 @@ def save_index_daily(index_code: str, data: list[dict], full_refresh: bool = Fal
 
         if backfilled:
             # 缺口插入破坏了 EMA 递推连续性：按完整序列重算
-            _recompute_ma60(conn, index_code)
+            _recompute_ema60(conn, index_code)
 
         return written
 
 
-def _recompute_ma60(conn, index_code: str) -> None:
-    """按完整日期序列重算该指数 ma60（EMA60 近似），修复缺口插入导致的递推错位。"""
+def _recompute_ema60(conn, index_code: str) -> None:
+    """按完整日期序列重算该指数 ema60（EMA60），修复缺口插入导致的递推错位。"""
     rows = conn.execute(
         "SELECT date, close FROM index_daily WHERE code = ? ORDER BY date ASC",
         (index_code,),
@@ -152,7 +152,7 @@ def _recompute_ma60(conn, index_code: str) -> None:
                 ema = sum(closes[-_EMA_PERIOD:]) / _EMA_PERIOD
         if ema is not None:
             conn.execute(
-                "UPDATE index_daily SET ma60 = ? WHERE code = ? AND date = ?",
+                "UPDATE index_daily SET ema60 = ? WHERE code = ? AND date = ?",
                 (ema, index_code, date),
             )
 

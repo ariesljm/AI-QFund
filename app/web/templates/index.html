@@ -43,15 +43,15 @@
     </div>
     <div class="flex items-center gap-4 shrink-0">
       <!-- 实时指数块（保留：/api/indices 15s 轮询） -->
-      <div class="hidden lg:flex items-center gap-4 py-1 px-3 bg-surface-container rounded-lg" title="实时行情（15 秒轮询）">
+      <div class="hidden sm:flex items-center gap-3 py-1 px-2.5 bg-surface-container rounded-lg" title="实时行情（15 秒轮询）">
         <div class="flex flex-col leading-none">
-          <span class="font-label-caps text-label-caps text-on-surface-variant">沪深300</span>
-          <span class="font-data-tabular text-data-tabular text-on-surface-variant mt-0.5"><span id="idx-300-value">—</span> <span id="idx-300-pct" class="font-data-sm">—</span></span>
+          <span class="font-label-caps text-label-caps text-on-surface-variant text-[10px]">沪深300</span>
+          <span class="font-data-tabular text-data-tabular mt-0.5"><span id="idx-300-value">—</span> <span id="idx-300-pct" class="font-data-sm">—</span></span>
         </div>
-        <div class="w-px h-6 bg-outline-variant"></div>
+        <div class="w-px h-5 bg-outline-variant"></div>
         <div class="flex flex-col leading-none">
-          <span class="font-label-caps text-label-caps text-on-surface-variant">上证指数</span>
-          <span class="font-data-tabular text-data-tabular text-on-surface-variant mt-0.5"><span id="idx-sse-value">—</span> <span id="idx-sse-pct" class="font-data-sm">—</span></span>
+          <span class="font-label-caps text-label-caps text-on-surface-variant text-[10px]">上证指数</span>
+          <span class="font-data-tabular text-data-tabular mt-0.5"><span id="idx-sse-value">—</span> <span id="idx-sse-pct" class="font-data-sm">—</span></span>
         </div>
       </div>
       <span class="hidden xl:flex items-center gap-1.5 font-data-tabular text-data-tabular text-on-surface-variant whitespace-nowrap" title="行情更新时间">
@@ -294,39 +294,39 @@
               <table class="w-full sm:min-w-[640px] text-left border-collapse data-table">
                 <thead>
                   <tr>
-                    <th class="px-4 py-2.5 whitespace-nowrap">代码</th>
-                    <th class="px-4 py-2.5 whitespace-nowrap">名称</th>
-                    <th class="px-4 py-2.5 whitespace-nowrap hidden sm:table-cell">推荐日期</th>
-                    <th class="px-4 py-2.5 text-right whitespace-nowrap hidden sm:table-cell">推荐净值</th>
-                    <th class="px-4 py-2.5 text-right whitespace-nowrap hidden sm:table-cell">当前净值</th>
-                    <th class="px-4 py-2.5 text-right whitespace-nowrap">累计收益</th>
-                    <th class="px-4 py-2.5 text-center whitespace-nowrap hidden sm:table-cell">推荐次数</th>
-                    <th class="px-4 py-2.5 text-center whitespace-nowrap">信号</th>
+                    <th class="px-3 py-2 whitespace-nowrap text-[11px]">代码</th>
+                    <th class="px-3 py-2 whitespace-nowrap text-[11px]">名称</th>
+                    <th class="px-3 py-2 text-right whitespace-nowrap text-[11px]">推荐日期</th>
+                    <th class="px-3 py-2 text-right whitespace-nowrap text-[11px]">推荐净值</th>
+                    <th class="px-3 py-2 text-right whitespace-nowrap text-[11px]">当前净值</th>
+                    <th class="px-3 py-2 text-right whitespace-nowrap text-[11px]">累计收益</th>
+                    <th class="px-3 py-2 text-center whitespace-nowrap text-[11px]">推荐次数</th>
+                    <th class="px-3 py-2 text-center whitespace-nowrap text-[11px]">信号</th>
                   </tr>
                 </thead>
                 <tbody id="trackingBody">
                   {% for c in candidates %}
                   <tr data-page="{{ (loop.index0 // 15) + 1 }}" class="cursor-pointer" onclick="openFundDetail('{{ c.code }}')">
-                    <td class="px-4 py-2 text-accent whitespace-nowrap font-data-tabular">{{ c.code }}</td>
-                    <td class="px-4 py-2 font-semibold truncate max-w-[120px] sm:max-w-[150px] text-on-surface" title="{{ c.name }}">{{ c.name }}</td>
-                    <td class="px-4 py-2 text-on-surface-variant hidden sm:table-cell font-data-tabular">{{ c.first_date[:10] if c.first_date else '--' }}</td>
-                    <td class="px-4 py-2 text-right hidden sm:table-cell font-data-tabular">{% if c.first_nav is not none %}{{ "%.4f"|format(c.first_nav) }}{% else %}--{% endif %}</td>
-                    <td class="px-4 py-2 text-right hidden sm:table-cell font-data-tabular">{% if c.cur_nav is not none %}{{ "%.4f"|format(c.cur_nav) }}{% else %}--{% endif %}</td>
-                    <td class="px-4 py-2 text-right font-bold whitespace-nowrap font-data-tabular {% if c.return is not none and c.return >= 0 %}text-up{% elif c.return is not none %}text-down{% endif %}">
+                    <td class="px-3 py-1.5 text-accent whitespace-nowrap font-data-tabular text-[12px]">{{ c.code }}</td>
+                    <td class="px-3 py-1.5 font-semibold text-on-surface text-[12px] truncate max-w-[80px] sm:max-w-[120px]" title="{{ c.name }}">{{ c.name }}</td>
+                    <td class="px-3 py-1.5 text-on-surface-variant text-right font-data-tabular text-[11px]">{{ c.first_date[:10] if c.first_date else '--' }}</td>
+                    <td class="px-3 py-1.5 text-right font-data-tabular text-[11px]">{% if c.first_nav is not none %}{{ "%.4f"|format(c.first_nav) }}{% else %}--{% endif %}</td>
+                    <td class="px-3 py-1.5 text-right font-data-tabular text-[11px]">{% if c.cur_nav is not none %}{{ "%.4f"|format(c.cur_nav) }}{% else %}--{% endif %}</td>
+                    <td class="px-3 py-1.5 text-right font-bold whitespace-nowrap font-data-tabular text-[12px] {% if c.return is not none and c.return >= 0 %}text-up{% elif c.return is not none %}text-down{% endif %}">
                       {% if c.return is not none %}{{ "%+.2f"|format(c.return) }}%{% else %}--{% endif %}
                     </td>
-                    <td class="px-4 py-2 text-center hidden sm:table-cell font-data-tabular">{{ c.rec_count }}</td>
-                    <td class="px-4 py-2 text-center">
+                    <td class="px-3 py-1.5 text-center font-data-tabular text-[11px]">{{ c.rec_count }}</td>
+                    <td class="px-3 py-1.5 text-center">
                       {% if c.status == 'HOLD' or c.status == 'PASS' %}
-                      <span class="badge badge--hold">{{ signal_labels.get(c.status, '持有') }}</span>
+                      <span class="badge badge--hold text-[10px] px-1.5 py-0.5">{{ signal_labels.get(c.status, '持有') }}</span>
                       {% elif c.status == 'ADD' or c.status == 'BUY_MORE' %}
-                      <span class="badge badge--add">{{ signal_labels.get(c.status, '加仓') }}</span>
+                      <span class="badge badge--add text-[10px] px-1.5 py-0.5">{{ signal_labels.get(c.status, '加仓') }}</span>
                       {% elif c.status == 'CAUTION' or c.status == 'WARNING' %}
-                      <span class="badge badge--warn">{{ signal_labels.get(c.status, '警惕') }}</span>
+                      <span class="badge badge--warn text-[10px] px-1.5 py-0.5">{{ signal_labels.get(c.status, '警惕') }}</span>
                       {% elif c.status == 'EXIT' or c.status == 'REJECT' %}
-                      <span class="badge badge--exit">{{ signal_labels.get(c.status, '离场') }}</span>
+                      <span class="badge badge--exit text-[10px] px-1.5 py-0.5">{{ signal_labels.get(c.status, '离场') }}</span>
                       {% else %}
-                      <span class="badge badge--muted">{{ c.status }}</span>
+                      <span class="badge badge--muted text-[10px] px-1.5 py-0.5">{{ c.status }}</span>
                       {% endif %}
                     </td>
                   </tr>

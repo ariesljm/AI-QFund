@@ -18,50 +18,50 @@ class TestGateVerdict:
     """规则门三条件判定：任一触发 → 不可投。"""
 
     def test_all_clear_investable(self):
-        ok, reasons = gate_verdict(close=5000.0, ma60=4900.0, mom20=0.02,
+        ok, reasons = gate_verdict(close=5000.0, ema60=4900.0, mom20=0.02,
                                    pctile=50.0, mom_threshold=-3.0,
                                    pct_threshold=90.0)
         assert ok is True
         assert reasons == []
 
     def test_bear_condition(self):
-        ok, reasons = gate_verdict(close=4800.0, ma60=4900.0, mom20=0.01,
+        ok, reasons = gate_verdict(close=4800.0, ema60=4900.0, mom20=0.01,
                                    pctile=50.0, mom_threshold=-3.0,
                                    pct_threshold=90.0)
         assert ok is False
         assert any("BEAR" in r for r in reasons)
 
     def test_momentum_condition(self):
-        ok, reasons = gate_verdict(close=5000.0, ma60=4900.0, mom20=-0.04,
+        ok, reasons = gate_verdict(close=5000.0, ema60=4900.0, mom20=-0.04,
                                    pctile=50.0, mom_threshold=-3.0,
                                    pct_threshold=90.0)
         assert ok is False
         assert any("动量" in r for r in reasons)
 
     def test_pctile_condition(self):
-        ok, reasons = gate_verdict(close=5000.0, ma60=4900.0, mom20=0.01,
+        ok, reasons = gate_verdict(close=5000.0, ema60=4900.0, mom20=0.01,
                                    pctile=95.0, mom_threshold=-3.0,
                                    pct_threshold=90.0)
         assert ok is False
         assert any("分位" in r for r in reasons)
 
     def test_multiple_conditions_accumulate(self):
-        ok, reasons = gate_verdict(close=4800.0, ma60=4900.0, mom20=-0.05,
+        ok, reasons = gate_verdict(close=4800.0, ema60=4900.0, mom20=-0.05,
                                    pctile=99.0, mom_threshold=-3.0,
                                    pct_threshold=90.0)
         assert ok is False
         assert len(reasons) == 3
 
     def test_ma60_none_skips_bear(self):
-        """ma60 缺失时 BEAR 条件跳过，其余条件照常判定。"""
-        ok, reasons = gate_verdict(close=5000.0, ma60=None, mom20=0.01,
+        """ema60 缺失时 BEAR 条件跳过，其余条件照常判定。"""
+        ok, reasons = gate_verdict(close=5000.0, ema60=None, mom20=0.01,
                                    pctile=50.0, mom_threshold=-3.0,
                                    pct_threshold=90.0)
         assert ok is True
         assert reasons == []
 
     def test_pctile_none_skips_overheat(self):
-        ok, reasons = gate_verdict(close=5000.0, ma60=4900.0, mom20=0.01,
+        ok, reasons = gate_verdict(close=5000.0, ema60=4900.0, mom20=0.01,
                                    pctile=None, mom_threshold=-3.0,
                                    pct_threshold=90.0)
         assert ok is True
