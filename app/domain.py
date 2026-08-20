@@ -90,8 +90,6 @@ class SectorPolicy:
     monitor.check_sector_anchor、macro_agent._suggest_quant 三处各自实现，
     同一领域事实"基金以第一行业锚定赛道、命中回避即否决"各写一遍。
     收敛为本对象后，各引擎只消费判定结果，改解析/门槛口径只动此处。
-    （macro_agent._suggest_llm_free 为 A/B 回滚策略：sector_strategy 配置
-    切换，保留原样，仅 quant_pool 正式路径消费本对象）
     用法：一次构造（available 来自 repo.get_available_sectors），多次 resolve。
     """
 
@@ -99,13 +97,18 @@ class SectorPolicy:
         """available 为 RBSA 表中真实存在的行业名清单。"""
         self._available = list(available)
 
-    def resolve(self, names: list[str]) -> list[str]:
-        """LLM 自由行业名 → RBSA 行业名（别名+匹配），去重保序。"""
+    def resolve(self, names: list[str], pool_names: set[str] | None = None) -> list[str]:
+        """LLM 自由行业名 → RBSA 行业名（别名+匹配），去重保序。
+
+        pool_names 非空时限定只返回池内赛道（量化定池模式），
+        为 None 则不限池（free 模式）。
+        """
         resolved: list[str] = []
         for s in names:
             m = resolve_sector_name(s, self._available)
             if m and m not in resolved:
-                resolved.append(m)
+                if pool_names is None or m in pool_names:
+                    resolved.append(m)
         return resolved
 
     def resolve_set(self, names: list[str]) -> set[str]:

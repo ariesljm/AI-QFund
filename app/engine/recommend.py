@@ -483,6 +483,27 @@ def run_recommendation(retrain: bool = False) -> None:
 
     前置数据门控由管线槽位 / CLI 入口执行（check_recommend_ready），
     本入口只消费就绪数据，不再自审自拦（架构深化候选 2）。
+
+    阶段脉络（跨文件）：
+    ┌── 阶段1: 宏观分析 + 选赛道 ──────────────────────────────
+    │  build_macro_context(date_str) [macro_agent.py]
+    │  ← 内部: sector_pool.py → prompts.py → client.call_llm
+    │  输出: MacroContext (recommended_sectors, risk_sectors, regime_label)
+    ├── 阶段2: 赛道内相对化排序 ───────────────────────────────
+    │  _rank_within_sectors(ctx, model) [recommend.py]
+    │  ← 内部: calculator.score_frame, domain.SectorPolicy
+    │  输出: finalists (各赛道候选基金, 含 combo 跨赛道可比)
+    ├── 阶段3: 逐赛道 LLM 终选定论 ────────────────────────────
+    │  _llm_final_pick(sector_candidates, ctx, insights) [recommend.py]
+    │  ← 内部: prompts.py → client.call_llm
+    │  输出: selected_code + 论点锚点 snapshot
+    ├── 阶段4: 落库 ──────────────────────────────────────────
+    │  _save_recommendation(date_str, selected, ...) [recommend.py]
+    │  _write_sector_selection(date_str, ctx, saved_id) [recommend.py]
+    │  ← repo: insert_recommendation / insert_sector_selection
+    └──────────────────────────────────────────────────────────
+    各阶段输出经 MacroContext / finalists 等结构化对象传递，
+    不依赖模块级全局变量；任一阶段可独立 mock 测试。
     """
     date_str = datetime.now().strftime("%Y-%m-%d")
 

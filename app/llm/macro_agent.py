@@ -8,7 +8,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 
 from app.llm.client import call_llm, parse_llm_json
-from app.llm.prompts import (sector_selection_prompt, sector_selection_prompt_free,
+from app.llm.prompts import (sector_selection_prompt,
                              sector_selection_system_prompt,
                              news_brief_prompt)
 from app import domain
@@ -54,7 +54,7 @@ def build_macro_context(date_str: str | None = None) -> MacroContext:
 
     news_brief = _summarize_news(news.get("summary", ""))
 
-    ctx = _suggest_sectors(date_str, news, flow, news_brief)
+    ctx = _suggest_quant(date_str, news, flow, news_brief)
     if not ctx.recommended_sectors:
         # 空赛道是合法决策（空推荐日）：LLM 显式判定今日无合适机会
         logger.info("LLM 显式判定今日无合适赛道，作为空推荐日处理")
@@ -206,18 +206,10 @@ def _resolve_sector_selections(
     policy = domain.SectorPolicy(available)
 
     def _resolve(raw_list) -> list[str]:
-        """赛道名解析：池模式经 SectorPolicy 别名映射并限池内；free 模式仅别名映射。"""
-        out = []
-        for raw in raw_list if isinstance(raw_list, list) else []:
-            if not isinstance(raw, str):
-                continue
-            if pool is not None:
-                out.extend(m for m in policy.resolve([raw]) if m in pool_names)
-            else:
-                m = domain.resolve_sector_name(raw, available)
-                if m:
-                    out.append(m)
-        return list(dict.fromkeys(out))
+        """赛道名解析：经 SectorPolicy 别名映射，池模式限池内。"""
+        if not isinstance(raw_list, list):
+            return []
+        return policy.resolve([s for s in raw_list if isinstance(s, str)], pool_names)
 
     rec_raw = parsed.get("recommended_sectors", [])
     risk_raw = parsed.get("risk_sectors", [])
@@ -229,9 +221,9 @@ def _resolve_sector_selections(
     for v in parsed.get("vetoed_sectors", []) if isinstance(parsed.get("vetoed_sectors", []), list) else []:
         if not isinstance(v, dict):
             continue
-        name = domain.resolve_sector_name(str(v.get("sector", "")), available)
-        if name and (pool_names is None or name in pool_names):
-            vetoed_valid.append({"sector": name, "reason": str(v.get("reason", ""))[:200]})
+        matched = policy.resolve([str(v.get("sector", ""))], pool_names)
+        if matched:
+            vetoed_valid.append({"sector": matched[0], "reason": str(v.get("reason", ""))[:200]})
     vetoed_names = {v["sector"] for v in vetoed_valid}
     rec_valid = [s for s in rec_valid if s not in vetoed_names]
 
@@ -281,53 +273,3 @@ def _resolve_sector_selections(
     )
 
 
-def _build_sector_prompt_free(date_str: str, news: dict, flow: dict) -> tuple[str, list[int]]:
-    """旧策略（llm_free）prompt 构建：LLM 从全清单自由选择（A/B 影子/回滚用）。"""
-    insight_rows = _load_sector_insights()
-    if insight_rows:
-        repo.mark_insights_applied([i for i, _ in insight_rows], date_str)
-    lessons = "\n".join(f"  - {t}" for _, t in insight_rows) or None
-    tech = repo.get_market_technical()
-    prompt = sector_selection_prompt_free(
-        date_str=date_str,
-        available=_load_available_sectors(),
-        top_gainers=news.get("top_gainers", ""),
-        top_losers=news.get("top_losers", ""),
-        etf_net_flow=news.get("etf_net_flow", ""),
-        news_summary=news.get("summary", ""),
-        flow_summary=flow.get("summary"),
-        lessons=lessons,
-        market_tech=_format_market_technical(tech) if tech else None,
-    )
-    return prompt, [i for i, _ in insight_rows]
-
-
-def _suggest_llm_free(date_str: str, news: dict, flow: dict,
-                      news_brief: str = "") -> MacroContext:
-    """旧策略：LLM 从全清单自由选择（A/B 影子/回滚用）。
-
-    与 D5 改造前逻辑一致的 adapter 特例（架构深化 H）：pool=None 表示无池内限制，
-    veto/regime 量化覆盖与 quant 路径统一（消除双策略漂移）。
-    """
-    prompt, used_insight_ids = _build_sector_prompt_free(date_str, news, flow)
-    system_prompt = sector_selection_system_prompt()
-    content = call_llm(prompt, system_prompt=system_prompt, max_tokens=16384)
-    # call_llm 技术失败统一抛 LLMError（候选 7）；业务过滤异常在窄 seam 内原样传播
-    parsed = parse_llm_json(content)
-    return _resolve_sector_selections(
-        parsed, _load_available_sectors(), None, date_str, news, flow, news_brief,
-        used_insight_ids)
-
-
-def _suggest_sectors(date_str: str, news: dict, flow: dict,
-                     news_brief: str = "") -> MacroContext:
-    """选赛道分发器（A/B 回滚开关）：按配置选择策略。
-
-    quant_pool = D5 量化定池 + LLM 池内否决（正式策略）；
-    llm_free   = 旧策略（LLM 全清单自由选择），仅回滚用。
-    """
-    settings = load_settings()
-    strategy = (settings.get("pipeline") or {}).get("sector_strategy", "quant_pool")
-    if strategy == "quant_pool":
-        return _suggest_quant(date_str, news, flow, news_brief)
-    return _suggest_llm_free(date_str, news, flow, news_brief)

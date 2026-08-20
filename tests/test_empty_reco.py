@@ -17,8 +17,8 @@ import app.database as db_mod
 from app import repo
 
 
-class TestSuggestSectorsEmptyDecision:
-    """_suggest_sectors：空赛道是合法决策，不抛异常；失败才抛。
+class TestSuggestQuantEmptyDecision:
+    """_suggest_quant：空赛道是合法决策，不抛异常；失败才抛。
 
     D5 后量化定池先行：测试固定 patch 定池返回非空候选池，
     聚焦 LLM 解析逻辑；池空分支单独用例覆盖。
@@ -42,7 +42,7 @@ class TestSuggestSectorsEmptyDecision:
         monkeypatch.setattr(macro_agent, "_load_available_sectors", lambda: ["食品", "饮料", "半导体"])
         news = {"summary": "今日新闻", "top_gainers": "", "top_losers": "", "etf_net_flow": ""}
         flow = {"summary": "", "top_flows": [], "top_outflows": []}
-        return macro_agent._suggest_sectors("2026-08-01", news, flow)
+        return macro_agent._suggest_quant("2026-08-01", news, flow)
 
     def test_explicit_empty_returns_empty_ctx(self, monkeypatch):
         """LLM 显式返回空赛道 + 原因 → 返回空 ctx，不抛异常。"""
@@ -68,7 +68,7 @@ class TestSuggestSectorsEmptyDecision:
         monkeypatch.setattr(macro_agent, "_load_sector_insights", lambda: [])
         news = {"summary": "x", "top_gainers": "", "top_losers": "", "etf_net_flow": ""}
         flow = {"summary": "", "top_flows": [], "top_outflows": []}
-        ctx = macro_agent._suggest_sectors("2026-08-01", news, flow)
+        ctx = macro_agent._suggest_quant("2026-08-01", news, flow)
         assert ctx.recommended_sectors == []
         assert "量化定池" in ctx.sector_reasoning
         assert calls["n"] == 0   # 池空纯量化判定，不调 LLM
