@@ -130,6 +130,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.commit()
             logger.info("evolution_rules 旧表已清理 (old=%d, new=%d)", old_cnt, new_cnt)
 
+    if "index_daily" in tables:
+        idx_cols = {r[1] for r in conn.execute("PRAGMA table_info(index_daily)").fetchall()}
+        # 旧库补列：EMA60 趋势列（schema.sql 已含，新建库无需执行）
+        if "ema60" not in idx_cols:
+            conn.execute("ALTER TABLE index_daily ADD COLUMN ema60 REAL")
+            conn.commit()
+
     if "fund_features" in tables:
         ff_cols = {row[1] for row in conn.execute("PRAGMA table_info(fund_features)").fetchall()}
         for col, typ in [("rbsa_industry_2", "TEXT"), ("rbsa_weight_2", "REAL DEFAULT 0"),
