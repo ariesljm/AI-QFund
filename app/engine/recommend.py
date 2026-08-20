@@ -27,16 +27,12 @@ from app import domain
 from app.utils.trading_calendar import trading_day_lag  # 滞后交易日数单一来源
 from app.model import get_or_train
 import app.repo as repo
+from app.data.nav import fetch_fund_nav_incremental
 
 logger = get_logger("recommend")
 
 FEATURE_COLS = repo.FEATURE_COLS
 _FORWARD_WINDOW = repo.FORWARD_WINDOW
-
-
-def _load_ranking_cfg() -> domain.RankingConfig:
-    """从 meta 表读取排序权重，找不到则用默认值（返回不可变 RankingConfig）。"""
-    return repo.get_ranking_cfg()
 
 
 # ========== 2.1 标注数据准备 ==========
@@ -47,9 +43,6 @@ def _load_ranking_cfg() -> domain.RankingConfig:
 # 赛道名解析与锚定已收敛为 domain.SectorPolicy（推荐/监控/宏观共用单一来源，
 # 见架构深化候选 1）；本引擎只消费判定结果，不再自行 resolve。
 
-def _index_momentum() -> float:
-    return repo.get_index_momentum()
-
 
 def _inject_market_cols(df: pd.DataFrame) -> pd.DataFrame:
     """注入市场状态列（R1）：指数 20 日动量/波动率 + 当日大盘状态，全行共享。
@@ -58,7 +51,7 @@ def _inject_market_cols(df: pd.DataFrame) -> pd.DataFrame:
     （数据基座停摆后）fund_features.regime 是旧状态，权重调整会错配。
     """
     df = df.copy()
-    df["regime"] = _get_market_regime()
+    df["regime"] = repo.get_market_regime()
     idx_rows = repo.get_index_series("sh000300", ("date", "close", "volume"))
     if idx_rows:
         closes = np.array([r[1] for r in idx_rows], dtype=float)
@@ -70,11 +63,6 @@ def _inject_market_cols(df: pd.DataFrame) -> pd.DataFrame:
         for c in repo.MARKET_COLS:
             df[c] = 0.0
     return df
-
-
-def _get_market_regime() -> str:
-    """从沪深300收盘价 vs MA60 判断大盘状态：BULL/BEAR。"""
-    return repo.get_market_regime()
 
 
 def _add_sector_relatives(df: pd.DataFrame) -> pd.DataFrame:
@@ -160,14 +148,14 @@ def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> list[dict]:
         logger.info("回避赛道过滤后无候选，降级为全市场 Top 10")
         return rank_funds(model)
     df = _add_sector_relatives(df)
-    cfg = _load_ranking_cfg()
+    cfg = repo.get_ranking_cfg()
     df = apply_momentum_guard(df, cfg)
 
-    idx_mom = _index_momentum()
+    idx_mom = repo.get_index_momentum()
     df = _inject_market_cols(df)
     df = score_frame(
         df, model, cfg, idx_mom,
-        default_regime=_get_market_regime(),
+        default_regime=repo.get_market_regime(),
         sector_rel_momentum_col="sector_rel_momentum",
         sector_rel_calmar_col="sector_rel_calmar",
         rbsa_weight_col="rbsa_weight",
@@ -229,7 +217,7 @@ def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> list[dict]:
 
 def rank_funds(model: lgb.Booster) -> list[dict]:
     """全市场排名（降级备选），返回 Top 10。"""
-    cfg = _load_ranking_cfg()
+    cfg = repo.get_ranking_cfg()
     rows = repo.get_all_ranking_rows()
     df = pd.DataFrame(rows)
     df = df.dropna(subset=FEATURE_COLS)
@@ -237,10 +225,10 @@ def rank_funds(model: lgb.Booster) -> list[dict]:
         return []
     df = apply_momentum_guard(df, cfg)
 
-    idx_mom = _index_momentum()
+    idx_mom = repo.get_index_momentum()
     df = _inject_market_cols(df)
     df = score_frame(df, model, cfg, idx_mom,
-                     default_regime=_get_market_regime(),
+                     default_regime=repo.get_market_regime(),
                      rbsa_weight_col="rbsa_weight_1")
     # 全天候出手：与赛道内排序一致，不做预测分硬过滤（风险由监控防线兜底）
     top = df.sort_values("combo", ascending=False).head(10)
@@ -578,7 +566,7 @@ def run_recommendation(retrain: bool = False) -> None:
         logger.info("LLM 选定 [%s]: %s %s | 否决 %d 只",
                     sector, selected["selected_code"], selected["selected_name"], len(vetoed))
 
-        guard_cfg = _load_ranking_cfg()
+        guard_cfg = repo.get_ranking_cfg()
         # 冗余防御：候选池已在 _rank_within_sectors 按 guard 过滤，LLM 只能从池内选择，
         # 此拦截正常情况下永不触发；保留作为纵深防御（若未来 LLM 候选池外选择）。
         sel_momentum = next(
@@ -620,7 +608,7 @@ def run_recommendation(retrain: bool = False) -> None:
             "holdings_report_date": repo.get_latest_holdings_date(selected["selected_code"]),
         }, ensure_ascii=False)
 
-        new_rows = repo.refresh_nav(selected["selected_code"])
+        new_rows = fetch_fund_nav_incremental(selected["selected_code"])
         if new_rows:
             logger.info("净值同步: %s 新增 %d 条", selected["selected_code"], new_rows)
 

@@ -16,7 +16,8 @@ from app.utils.trading_calendar import trading_day_lag  # 滞后交易日数单�
 from app.data.ingest import run_batched_fetch, filter_cooldown_targets
 from app.data.nav import async_update_nav_incremental, async_download_all_nav
 from app.data.store import (save_fund_list, save_index_daily, record_failure,
-                            mark_recovered_batch,
+                            mark_recovered_batch, save_holdings_batch,
+                            save_industry_map, mark_funds_unbuyable,
                             run_backfill_rounds)
 from app.features import calculator as _features
 from app.utils.log import get_logger
@@ -257,13 +258,10 @@ async def async_download_all_holdings(
                         continue
                     outcome["success"].add(code)
                     if holdings and report_date and report_date != local_latest.get(code):
-                        conn_.executemany(
-                            "INSERT OR REPLACE INTO fund_holdings "
-                            "(code, report_date, stock_code, stock_name, weight) "
-                            "VALUES (?, ?, ?, ?, ?)",
-                            [(code, report_date, h["stock_code"], h["stock_name"], h["weight"])
-                             for h in holdings],
-                        )
+                        save_holdings_batch(conn_, [
+                            (code, report_date, h["stock_code"], h["stock_name"], h["weight"])
+                            for h in holdings
+                        ])
                         batch_rows += len(holdings)
                         funds_with_holdings += 1
                         local_latest[code] = report_date
@@ -281,13 +279,10 @@ async def async_download_all_holdings(
                 )
                 report_date, holdings = _parse_holdings_html(resp.text)
                 if holdings and report_date and report_date != local_latest.get(code):
-                    conn.executemany(
-                        "INSERT OR REPLACE INTO fund_holdings "
-                        "(code, report_date, stock_code, stock_name, weight) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        [(code, report_date, h["stock_code"], h["stock_name"], h["weight"])
-                         for h in holdings],
-                    )
+                    save_holdings_batch(conn, [
+                        (code, report_date, h["stock_code"], h["stock_name"], h["weight"])
+                        for h in holdings
+                    ])
                     total_rows += len(holdings)
                     funds_with_holdings += 1
                     local_latest[code] = report_date
@@ -342,11 +337,7 @@ def update_industry_map(force: bool = False) -> int:
             return 0
 
         today = datetime.now().strftime("%Y-%m-%d")
-        conn.executemany(
-            "INSERT OR REPLACE INTO stock_industry_map (stock_code, industry_code, industry_name, update_date) "
-            "VALUES (?, ?, ?, ?)",
-            [(sc, ic, in_, today) for sc, ic, in_ in records],
-        )
+        save_industry_map(conn, records)
         meta_set(conn, META.INDUSTRY_MAP_UPDATED, today)
     logger.info("行业映射更新完成: %d 条记录", len(records))
     return len(records)
@@ -600,8 +591,7 @@ def mark_short_history_funds() -> int:
             if first and first > cutoff:
                 fresh.append(code)
         if fresh:
-            conn.executemany(
-                "UPDATE fund_basic SET is_buyable = 0 WHERE code = ?", [(c,) for c in fresh])
+            mark_funds_unbuyable(fresh)
     if fresh:
         logger.info("数据不足打标: %d 只基金首条净值距今不足 %d 天，is_buyable=0",
                     len(fresh), _MIN_NAV_DAYS)
@@ -641,8 +631,7 @@ def mark_stale_funds() -> int:
             if latest and trading_day_lag(latest, global_max, days=dates_set) > _STALE_NAV_LAG_DAYS:
                 stale.append(code)
         if stale:
-            conn.executemany(
-                "UPDATE fund_basic SET is_buyable = 0 WHERE code = ?", [(c,) for c in stale])
+            mark_funds_unbuyable(stale)
     if stale:
         logger.info("停更打标: %d 只基金净值滞后超 %d 个交易日，is_buyable=0",
                     len(stale), _STALE_NAV_LAG_DAYS)

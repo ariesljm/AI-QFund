@@ -392,15 +392,6 @@ def get_latest_rbsa_sector_map() -> dict[str, str]:
     return dict(rows)
 
 
-def refresh_nav(code: str) -> int:
-    """推荐前净值同步（决策域 → 底层数据的显式窄操作）。
-
-    推荐引擎在落库前需补拉选定基金最新净值；此操作收敛在 repo 数据 seam，
-    决策域不再直接 import 底层数据实现（app.data.nav），依赖方向与 CONTEXT
-    「底层数据由数据基座负责」一致。返回新增净值条数。
-    """
-    from app.data.nav import fetch_fund_nav_incremental
-    return fetch_fund_nav_incremental(code)
 
 def get_system_logs(lines: int = 200, after: int = 0, before: int = 0) -> tuple[list[tuple], int, int]:
     """系统日志读取（Web /api/logs 用，避免绕过 repo seam 内联 SQL）。
@@ -519,4 +510,4 @@ def trim_fund_features(retention: int, conn=None) -> None:
             conn.execute(sql, (retention,))
 
 
-__all__ = ["FEATURE_COLS", "MARKET_COLS", "FORWARD_WINDOW", "check_data_ready", "is_recommend_data_ready", "get_all_ranking_rows", "get_available_sectors", "get_buyable_codes", "get_buyable_feature_stats", "get_candidate_nav_summaries", "get_codes_missing_rbsa", "get_feature_codes_before", "get_feature_dates_map", "get_fund_name", "get_fund_pool_stats", "get_holdings", "get_holdings_at_report", "get_index_close", "get_index_momentum", "get_index_rows", "get_index_series", "get_industry_map", "get_latest_feature_date", "get_latest_feature_date_before", "get_latest_features", "get_latest_holdings_date", "get_latest_holdings_rows", "get_market_regime", "get_market_technical", "get_meta", "get_model_last_trained", "get_data_latest_date", "get_interval_days", "get_int_cursor", "get_sector_momentum_median", "get_sector_momentum_medians", "get_rbsa_at_date", "get_first_rbsa_after", "get_sector_candidates", "get_sector_heatmap", "get_system_logs", "get_train_fund_codes", "get_uptime_days", "refresh_nav", "sample_fund_codes_before", "save_fund_features", "save_meta", "set_model_last_trained", "trim_fund_features"]
+__all__ = ["FEATURE_COLS", "MARKET_COLS", "FORWARD_WINDOW", "check_data_ready", "is_recommend_data_ready", "get_all_ranking_rows", "get_available_sectors", "get_buyable_codes", "get_buyable_feature_stats", "get_candidate_nav_summaries", "get_codes_missing_rbsa", "get_feature_codes_before", "get_feature_dates_map", "get_fund_name", "get_fund_pool_stats", "get_holdings", "get_holdings_at_report", "get_index_close", "get_index_momentum", "get_index_rows", "get_index_series", "get_industry_map", "get_latest_feature_date", "get_latest_feature_date_before", "get_latest_features", "get_latest_holdings_date", "get_latest_holdings_rows", "get_market_regime", "get_market_technical", "get_meta", "get_model_last_trained", "get_data_latest_date", "get_interval_days", "get_int_cursor", "get_sector_momentum_median", "get_sector_momentum_medians", "get_rbsa_at_date", "get_first_rbsa_after", "get_sector_candidates", "get_sector_heatmap", "get_system_logs", "get_train_fund_codes", "get_uptime_days", "sample_fund_codes_before", "save_fund_features", "save_meta", "set_model_last_trained", "trim_fund_features"]

@@ -27,7 +27,7 @@ logger = get_logger("evolve")
 # ── 排序自纠偏（保留）──────────────────────────────────────
 
 def _apply_ranking_weights(weights: dict) -> bool:
-    """将排序权重写入 meta 表，供 recommend._load_ranking_cfg 读取。
+    """将排序权重写入 meta 表，供 recommend 引擎经 repo.get_ranking_cfg 读取。
 
     momentum_guard_pct 是风控防线参数，不随进化权重覆盖：写入前强制沿用当前值。
     """
@@ -177,14 +177,6 @@ def _ga_adjust(force: bool = False) -> str | None:
 
 # ── 月度结算 ───────────────────────────────────────────────
 
-def _window_ret(code: str, reco_date: str) -> float | None:
-    """入场日起 20 交易日绝对收益（含入场日 21 条净值）；不足窗口返回 None。
-
-    架构深化 C：判定收敛为 repo.nav.forward_return（结算/反事实/质量度量单一来源），
-    此处保留为薄包装（反事实路径消费）。
-    """
-    return repo.nav.forward_return(code, reco_date)
-
 
 def _settle_pool_outcomes(pool_sectors: list[str], reco_date: str) -> dict:
     """P1-5 否决反事实：量化池内每赛道取"第一行业命中且动量最高"的代表基金，
@@ -203,7 +195,7 @@ def _settle_pool_outcomes(pool_sectors: list[str], reco_date: str) -> dict:
         best = max(rows, key=lambda r: r.get("momentum_20d") or 0, default=None)
         if best is None:
             continue
-        ret = _window_ret(best["code"], reco_date)
+        ret = repo.nav.forward_return(best["code"], reco_date)
         if ret is not None and np.isfinite(ret):
             outcomes[sector] = round(float(ret), 6)
     return outcomes

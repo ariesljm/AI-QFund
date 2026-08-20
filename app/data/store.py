@@ -157,6 +157,43 @@ def _recompute_ema60(conn, index_code: str) -> None:
             )
 
 
+def save_holdings_batch(conn, rows: list[tuple]) -> int:
+    """批量写入重仓股（code, report_date, stock_code, stock_name, weight）。"""
+    if not rows:
+        return 0
+    conn.executemany(
+        "INSERT OR REPLACE INTO fund_holdings "
+        "(code, report_date, stock_code, stock_name, weight) VALUES (?, ?, ?, ?, ?)",
+        rows,
+    )
+    return len(rows)
+
+
+def save_industry_map(conn, records: list[tuple[str, str, str]]) -> int:
+    """批量写入股票→行业映射（stock_code, industry_code, industry_name），更新日期为当天。"""
+    if not records:
+        return 0
+    today = datetime.now().strftime("%Y-%m-%d")
+    conn.executemany(
+        "INSERT OR REPLACE INTO stock_industry_map "
+        "(stock_code, industry_code, industry_name, update_date) VALUES (?, ?, ?, ?)",
+        [(sc, ic, in_, today) for sc, ic, in_ in records],
+    )
+    return len(records)
+
+
+def mark_funds_unbuyable(codes: list[str]) -> int:
+    """批量将指定基金 is_buyable 置 0（停更/数据不足打标）。"""
+    if not codes:
+        return 0
+    with db_conn() as conn:
+        conn.executemany(
+            "UPDATE fund_basic SET is_buyable = 0 WHERE code = ?",
+            [(c,) for c in codes],
+        )
+    return len(codes)
+
+
 def backfill_guard(failed: list, total: int, label: str, threshold: float = 0.5) -> bool:
     if not failed:
         return False

@@ -454,9 +454,9 @@ class TestRankWithinSectors:
             + [self._row("EL_A", "电子元件", 15.0), self._row("EL_B", "电子元件", 14.0)]
         )
         monkeypatch.setattr(recommend_mod.repo, "get_sector_candidates", lambda s: data)
-        monkeypatch.setattr(recommend_mod, "_index_momentum", lambda: 5.0)
-        monkeypatch.setattr(recommend_mod, "_get_market_regime", lambda: "BULL")
-        monkeypatch.setattr(recommend_mod, "_load_ranking_cfg", lambda: {
+        monkeypatch.setattr(recommend_mod.repo, "get_index_momentum", lambda: 5.0)
+        monkeypatch.setattr(recommend_mod.repo, "get_market_regime", lambda: "BULL")
+        monkeypatch.setattr(recommend_mod.repo, "get_ranking_cfg", lambda: {
             "model_weight": 0.5, "rel_strength_weight": 0.15,
             "calmar_weight": 0.1, "hurst_weight": 0.1, "momentum_guard_pct": -15.0,
         })
@@ -479,9 +479,9 @@ class TestRankWithinSectors:
         ]
         monkeypatch.setattr(recommend_mod.repo, "get_sector_candidates", lambda s: data)
         monkeypatch.setattr(recommend_mod.repo, "get_all_ranking_rows", lambda: data)  # 降级路径
-        monkeypatch.setattr(recommend_mod, "_index_momentum", lambda: 5.0)
-        monkeypatch.setattr(recommend_mod, "_get_market_regime", lambda: "BULL")
-        monkeypatch.setattr(recommend_mod, "_load_ranking_cfg", lambda: {
+        monkeypatch.setattr(recommend_mod.repo, "get_index_momentum", lambda: 5.0)
+        monkeypatch.setattr(recommend_mod.repo, "get_market_regime", lambda: "BULL")
+        monkeypatch.setattr(recommend_mod.repo, "get_ranking_cfg", lambda: {
             "model_weight": 0.7, "rel_strength_weight": 0.1,
             "calmar_weight": 0.08, "hurst_weight": 0.08, "momentum_guard_pct": -15.0,
         })
@@ -510,9 +510,9 @@ class TestRankWithinSectors:
         data[0]["rbsa_industry_2"] = "电源设备"
         data[0]["rbsa_weight_2"] = 4.0
         monkeypatch.setattr(recommend_mod.repo, "get_sector_candidates", lambda s: data)
-        monkeypatch.setattr(recommend_mod, "_index_momentum", lambda: 5.0)
-        monkeypatch.setattr(recommend_mod, "_get_market_regime", lambda: "BULL")
-        monkeypatch.setattr(recommend_mod, "_load_ranking_cfg", lambda: {
+        monkeypatch.setattr(recommend_mod.repo, "get_index_momentum", lambda: 5.0)
+        monkeypatch.setattr(recommend_mod.repo, "get_market_regime", lambda: "BULL")
+        monkeypatch.setattr(recommend_mod.repo, "get_ranking_cfg", lambda: {
             "model_weight": 0.5, "rel_strength_weight": 0.15,
             "calmar_weight": 0.1, "hurst_weight": 0.1, "momentum_guard_pct": -15.0,
         })
@@ -534,9 +534,9 @@ class TestRankWithinSectors:
         data[1]["name"] = "西部利得数字产业混合C"
         data[2]["name"] = "其他基金混合"
         monkeypatch.setattr(recommend_mod.repo, "get_sector_candidates", lambda s: data)
-        monkeypatch.setattr(recommend_mod, "_index_momentum", lambda: 5.0)
-        monkeypatch.setattr(recommend_mod, "_get_market_regime", lambda: "BULL")
-        monkeypatch.setattr(recommend_mod, "_load_ranking_cfg", lambda: {
+        monkeypatch.setattr(recommend_mod.repo, "get_index_momentum", lambda: 5.0)
+        monkeypatch.setattr(recommend_mod.repo, "get_market_regime", lambda: "BULL")
+        monkeypatch.setattr(recommend_mod.repo, "get_ranking_cfg", lambda: {
             "model_weight": 0.5, "rel_strength_weight": 0.15,
             "calmar_weight": 0.1, "hurst_weight": 0.1, "momentum_guard_pct": -15.0,
         })
@@ -557,9 +557,9 @@ class TestRankWithinSectors:
         data[0]["rbsa_weight_1"] = 50.0
         data[1]["rbsa_weight_1"] = 8.0
         monkeypatch.setattr(recommend_mod.repo, "get_sector_candidates", lambda s: data)
-        monkeypatch.setattr(recommend_mod, "_index_momentum", lambda: 5.0)
-        monkeypatch.setattr(recommend_mod, "_get_market_regime", lambda: "BULL")
-        monkeypatch.setattr(recommend_mod, "_load_ranking_cfg", lambda: {
+        monkeypatch.setattr(recommend_mod.repo, "get_index_momentum", lambda: 5.0)
+        monkeypatch.setattr(recommend_mod.repo, "get_market_regime", lambda: "BULL")
+        monkeypatch.setattr(recommend_mod.repo, "get_ranking_cfg", lambda: {
             "model_weight": 0.5, "rel_strength_weight": 0.15,
             "calmar_weight": 0.1, "hurst_weight": 0.1, "momentum_guard_pct": -15.0,
         })
