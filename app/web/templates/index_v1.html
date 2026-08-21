@@ -828,12 +828,62 @@ async function fetchFundDetail(code) {
             navChartHtml = '<p class="text-on-surface-variant text-[13px]">暂无净值走势数据</p>';
         }
 
+        // 推荐当日预测超额（与首页「预测超额（1月）」同源：recommend_log.score = 模型预测的未来 20 日收益分）
+        var predAlphaHtml = '';
+        if (f.score !== null && f.score !== undefined && f.score !== '') {
+            var pa = parseFloat(f.score) * 100;
+            var paCls = pa >= 0 ? 'text-up' : 'text-down';
+            predAlphaHtml = '<div class="border-b border-outline-variant pb-md">' +
+                '<h4 class="font-label-sm text-[13px] uppercase tracking-widest font-black mb-sm border-b border-primary pb-1">推荐当日预测超额</h4>' +
+                '<div class="flex items-baseline gap-sm">' +
+                '<span class="text-[24px] font-display-data font-black leading-none ' + paCls + '">' + (pa >= 0 ? '+' : '') + pa.toFixed(1) + '%</span>' +
+                '<span class="text-[11px] text-on-surface-variant font-bold">(1月)</span>' +
+                '</div>' +
+                '</div>';
+        }
+
+        // 多周期涨跌幅（近1周/1月/3月/6月 + 同期沪深300）
+        var periodLabels = ['1周', '1月', '3月', '6月'];
+        var periodRowsHtml = '';
+        var hasPeriod = false;
+        for (var pi = 0; pi < periodLabels.length; pi++) {
+            var lbl = periodLabels[pi];
+            var fv = d.period_returns ? d.period_returns[lbl] : null;
+            var hv = d.period_returns ? d.period_returns[lbl + '_hs'] : null;
+            if (fv !== null && fv !== undefined && fv !== '') { hasPeriod = true; }
+            var fStr = (fv === null || fv === undefined || fv === '') ? '--' : ((fv >= 0 ? '+' : '') + fv.toFixed(2) + '%');
+            var hStr = (hv === null || hv === undefined || hv === '') ? '--' : ((hv >= 0 ? '+' : '') + hv.toFixed(2) + '%');
+            var fCls = (fv === null || fv === undefined || fv === '') ? 'text-on-surface-variant' : (fv >= 0 ? 'text-up' : 'text-down');
+            var hCls = (hv === null || hv === undefined || hv === '') ? 'text-on-surface-variant' : (hv >= 0 ? 'text-up' : 'text-down');
+            periodRowsHtml += '<tr class="border-b border-outline-variant last:border-b-0">' +
+                '<td class="py-2 text-[12px] font-bold text-on-surface-variant">' + lbl + '</td>' +
+                '<td class="py-2 text-right text-[13px] font-display-data font-bold ' + fCls + '">' + fStr + '</td>' +
+                '<td class="py-2 text-right text-[12px] font-display-data ' + hCls + '">' + hStr + '</td>' +
+                '</tr>';
+        }
+        var periodHtml = '';
+        if (hasPeriod) {
+            periodHtml = '<div class="border-b border-outline-variant pb-md">' +
+                '<h4 class="font-label-sm text-[13px] uppercase tracking-widest font-black mb-sm border-b border-primary pb-1">多周期涨跌幅</h4>' +
+                '<table class="w-full">' +
+                '<thead><tr class="text-[11px] uppercase tracking-widest text-on-surface-variant">' +
+                '<th class="py-1 text-left font-bold">周期</th>' +
+                '<th class="py-1 text-right font-bold">基金</th>' +
+                '<th class="py-1 text-right font-bold">沪深300</th>' +
+                '</tr></thead>' +
+                '<tbody>' + periodRowsHtml + '</tbody>' +
+                '</table>' +
+                '</div>';
+        }
+
         container.innerHTML =
             '<div class="space-y-lg">' +
             '<div class="border-b border-outline-variant pb-md">' +
             '<h3 class="font-label-sm text-[14px] uppercase tracking-widest font-black mb-xs">' + _esc(f.name) + '</h3>' +
             '<p class="text-[12px] text-on-surface-variant">' + _esc(f.type || '--') + ' | ' + _esc(f.first_date || '--') + ' | 状态: <span class="font-black">' + _esc(f.status) + '</span></p>' +
             '</div>' +
+            predAlphaHtml +
+            periodHtml +
             (d.current_signal ? (
                 '<div class="border-b border-outline-variant pb-md">' +
                 '<h4 class="font-label-sm text-[13px] uppercase tracking-widest font-black mb-sm border-b border-primary pb-1">当前信号 / SIGNAL</h4>' +

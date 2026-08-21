@@ -20,6 +20,7 @@ from app.config import load_settings as _load_settings, save_settings as _save_s
 from app.web import runner, quotes, dashboard
 import app.repo as repo
 from app import domain
+from app.engine.valuation import period_returns
 
 logger = logging.getLogger("web")
 
@@ -241,6 +242,7 @@ async def get_fund_detail(code: str) -> dict[str, object]:
         "top_holdings": top_holdings,
         "nav_data": nav_data,
         "current_signal": current_signal,
+        "period_returns": period_returns(code),
     }
 
 
