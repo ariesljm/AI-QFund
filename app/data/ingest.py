@@ -8,9 +8,14 @@
 import asyncio
 import time
 
+from app.data.store import (
+    cooldown_targets,
+    list_failures,
+    mark_recovered_batch,
+    record_failure,
+    run_backfill_rounds,
+)
 from app.database import db_conn
-from app.data.store import (record_failure, mark_recovered_batch,
-                            list_failures, cooldown_targets, run_backfill_rounds)
 from app.utils.log import get_logger
 
 logger = get_logger("data_ingest")

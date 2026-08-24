@@ -3,19 +3,19 @@
 从 web 渲染层分离：FastAPI 之外可独立测试；页面路由只读 pipeline 状态。
 """
 
-from app.repo import meta_keys as META
 import collections
 import logging
 import threading
 import time
 from datetime import datetime, timedelta
 
-from app.config import load_settings
-from app.pipeline import (run as run_full_pipeline,
-                          run_data as run_data_pipeline,
-                          run_recommend as run_recommend_pipeline)
-from app.utils.trading_calendar import is_trading_day
 import app.repo as repo
+from app.config import load_settings
+from app.pipeline import run as run_full_pipeline
+from app.pipeline import run_data as run_data_pipeline
+from app.pipeline import run_recommend as run_recommend_pipeline
+from app.repo import meta_keys as META
+from app.utils.trading_calendar import is_trading_day
 
 logger = logging.getLogger("web.runner")
 

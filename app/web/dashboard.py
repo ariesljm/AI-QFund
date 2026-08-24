@@ -5,12 +5,19 @@ FastAPI 路由层只调用 index_context()；区块函数独立可测。
 
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
-from app.web.charts import smooth_svg_path, make_dual_svg, quality_curve_svg as chart_quality_curve
-from app.engine.valuation import (portfolio_series, period_returns,
-                                  sharpe_ratio, max_drawdown, alpha_series)
 import app.repo as repo
 from app import domain
+from app.engine.valuation import (
+    alpha_series,
+    max_drawdown,
+    period_returns,
+    portfolio_series,
+    sharpe_ratio,
+)
+from app.web.charts import make_dual_svg, smooth_svg_path
+from app.web.charts import quality_curve_svg as chart_quality_curve
 
 
 def candidate_summary(candidates: list[dict]) -> tuple[list[dict], float, int, float]:
@@ -141,16 +148,52 @@ def build_latest_recos(recs: list[dict], today: str) -> tuple[dict | None, list[
     return latest, latest_list, latest_rec_id or 0
 
 
-def macro_block(today: str) -> tuple:
+class MacroBlock(NamedTuple):
+    """宏观摘要块（13 字段，模板上下文用）。NamedTuple 兼容位置解包。"""
+    macro: dict
+    sector_gainers: list[dict]
+    sector_losers: list[dict]
+    flow_inflows: list[dict]
+    flow_outflows: list[dict]
+    max_inflow: float
+    max_outflow: float
+    sector_reasoning: str
+    regime_label: str
+    empty_today: object  # repo.get_empty_recommendation 返回，可能 dict|None
+    flow_net_total: float | None
+    macro_date: str
+    news_date: str
+
+
+class QualityBlock(NamedTuple):
+    """质量度量块（6 字段）。"""
+    quality_metrics: list[dict]
+    quality_curve_svg: str
+    quality_curve_baseline: float
+    latest_ic: float | None
+    latest_excess_win_rate: float | None
+    latest_profit_rate: float | None
+
+
+class PortfolioBlock(NamedTuple):
+    """等权组合块（5 字段）。"""
+    svg: str
+    hs_svg: str
+    baseline: float
+    sharpe: float | None
+    max_drawdown: float | None
+
+
+def macro_block(today: str) -> MacroBlock:
     """宏观摘要块：macro_news 行 → 展示结构 + 空推荐日标记（模板上下文用）。"""
     mn = repo.get_latest_macro_news()
     macro = domain.parse_macro_summary(mn)
     empty_today = repo.get_empty_recommendation(today)
-    return (macro["macro"], macro["sector_gainers"], macro["sector_losers"],
-            macro["flow_inflows"], macro["flow_outflows"], macro["max_inflow"],
-            macro["max_outflow"], macro["sector_reasoning"], macro["regime_label"],
-            empty_today, macro["flow_net_total"], macro["macro_date"],
-            macro["news_date"])
+    return MacroBlock(macro["macro"], macro["sector_gainers"], macro["sector_losers"],
+                      macro["flow_inflows"], macro["flow_outflows"], macro["max_inflow"],
+                      macro["max_outflow"], macro["sector_reasoning"], macro["regime_label"],
+                      empty_today, macro["flow_net_total"], macro["macro_date"],
+                      macro["news_date"])
 
 
 def model_trained_at() -> str | None:
@@ -167,7 +210,7 @@ def model_trained_at() -> str | None:
     return repo.get_model_last_trained()
 
 
-def quality_block() -> tuple:
+def quality_block() -> QualityBlock:
     """质量度量块：最近 6 期度量 + 累计超额曲线 SVG + 最新一期指标（模板上下文用）。"""
     quality_metrics = repo.get_quality_metrics(6)
     quality_curve_svg = ""
@@ -183,8 +226,8 @@ def quality_block() -> tuple:
         latest_ic = quality_metrics[0].get("ic")
         latest_excess_win_rate = quality_metrics[0].get("excess_win_rate")
         latest_profit_rate = quality_metrics[0].get("profit_rate")
-    return (quality_metrics, quality_curve_svg, quality_curve_baseline,
-            latest_ic, latest_excess_win_rate, latest_profit_rate)
+    return QualityBlock(quality_metrics, quality_curve_svg, quality_curve_baseline,
+                        latest_ic, latest_excess_win_rate, latest_profit_rate)
 
 
 def sector_heatmap_block() -> list[dict]:
@@ -197,13 +240,13 @@ def sector_heatmap_block() -> list[dict]:
     ]
 
 
-def portfolio_block() -> tuple:
+def portfolio_block() -> PortfolioBlock:
     """等权组合块：累计收益双线 SVG + 夏普 + 最大回撤（模板上下文用）。"""
     _, port_pcts, port_hs_pcts = portfolio_series()
     if not port_pcts:
-        return "", "", 50, None, None
+        return PortfolioBlock("", "", 50, None, None)
     svg, hs_svg, baseline = make_dual_svg(port_pcts, port_hs_pcts)
-    return svg, hs_svg, baseline, sharpe_ratio(port_pcts), max_drawdown(port_pcts)
+    return PortfolioBlock(svg, hs_svg, baseline, sharpe_ratio(port_pcts), max_drawdown(port_pcts))
 
 
 def index_context() -> dict[str, object]:

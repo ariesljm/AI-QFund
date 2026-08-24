@@ -8,10 +8,11 @@
 import json
 import time
 from dataclasses import dataclass
-from app.utils.log import get_logger
+
+import app.repo as repo
 from app.data.fetchers import fetch as _fetch
 from app.features.sector import is_industry_code
-import app.repo as repo
+from app.utils.log import get_logger
 
 logger = get_logger("data.macro")
 

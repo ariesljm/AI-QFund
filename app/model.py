@@ -11,10 +11,10 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
+import app.repo as repo
+from app import domain
 from app.features.calculator import compute_fund_features, market_state_features
 from app.utils.log import get_logger
-from app import domain
-import app.repo as repo
 
 logger = get_logger("model")
 

@@ -8,25 +8,38 @@ import sys
 import time
 from datetime import datetime, timedelta
 
-
-from app.database import db_conn, DB_PATH
-from app.data.fetchers import fetch, fetch_async
-from app.repo import meta_keys as META
-from app.repo.base import (get_meta, save_meta, get_buyable_codes,
-                         get_holdings_report_dates, get_nav_time_state, has_nav_data,
-                         has_index_data, get_industry_map_gap_count,
-                         get_industry_map_targets, get_industry_map_stats)
-from app.utils.trading_calendar import trading_day_lag  # 滞后交易日数单一来源
-from app.data.ingest import run_batched_fetch, filter_cooldown_targets
-from app.data.nav import async_update_nav_incremental, async_download_all_nav
-from app.data.store import (save_fund_list, save_index_daily, record_failure,
-                            mark_recovered_batch, save_holdings_batch,
-                            save_industry_map, mark_funds_unbuyable,
-                            run_backfill_rounds)
-from app.features import calculator as _features
-from app.utils.log import get_logger
-
 import httpx
+
+from app.data.fetchers import fetch, fetch_async
+from app.data.ingest import filter_cooldown_targets, run_batched_fetch
+from app.data.nav import async_download_all_nav, async_update_nav_incremental
+from app.data.store import (
+    mark_funds_unbuyable,
+    mark_recovered_batch,
+    record_failure,
+    run_backfill_rounds,
+    save_fund_list,
+    save_holdings_batch,
+    save_index_daily,
+    save_industry_map,
+)
+from app.database import DB_PATH, db_conn
+from app.features import calculator as _features
+from app.repo import meta_keys as META
+from app.repo.base import (
+    get_buyable_codes,
+    get_holdings_report_dates,
+    get_industry_map_gap_count,
+    get_industry_map_stats,
+    get_industry_map_targets,
+    get_meta,
+    get_nav_time_state,
+    has_index_data,
+    has_nav_data,
+    save_meta,
+)
+from app.utils.log import get_logger
+from app.utils.trading_calendar import trading_day_lag  # 滞后交易日数单一来源
 
 logger = get_logger(__name__)
 

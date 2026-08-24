@@ -13,13 +13,13 @@ from datetime import datetime, timedelta
 
 import numpy as np
 
-from app.utils.log import get_logger
-from app.llm.client import call_llm_json, LLMError
-from app.llm.prompts import evolution_analysis_prompt
-from app.engine.quality import compute_quality_metrics
-from app import domain
-from app.repo import meta_keys as META
 import app.repo as repo
+from app import domain
+from app.engine.quality import compute_quality_metrics
+from app.llm.client import LLMError, call_llm_json
+from app.llm.prompts import evolution_analysis_prompt
+from app.repo import meta_keys as META
+from app.utils.log import get_logger
 
 logger = get_logger("evolve")
 
@@ -151,7 +151,7 @@ def _ga_adjust(force: bool = False) -> str | None:
             return None
 
     try:
-        from app.engine.ga import ga_optimize_ranking, fitness
+        from app.engine.ga import fitness, ga_optimize_ranking
     except Exception as e:
         logger.warning("GA 模块不可用，跳过寻优: %s", str(e)[:120])
         return None
@@ -328,7 +328,7 @@ def _collect_cases(last_ss_id: int = 0) -> tuple[list[dict], list[dict], list[di
 
 def _batch_llm_analyze(successes: list, failures: list, neutrals: list | None = None,
                        decision_loss: float | None = None,
-                       loss_streak: int = 0) -> list[dict]:
+                       loss_streak: int = 0) -> list[dict] | None:
     if neutrals is None:
         neutrals = []
     prompt = evolution_analysis_prompt(successes, failures, neutrals,

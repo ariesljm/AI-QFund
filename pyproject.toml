@@ -23,4 +23,28 @@ package = false
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "ruff>=0.6.0",
+    "mypy>=1.11.0",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# 渐进起步：基础风格 + import 排序 + pyupgrade + 常见 bug
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501"]  # 行长由 line-length 软约束，长 SQL/URL 不硬报错
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_unused_ignores = true
+# 渐进启用：不强制 strict，先让现有 ~83% 注解可被检查；check_untyped_defs 关闭避免噪声
+check_untyped_defs = false
+
+[[tool.mypy.overrides]]
+# numpy stub 在当前 mypy/python 组合下用了 3.12+ Type 语法，跳过跟随以检查项目代码
+module = "numpy.*"
+follow_imports = "skip"
+ignore_errors = true

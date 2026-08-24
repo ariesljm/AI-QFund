@@ -6,8 +6,9 @@ import re
 import time
 from collections.abc import Callable
 from typing import Any
-from app.utils.log import get_logger
+
 from app.config import load_settings
+from app.utils.log import get_logger
 
 logger = get_logger("llm")
 
@@ -33,7 +34,7 @@ _LLM_RETRY_MAX_DELAY = 60.0    # 单次等待上限（秒）
 _LLM_TIMEOUT = 300.0           # 单次请求总超时（秒）：大 max_tokens 慢生成场景放宽，避免误杀
 
 
-def _audit_write(caller: str, prompt: str, raw_output: str, parsed_result, ok: bool,
+def _audit_write(caller: str, prompt: str, raw_output: str, parsed_result: Any, ok: bool,
                  duration_ms: int, tokens: int) -> None:
     """写入 LLM 决策审计（P0-3）：prompt 快照 + 原始输出 + 解析结果，可复现排查。
 

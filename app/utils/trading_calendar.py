@@ -10,11 +10,11 @@ sina_calendar_decode.py），用嵌入式 JS 引擎 py_mini_racer 执行，避�
 整个 akshare 依赖链（scipy/py_mini_racer/lxml 等）。
 """
 
-from app.repo import meta_keys as META
 import json
 import time
 from datetime import date
 
+from app.repo import meta_keys as META
 from app.repo.base import get_meta, save_meta
 from app.utils.log import get_logger
 
@@ -41,6 +41,7 @@ def _fetch_sina_calendar_text() -> str:
 def _decode_sina_calendar(text: str) -> list[str]:
     """解码新浪混淆日历 → 升序交易日列表（YYYY-MM-DD）。"""
     import py_mini_racer
+
     from app.utils.sina_calendar_decode import DECODE_JS
 
     payload = text.split("=")[1].split(";")[0].replace('"', "")

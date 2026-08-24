@@ -9,6 +9,7 @@ import logging
 import re
 import threading
 import time
+from typing import Any
 from urllib.parse import urlencode, urlparse
 
 import httpx
@@ -352,7 +353,7 @@ def fetch(
     raise last_error
 
 
-def _fetch_push2_curl_cffi(url: str, hdrs: dict, timeout: float) -> tuple:
+def _fetch_push2_curl_cffi(url: str, hdrs: dict, timeout: float) -> tuple[Any, int | None]:
     """push2 降级策略 1：curl_cffi 模拟 chrome120 TLS 指纹（架构深化 F 策略序列）。
 
     返回 (Response | None, http_status | None)：None 响应表示降级到下一策略，
@@ -378,7 +379,7 @@ def _fetch_push2_curl_cffi(url: str, hdrs: dict, timeout: float) -> tuple:
         return None, None
 
 
-def _fetch_push2_tls_client(url: str, hdrs: dict, timeout: float) -> tuple:
+def _fetch_push2_tls_client(url: str, hdrs: dict, timeout: float) -> tuple[Any, int | None]:
     """push2 降级策略 2：tls_client 模拟 chrome_120（TLS 指纹随机化）。"""
     try:
         import tls_client
@@ -404,7 +405,7 @@ def _fetch_push2_tls_client(url: str, hdrs: dict, timeout: float) -> tuple:
         return None, None
 
 
-def _fetch_push2_curl_exe(url: str, hdrs: dict, timeout: float) -> tuple:
+def _fetch_push2_curl_exe(url: str, hdrs: dict, timeout: float) -> tuple[Any, int | None]:
     """push2 降级策略 3：系统 curl.exe -4 子进程（TLS 指纹最弱，最后兜底）。"""
     import subprocess
     try:

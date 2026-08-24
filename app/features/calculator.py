@@ -1,15 +1,15 @@
 """特征计算模块：Hurst、动量、卡玛、RBSA、大盘状态机。"""
 
-from app.repo import meta_keys as META
-from app.utils.log import get_logger
 import time
 
 import numpy as np
 import pandas as pd
 
-from app import domain
 import app.repo as repo
+from app import domain
 from app.data.store import save_fund_features, trim_fund_features
+from app.repo import meta_keys as META
+from app.utils.log import get_logger
 
 logger = get_logger("features")
 
@@ -329,7 +329,7 @@ def apply_momentum_guard(df: pd.DataFrame, cfg) -> pd.DataFrame:
     return df[df["momentum_20d"] >= cfg["momentum_guard_pct"]]
 
 
-def score_frame(df: pd.DataFrame, model, cfg: dict, idx_mom: float, *,
+def score_frame(df: pd.DataFrame, model, cfg: dict | domain.RankingConfig, idx_mom: float, *,
                 default_regime: str = "NEUTRAL",
                 rbsa_weight_col: str | None = None,
                 sector_rel_momentum_col: str | None = None,

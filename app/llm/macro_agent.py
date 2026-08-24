@@ -3,19 +3,17 @@
 输出供 recommend.py（推荐）和 monitor.py（监控）直接消费。
 """
 
-from app.utils.log import get_logger
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 
-from app.llm.client import call_llm_json
-from app.llm.prompts import (sector_selection_prompt,
-                             sector_selection_system_prompt)
-from app.llm.context import market_technical_text, pool_text
-from app import domain
 import app.repo as repo
-from app.config import load_settings
-from app.engine.sector_pool import SectorPool, build_sector_pool
+from app import domain
 from app.data.macro import fetch_macro_inputs
+from app.engine.sector_pool import SectorPool, build_sector_pool
+from app.llm.client import call_llm_json
+from app.llm.context import market_technical_text, pool_text
+from app.llm.prompts import sector_selection_prompt, sector_selection_system_prompt
+from app.utils.log import get_logger
 
 logger = get_logger("macro_agent")
 

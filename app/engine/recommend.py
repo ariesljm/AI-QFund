@@ -7,27 +7,26 @@
 运行：uv run python recommend.py
 """
 
-from app.repo import meta_keys as META
 import json
-from app.utils.log import get_logger
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-from app.features.calculator import (score_frame,
-                                      apply_momentum_guard,
-                                      market_state_features)
-from app.llm.macro_agent import build_macro_context, MacroContext
-from app.llm.client import call_llm_json, parse_llm_json
-from app.llm.prompts import final_pick_prompt, final_pick_system_prompt
-from app import domain
-from app.utils.trading_calendar import trading_day_lag  # 滞后交易日数单一来源
-from app.model import get_or_train
 import app.repo as repo
+from app import domain
 from app.data.nav import fetch_fund_nav_incremental
+from app.features.calculator import apply_momentum_guard, market_state_features, score_frame
+from app.llm.client import call_llm_json, parse_llm_json
+from app.llm.macro_agent import MacroContext, build_macro_context
+from app.llm.prompts import final_pick_prompt, final_pick_system_prompt
+from app.model import get_or_train
+from app.repo import meta_keys as META
+from app.utils.log import get_logger
+from app.utils.trading_calendar import trading_day_lag  # 滞后交易日数单一来源
 
 logger = get_logger("recommend")
 
@@ -90,6 +89,101 @@ def _dedup_fund_name(name: str) -> str:
     return _re.sub(r"(?<![A-Za-z_0-9])(A|B|C|D|E|F|H|I|O|Y|Z)$", "", (name or "").strip())
 
 
+def _filter_sector_candidates(df: pd.DataFrame, sectors: list[str],
+                             risk_set: set[str]) -> pd.DataFrame:
+    """赛道候选过滤链：dropna → 纯度门槛 → 第一行业锚定 → 回避剔除。
+
+    返回过滤后 df（可能 empty，调用方判断降级）。sector 锚定 rbsa_industry_1。
+    """
+    df = df.dropna(subset=FEATURE_COLS)
+    if df.empty:
+        return df
+    # C4 赛道纯度门槛：第一行业暴露 <10% 的基金不视为赛道基金（口径见 domain）。
+    df = df[df["rbsa_weight_1"] >= domain.MIN_SECTOR_EXPOSURE]
+    if df.empty:
+        logger.info("赛道纯度门槛后无候选，降级为全市场 Top 10")
+        return df
+    # 赛道归属锚定第一行业（推荐/监控同口径）：基金只有第一行业命中推荐赛道才入选，
+    # 避免基金以次要行业入选、监控按第一行业否决的错配。
+    df = df[df["rbsa_industry_1"].isin(sectors)]
+    if df.empty:
+        logger.info("第一行业无匹配赛道，降级为全市场 Top 10")
+        return df
+    expanded = []
+    for _, r in df.iterrows():
+        row = r.to_dict()
+        row["sector"] = row["rbsa_industry_1"]
+        row["rbsa_weight"] = row.get("rbsa_weight_1", 0) or 0
+        expanded.append(row)
+    df = pd.DataFrame(expanded)
+    # 回避赛道整体过滤：第一行业命中回避赛道的基金直接剔除
+    df = df[~df["sector"].isin(risk_set)]
+    if df.empty:
+        logger.info("回避赛道过滤后无候选，降级为全市场 Top 10")
+    return df
+
+
+def _score_sector_candidates(df: pd.DataFrame, model: lgb.Booster) -> pd.DataFrame:
+    """赛道相对化打分：sector_relatives + momentum_guard + market_cols + score_frame。"""
+    cfg = repo.get_ranking_cfg()
+    df = _add_sector_relatives(df)
+    df = apply_momentum_guard(df, cfg)
+    df = _inject_market_cols(df)
+    return score_frame(
+        df, model, cfg, repo.get_index_momentum(),
+        default_regime=repo.get_market_regime(),
+        sector_rel_momentum_col="sector_rel_momentum",
+        sector_rel_calmar_col="sector_rel_calmar",
+        rbsa_weight_col="rbsa_weight",
+    )
+
+
+def _select_top_per_sector(df: pd.DataFrame, sectors: list[str]) -> list[dict]:
+    """候选构建：前 2 赛道各取 Top2，其余各 Top1；按 combo 截断到 MAX_CANDIDATES。
+
+    同基金多份额只保留 combo 最高者（去重）；保底防高热度赛道被全局挤出。
+    """
+    MAX_CANDIDATES = 8
+    core: list[dict] = []  # 前 2 赛道各 2 只
+    rest: list[dict] = []  # 其余赛道各 1 只
+    for idx, sector in enumerate(sectors):
+        sdf = df[df["sector"] == sector].sort_values("combo", ascending=False)
+        take = 2 if idx < 2 else 1
+        head = []
+        seen_funds: set[str] = set()
+        for rec in sdf.to_dict("records"):
+            key = _dedup_fund_name(rec["name"])
+            if key in seen_funds:
+                continue
+            seen_funds.add(key)
+            head.append(rec)
+            if len(head) >= take:
+                break
+        (core if idx < 2 else rest).extend(head)
+    core.sort(key=lambda x: x["combo"], reverse=True)
+    rest.sort(key=lambda x: x["combo"], reverse=True)
+    return core + rest[:MAX_CANDIDATES - len(core)]
+
+
+def _build_candidate_record(f: dict) -> dict:
+    """单条候选结果装配（rbsa 分解 + 量化分，下游入库/展示共用 schema）。"""
+    return {
+        "code": f["code"], "name": f["name"],
+        "sector": f["sector"],
+        "rbsa_industry_1": f.get("rbsa_industry_1", ""),
+        "rbsa_industry_2": f.get("rbsa_industry_2", ""),
+        "rbsa_industry_3": f.get("rbsa_industry_3", ""),
+        "rbsa_weight_1": float(f.get("rbsa_weight_1", 0) or 0),
+        "rbsa_weight_2": float(f.get("rbsa_weight_2", 0) or 0),
+        "rbsa_weight_3": float(f.get("rbsa_weight_3", 0) or 0),
+        "score": float(f["score"]), "combo": float(f["combo"]),
+        "hurst_60d": float(f["hurst_60d"]), "momentum_20d": float(f["momentum_20d"]),
+        "calmar": float(f["calmar"]),
+        "sector_rel_momentum": round(float(f.get("sector_rel_momentum", 0)), 1),
+        "sector_rel_calmar": round(float(f.get("sector_rel_calmar", 0)), 1),
+    }
+
+
 def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> list[dict]:
     """在 LLM 选中的赛道内，用赛道相对化特征排序，前 2 赛道各取 Top 2、其余各 Top 1。"""
     raw_sectors = ctx.recommended_sectors
@@ -114,105 +208,21 @@ def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> list[dict]:
         return rank_funds(model)
 
     df = pd.DataFrame(rows)
-    df = df.dropna(subset=FEATURE_COLS)
+    df = _filter_sector_candidates(df, sectors, risk_set)
     if df.empty:
         return rank_funds(model)
 
-    # C4 赛道纯度门槛：第一行业暴露 <10% 的基金不视为赛道基金（口径见 domain）。
-    df = df[df["rbsa_weight_1"] >= domain.MIN_SECTOR_EXPOSURE]
-    if df.empty:
-        logger.info("赛道纯度门槛后无候选，降级为全市场 Top 10")
-        return rank_funds(model)
-
-    # 赛道归属锚定第一行业（推荐/监控同口径）：
-    # 基金只有第一行业命中推荐赛道才入选，feature_snapshot.sector = rbsa_industry_1；
-    # 监控 R3a 以第一行业锚定 —— 避免基金以次要行业入选、监控按第一行业否决的
-    # 错配（8-05 004936 实例：第3行业=贵金属入选，第一行业=基本金属被监控误伤 WARNING）。
-    df = df[df["rbsa_industry_1"].isin(sectors)]
-    if df.empty:
-        logger.info("第一行业无匹配赛道，降级为全市场 Top 10")
-        return rank_funds(model)
-    expanded = []
-    for _, r in df.iterrows():
-        row = r.to_dict()
-        row["sector"] = row["rbsa_industry_1"]
-        row["rbsa_weight"] = row.get("rbsa_weight_1", 0) or 0
-        expanded.append(row)
-    df = pd.DataFrame(expanded)
-
-    # 回避赛道整体过滤：第一行业命中回避赛道的基金直接剔除，
-    # 防止基金以次要行业身份入选、监控按第一行业判定后被否决（推荐/监控赛道不一致；
-    # sector 已锚定 rbsa_industry_1，单次过滤即覆盖两个键）
-    df = df[~df["sector"].isin(risk_set)]
-    if df.empty:
-        logger.info("回避赛道过滤后无候选，降级为全市场 Top 10")
-        return rank_funds(model)
-    df = _add_sector_relatives(df)
-    cfg = repo.get_ranking_cfg()
-    df = apply_momentum_guard(df, cfg)
-
-    idx_mom = repo.get_index_momentum()
-    df = _inject_market_cols(df)
-    df = score_frame(
-        df, model, cfg, idx_mom,
-        default_regime=repo.get_market_regime(),
-        sector_rel_momentum_col="sector_rel_momentum",
-        sector_rel_calmar_col="sector_rel_calmar",
-        rbsa_weight_col="rbsa_weight",
-    )
+    df = _score_sector_candidates(df, model)
     # 全天候出手：不做预测分硬过滤（R1 目标=绝对收益，按 r̂ 横截面取 TopN；
     # 熊市不因"预测收益为负"清空候选池，风险由监控防线兜底）
     if df.empty:
         logger.info("赛道内无候选基金，降级为全市场 Top 10")
         return rank_funds(model)
 
-    # 候选构建：每赛道取 Top2；前 2 赛道（run_recommendation 的 LLM 定论对象）
-    # 保底 2 只且不参与全局截断，保证 LLM 终选定论面对真实选择（候选池 ≥2）而非 1 选 1 盖章；
-    # 其余赛道各保底 1 只，按 combo 排序后截断（只影响后序赛道，LLM 定论不受影响）。
-    # 保底防挤出：高热度赛道可能因量化 combo 略低被全局 topN 整体挤出，
-    # 导致下游误判"赛道无可投基金"（历史根因 2026-08-02）。
-    MAX_CANDIDATES = 8
-    core: list = []  # 前 2 赛道各 2 只
-    rest: list = []  # 其余赛道各 1 只
-    for idx, sector in enumerate(sectors):
-        sdf = df[df["sector"] == sector].sort_values("combo", ascending=False)
-        take = 2 if idx < 2 else 1
-        # 同基金多份额只保留 combo 最高者（去份额名去重），再取前 take 只
-        head = []
-        seen_funds: set[str] = set()
-        for rec in sdf.to_dict("records"):
-            key = _dedup_fund_name(rec["name"])
-            if key in seen_funds:
-                continue
-            seen_funds.add(key)
-            head.append(rec)
-            if len(head) >= take:
-                break
-        (core if idx < 2 else rest).extend(head)
-    core.sort(key=lambda x: x["combo"], reverse=True)
-    rest.sort(key=lambda x: x["combo"], reverse=True)
-    top_per_sector = core + rest[:MAX_CANDIDATES - len(core)]
+    top_per_sector = _select_top_per_sector(df, sectors)
     if not top_per_sector:
         return rank_funds(model)
-
-    results = []
-    for f in top_per_sector:
-        results.append({
-            "code": f["code"], "name": f["name"],
-            "sector": f["sector"],
-            "rbsa_industry_1": f.get("rbsa_industry_1", ""),
-            "rbsa_industry_2": f.get("rbsa_industry_2", ""),
-            "rbsa_industry_3": f.get("rbsa_industry_3", ""),
-            "rbsa_weight_1": float(f.get("rbsa_weight_1", 0) or 0),
-            "rbsa_weight_2": float(f.get("rbsa_weight_2", 0) or 0),
-            "rbsa_weight_3": float(f.get("rbsa_weight_3", 0) or 0),
-            "score": float(f["score"]), "combo": float(f["combo"]),
-            "hurst_60d": float(f["hurst_60d"]), "momentum_20d": float(f["momentum_20d"]),
-            "calmar": float(f["calmar"]),
-            "sector_rel_momentum": round(float(f.get("sector_rel_momentum", 0)), 1),
-            "sector_rel_calmar": round(float(f.get("sector_rel_calmar", 0)), 1),
-        })
-    return results
+    return [_build_candidate_record(f) for f in top_per_sector]
 
 
 def rank_funds(model: lgb.Booster) -> list[dict]:
@@ -348,7 +358,7 @@ def _parse_llm_result(content: str, valid_codes: dict) -> dict | None:
     return _validate_final_pick(parsed, valid_codes)
 
 
-def _validate_final_pick(parsed, valid_codes: dict) -> dict | None:
+def _validate_final_pick(parsed: Any, valid_codes: dict) -> dict | None:
     """终选定论结构校验（validator core）：非 dict / 代码不在候选 → None（视为解析失败）。"""
     if not isinstance(parsed, dict):
         return None

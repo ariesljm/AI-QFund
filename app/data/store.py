@@ -1,7 +1,7 @@
 """数据写入层：基金列表、净值、指数、持仓。"""
 
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from app.database import db_conn
 from app.utils.log import get_logger
@@ -293,14 +293,14 @@ def cooldown_targets(fetch_type: str, min_attempts: int = 3,
     if not rows:
         return set()
     stage_days = stage_cooldown_days or {}
-    now_utc = datetime.now(timezone.utc)
+    now_utc = datetime.now(UTC)
     out: set[str] = set()
     for target, stage, attempts, last_failed_at in rows:
         if attempts < min_attempts or not last_failed_at:
             continue
         try:
             last = datetime.strptime(last_failed_at[:19], "%Y-%m-%d %H:%M:%S").replace(
-                tzinfo=timezone.utc)
+                tzinfo=UTC)
         except ValueError:
             continue
         days = stage_days.get(stage or "", cooldown_days)

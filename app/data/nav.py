@@ -7,11 +7,10 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from app.database import db_conn
 from app.data.fetchers import fetch, fetch_async
-from app.data.ingest import run_batched_fetch, filter_cooldown_targets
-from app.data.store import (save_nav_batch,
-                            NAV_RETENTION_DAYS)
+from app.data.ingest import filter_cooldown_targets, run_batched_fetch
+from app.data.store import NAV_RETENTION_DAYS, save_nav_batch
+from app.database import db_conn
 from app.utils.log import get_logger
 
 logger = get_logger("nav")
@@ -395,7 +394,7 @@ def fetch_fund_nav(code: str) -> list[dict]:
 
     返回格式：[{"date": "2024-01-02", "cum_nav": 1.2345}, ...]
     """
-    url = "https://fund.eastmoney.com/pingzhongdata/{code}.js".format(code=code)
+    url = f"https://fund.eastmoney.com/pingzhongdata/{code}.js"
     resp = fetch(url)
     nav_list = _parse_pingzhong_acworth(resp.text)
     if not nav_list:

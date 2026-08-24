@@ -7,14 +7,15 @@
 import time
 import uuid
 from datetime import datetime
+from collections.abc import Callable
 
+import app.repo as repo
+from app.data.foundation import daily_steps, update_industry_map
 from app.data.foundation import run_pipeline as run_data_foundation
-from app.data.foundation import update_industry_map, daily_steps
-from app.utils.log import get_logger
 from app.engine.monitor import run_monitor
 from app.engine.recommend import run_recommendation
 from app.repo import meta_keys as META
-import app.repo as repo
+from app.utils.log import get_logger
 
 logger = get_logger("pipeline")
 
@@ -26,7 +27,7 @@ def _new_cid() -> str:
     return uuid.uuid4().hex[:12]
 
 
-def _run_phases(phases: list[tuple[str, callable]], label: str, cid: str) -> None:
+def _run_phases(phases: list[tuple[str, Callable[[], None]]], label: str, cid: str) -> None:
     """通用 phase 编排（全流程 / 数据槽位 / 推荐槽位共用）。"""
     log = logger.with_cid(cid)
     pipeline_start = time.time()
@@ -48,7 +49,7 @@ def _run_phases(phases: list[tuple[str, callable]], label: str, cid: str) -> Non
     log.info_event("pipeline_end", f"{label}完成", extra={"duration_ms": int(total_ms)})
 
 
-def _evolve_phase(today: datetime) -> list[tuple[str, callable]]:
+def _evolve_phase(today: datetime) -> list[tuple[str, Callable[[], None]]]:
     """进化引擎 phase：每日附加（延迟 import 避免循环依赖）。
 
     内部按 28 天间隔控制重量活（元分析/GA/衰减），每日仅执行幂等的结算与质量度量——
@@ -58,7 +59,7 @@ def _evolve_phase(today: datetime) -> list[tuple[str, callable]]:
     return [("进化引擎", lambda: run_evolve())]
 
 
-def _run_phase_safely(name: str, fn: callable, cid: str) -> None:
+def _run_phase_safely(name: str, fn: Callable[[], None], cid: str) -> None:
     """单 phase 容错执行：失败仅记录，不中断后续槽位。
 
     监控信号链的连续性（R2c 连续 3 日确认、WARNING 20 日升级）依赖每日盯盘，

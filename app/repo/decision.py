@@ -1,12 +1,12 @@
 """推荐决策域 seam：recommend_log/sector_selections/monitor_events/evolution_insights/quality_metrics/empty_recommendations 读写。"""
 
-from app.repo import meta_keys as META
-from pathlib import Path
 import json as _json
+from pathlib import Path
 
-from app.database import db_conn
-from app.repo.base import get_meta, save_meta
 from app import domain
+from app.database import db_conn
+from app.repo import meta_keys as META
+from app.repo.base import get_meta, save_meta
 from app.utils.log import get_logger
 
 logger = get_logger("repo")
@@ -341,7 +341,7 @@ def get_reco_date_of(code: str, statuses: tuple[str, ...]=('HOLD', 'BUY_MORE', '
         row = conn.execute(f'SELECT recommend_date FROM recommend_log WHERE code = ? AND status IN ({placeholders}) ORDER BY id DESC LIMIT 1', (code, *statuses)).fetchone()
     return row[0] if row else None
 
-def get_recommendation_by_id(log_id: int) -> tuple | None:
+def get_recommendation_by_id(log_id: int) -> tuple[str, str, float | None, str, float | None] | None:
     """按 id 读取推荐记录 (code, status, return_rate, recommend_date, entry_nav)。"""
     with db_conn() as conn:
         row = conn.execute('SELECT code, status, return_rate, recommend_date, entry_nav FROM recommend_log WHERE id = ?', (log_id,)).fetchone()
@@ -448,7 +448,8 @@ def insert_sector_selection(date_str: str, log_id: int, recommended_sectors: lis
 
 def get_empty_reco_dates(days: int = 60) -> list[str]:
     """近 N 天的空推荐日日期（P1-5 空仓率监控）。"""
-    from datetime import datetime as _dt, timedelta as _td
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
     since = (_dt.now() - _td(days=days)).strftime("%Y-%m-%d")
     with db_conn() as conn:
         rows = conn.execute("SELECT date FROM empty_recommendations WHERE date >= ?", (since,)).fetchall()
@@ -457,7 +458,8 @@ def get_empty_reco_dates(days: int = 60) -> list[str]:
 
 def get_reco_dates(days: int = 60) -> list[str]:
     """近 N 天有实际推荐入库的日期（P1-5 空仓率监控分母）。"""
-    from datetime import datetime as _dt, timedelta as _td
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
     since = (_dt.now() - _td(days=days)).strftime("%Y-%m-%d")
     with db_conn() as conn:
         rows = conn.execute("SELECT DISTINCT recommend_date FROM recommend_log WHERE recommend_date >= ?", (since,)).fetchall()

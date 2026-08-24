@@ -14,29 +14,42 @@
 运行：uv run python monitor.py
 """
 
-from datetime import datetime
 from dataclasses import dataclass
-
-from app.utils.log import get_logger
+from datetime import datetime
+from typing import Any
 
 import numpy as np
 
-from app.repo import (nav, get_latest_features,
-                      get_sector_momentum_median, get_entry, get_entry_score,
-                      get_holding_codes, update_status,
-                      get_rbsa_at_date, get_first_rbsa_after,
-                      get_holding_log_id, insert_monitor_event, exit_position,
-                      get_entry_sector_anchor, get_entry_feature_snapshot,
-                      get_latest_holdings_date,
-                      get_index_rows,
-                      get_available_sectors, insert_monitor_score,
-                      get_recent_scores, get_recent_monitor_signals)
-from app.model import score as model_score, latest_market_state, model_version
-from app.features.calculator import ema60_exit  # R1 判定单一来源（回测模拟共用）
-from app.llm.client import call_llm_json, LLMError
-from app.llm.context import build_holdings_text, rbsa_distribution, anchor_holdings_text
-from app.llm.prompts import monitor_logic_prompt
 from app import domain
+from app.features.calculator import ema60_exit  # R1 判定单一来源（回测模拟共用）
+from app.llm.client import LLMError, call_llm_json
+from app.llm.context import anchor_holdings_text, build_holdings_text, rbsa_distribution
+from app.llm.prompts import monitor_logic_prompt
+from app.model import latest_market_state, model_version
+from app.model import score as model_score
+from app.repo import (
+    exit_position,
+    get_available_sectors,
+    get_entry,
+    get_entry_feature_snapshot,
+    get_entry_score,
+    get_entry_sector_anchor,
+    get_first_rbsa_after,
+    get_holding_codes,
+    get_holding_log_id,
+    get_index_rows,
+    get_latest_features,
+    get_latest_holdings_date,
+    get_rbsa_at_date,
+    get_recent_monitor_signals,
+    get_recent_scores,
+    get_sector_momentum_median,
+    insert_monitor_event,
+    insert_monitor_score,
+    nav,
+    update_status,
+)
+from app.utils.log import get_logger
 
 logger = get_logger("monitor")
 
@@ -407,7 +420,7 @@ def _entry_rbsa(code: str, reco_date: str | None,
     return None, None
 
 
-def _parse_logic_result(parsed) -> dict | None:
+def _parse_logic_result(parsed: Any) -> dict | None:
     """监控 LLM 判定解析校验：非 dict 视为无效（call_llm_json 的 per-prompt validator）。"""
     if not isinstance(parsed, dict):
         return None

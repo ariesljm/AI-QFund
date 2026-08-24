@@ -11,8 +11,7 @@ import json
 
 import numpy as np
 
-from app import domain
-from app import repo
+from app import domain, repo
 from app.utils.log import get_logger
 
 logger = get_logger("quality")
@@ -34,7 +33,7 @@ def _rankdata(x: np.ndarray) -> np.ndarray:
     return avg_rank[dense - 1]
 
 
-def spearman(x, y) -> float | None:
+def spearman(x: list[float], y: list[float]) -> float | None:
     """Spearman 秩相关；常数序列（无秩差异）返回 None。"""
     rx = _rankdata(np.asarray(x, dtype=float))
     ry = _rankdata(np.asarray(y, dtype=float))
@@ -43,7 +42,7 @@ def spearman(x, y) -> float | None:
     return float(corr) if not np.isnan(corr) else None
 
 
-def profit_stats(rets, threshold=domain.PROFIT_THRESHOLD) -> dict:
+def profit_stats(rets: list[float | None], threshold: float = domain.PROFIT_THRESHOLD) -> dict:
     """对收益序列算赚钱口径（单一来源）：名义胜率 / 赚钱胜率 / 盈亏比。
 
     赚钱 = 绝对收益 > threshold（覆盖申赎成本）。quality 度量与回测汇总共用，

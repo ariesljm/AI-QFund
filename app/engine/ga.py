@@ -12,8 +12,8 @@
 
 import numpy as np
 
-from app.utils.log import get_logger
 import app.repo as repo
+from app.utils.log import get_logger
 from backtest.backtest import run_backtest
 
 logger = get_logger("ga")

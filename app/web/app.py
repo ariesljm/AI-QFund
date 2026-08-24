@@ -2,6 +2,7 @@
 
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import json
@@ -10,17 +11,18 @@ import threading
 from collections.abc import AsyncIterator
 from datetime import datetime
 
-from fastapi import FastAPI, Request, Header, HTTPException, Depends
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app.database import get_db as _get_db
-from app.config import load_settings as _load_settings, save_settings as _save_settings
-from app.web import runner, quotes, dashboard
 import app.repo as repo
 from app import domain
+from app.config import load_settings as _load_settings
+from app.config import save_settings as _save_settings
+from app.database import get_db as _get_db
 from app.engine.valuation import period_returns
+from app.web import dashboard, quotes, runner
 
 logger = logging.getLogger("web")
 
@@ -242,8 +244,9 @@ async def get_fund_detail(code: str) -> dict[str, object]:
 
 
 if __name__ == "__main__":
-    import uvicorn
     import os as _os
+
+    import uvicorn
     try:
         settings = _load_settings()
         port = int(settings.get("web", {}).get("port", 9123))

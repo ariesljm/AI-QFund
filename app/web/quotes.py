@@ -6,9 +6,9 @@ import re
 import time
 from datetime import datetime
 
+import app.repo as repo
 from app.data.fetchers import fetch
 from app.web.runner import is_trading_time
-import app.repo as repo
 
 logger = logging.getLogger("web.quotes")
 

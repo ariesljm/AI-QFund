@@ -4,9 +4,9 @@ import queue
 import sqlite3
 import sys
 import threading
+from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from datetime import datetime
 
 LOG_DIR = Path("data/logs")
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -151,7 +151,7 @@ class SQLiteLogHandler(logging.Handler):
             pass  # 队列满时丢弃，避免阻塞业务线程
 
 
-def _record_to_log_row(record: logging.LogRecord) -> tuple:
+def _record_to_log_row(record: logging.LogRecord) -> tuple[str, str, str, str, str, str]:
     msg = record.getMessage()
     event = getattr(record, "event", msg.split(":")[0] if ": " in msg else msg)
     cid = getattr(record, "correlation_id", "") or "-"
@@ -210,7 +210,7 @@ def _backfill_system_logs(conn: sqlite3.Connection) -> None:
         if not LOG_FILE.exists():
             return
         rows = []
-        with open(str(LOG_FILE), "r", encoding="utf-8", errors="replace") as f:
+        with open(str(LOG_FILE), encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
                 if not line:

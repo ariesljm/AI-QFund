@@ -5,8 +5,8 @@
 调用方不再拼装 SQL；旧 base.py 的散落读取函数收敛于此。
 """
 
-from app.database import db_conn
 from app import domain
+from app.database import db_conn
 
 
 def series(code: str, since: str | None = None, until: str | None = None,

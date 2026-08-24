@@ -2,8 +2,8 @@
 
 from datetime import datetime
 
-from app.database import db_conn, meta_get, meta_set
 from app import domain
+from app.database import db_conn, meta_get, meta_set
 from app.repo import meta_keys as META
 from app.utils.log import get_logger
 
@@ -20,7 +20,7 @@ MARKET_COLS = domain.MARKET_COLS
 FORWARD_WINDOW = domain.FORWARD_DAYS
 def get_all_ranking_rows() -> list[dict]:
     """全市场可投基金特征（推荐降级路径用）。"""
-    feat_cols = ', '.join(('ff.' + c for c in FEATURE_COLS))
+    feat_cols = ', '.join('ff.' + c for c in FEATURE_COLS)
     with db_conn() as conn:
         rows = conn.execute(f"SELECT ff.code, fb.name, ff.regime, ff.rbsa_industry_1, ff.rbsa_weight_1, {feat_cols} FROM fund_features ff JOIN fund_basic fb ON fb.code = ff.code WHERE fb.is_buyable = 1 AND ff.rbsa_industry_1 IS NOT NULL AND ff.rbsa_industry_1 != ''").fetchall()
     names = ['code', 'name', 'regime', 'rbsa_industry_1', 'rbsa_weight_1'] + FEATURE_COLS
@@ -49,7 +49,7 @@ def get_buyable_codes() -> list[str]:
         rows = conn.execute('SELECT code FROM fund_basic WHERE is_buyable = 1').fetchall()
     return [r[0] for r in rows]
 
-def get_buyable_feature_stats() -> list[tuple]:
+def get_buyable_feature_stats() -> list[tuple[str, float | None, float | None, float | None]]:
     """可投基金核心特征快照（进化引擎排分自纠偏用）。
 
     只取最新特征日期：fund_features 每基金保留 250 行历史快照，混入旧快照会
@@ -356,7 +356,7 @@ def get_sector_momentum_medians(sector: str, date: str) -> dict | None:
         "n": len(rows),
     }
 
-def get_rbsa_at_date(code: str, date: str) -> tuple | None:
+def get_rbsa_at_date(code: str, date: str) -> tuple[str | None, float | None] | None:
     """指定日期快照的 (rbsa_industry_1, rbsa_weight_1)；无记录返回 None。"""
     with db_conn() as conn:
         row = conn.execute(
@@ -365,7 +365,7 @@ def get_rbsa_at_date(code: str, date: str) -> tuple | None:
     return row if row else None
 
 
-def get_first_rbsa_after(code: str, date: str) -> tuple | None:
+def get_first_rbsa_after(code: str, date: str) -> tuple[str | None, float | None] | None:
     """date 之后（含）第一个非空 RBSA 快照 (rbsa_industry_1, rbsa_weight_1)。
 
     用于买入日处于持仓报告期空窗（当天快照 rbsa 为空）时的基准兑底。
@@ -382,7 +382,7 @@ def get_sector_candidates(sectors: list[str]) -> list[dict]:
     if not sectors:
         return []
     placeholders = ','.join('?' * len(sectors))
-    feat_cols = ', '.join(('ff.' + c for c in FEATURE_COLS))
+    feat_cols = ', '.join('ff.' + c for c in FEATURE_COLS)
     with db_conn() as conn:
         rows = conn.execute(f'SELECT ff.code, fb.name, ff.regime, ff.rbsa_industry_1, ff.rbsa_weight_1, ff.rbsa_industry_2, ff.rbsa_weight_2, ff.rbsa_industry_3, ff.rbsa_weight_3, {feat_cols} FROM fund_features ff JOIN fund_basic fb ON fb.code = ff.code WHERE fb.is_buyable = 1 AND (ff.rbsa_industry_1 IN ({placeholders})   OR ff.rbsa_industry_2 IN ({placeholders})   OR ff.rbsa_industry_3 IN ({placeholders}))', sectors + sectors + sectors).fetchall()
     names = ['code', 'name', 'regime', 'rbsa_industry_1', 'rbsa_weight_1', 'rbsa_industry_2', 'rbsa_weight_2', 'rbsa_industry_3', 'rbsa_weight_3'] + FEATURE_COLS
