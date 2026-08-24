@@ -88,7 +88,7 @@ def run_pipeline_wrapper(slot: str | None = None) -> None:
     root = logging.getLogger()
     root.addHandler(handler)
 
-    slot_label = {"data": "数据基座", "recommend": "推荐+监控"}.get(slot, "全流程")
+    slot_label = {"data": "数据基座", "recommend": "推荐+监控"}.get(slot or "", "全流程")
     try:
         pipeline.add_log(f"[启动] {slot_label}管线开始执行")
         if slot == "data":

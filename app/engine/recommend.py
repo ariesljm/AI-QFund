@@ -430,7 +430,7 @@ def _save_recommendation(date_str: str, selected: dict, candidates: list[dict],
     entry_nav = repo.nav.latest(selected["selected_code"])
     # Q5 裁决损耗观测：落库当日候选池代码（LLM 面对的选择集），质量度量时回查 20 日收益
     new_id = repo.insert_recommendation(
-        date_str, selected["selected_code"], real_name, rank, score, combo, regime,
+        date_str, selected["selected_code"], real_name, rank, score or 0.0, combo or 0.0, regime,
         reason, status=domain.SIGNAL_HOLD, feature_snapshot=feature_snapshot,
         entry_nav=entry_nav, candidate_codes=[c["code"] for c in candidates],
     )
@@ -438,7 +438,7 @@ def _save_recommendation(date_str: str, selected: dict, candidates: list[dict],
     repo.clear_empty_recommendation(date_str)
     logger.info("推荐入库: %s %s (排名%d, 分数%.4f, id=%d)",
                 selected["selected_code"], real_name, rank, score or 0.0, new_id)
-    _dump_recommendation(date_str, selected["selected_code"], real_name, rank, score,
+    _dump_recommendation(date_str, selected["selected_code"], real_name, rank, score or 0.0,
                           regime, candidates, vetoed, clear=clear)
     return new_id
 

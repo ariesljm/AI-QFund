@@ -199,22 +199,26 @@ def _count_stale_lagging(tasks_meta: list[tuple[str, str]], target: str | None) 
     return n
 
 
-def _save_nav_batch(conn_, results) -> None:
+def _save_nav_batch(conn_, results) -> dict:
     """批处理保存净值结果，统计新增/无更新/失败（增量与全量共用）。"""
-    outcome = {"new_count": 0, "success": set(), "no_update": [], "failed": []}
+    success: set[str] = set()
+    no_update: list[str] = []
+    failed_codes: list[str] = []
+    new_count = 0
     for code, navs, failed in results:
         if failed:
-            outcome["failed"].append(code)
+            failed_codes.append(code)
             continue
         n = save_nav_batch(conn_, code, navs)
         if n == 0:
             # 接口确认无新数据（停更/滞后发布/无净值页）：计入失败累计，
             # 连续 3 个周期后进入冷却，避免每次运行对注定拉不到的基金反复重试
-            outcome["no_update"].append(code)
+            no_update.append(code)
         else:
-            outcome["success"].add(code)
-            outcome["new_count"] += n
-    return outcome
+            success.add(code)
+            new_count += n
+    return {"new_count": new_count, "success": success,
+            "no_update": no_update, "failed": failed_codes}
 
 
 def _backfill_one(code: str) -> None:

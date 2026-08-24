@@ -35,7 +35,7 @@ _LLM_TIMEOUT = 300.0           # 单次请求总超时（秒）：大 max_tokens
 
 
 def _audit_write(caller: str, prompt: str, raw_output: str, parsed_result: Any, ok: bool,
-                 duration_ms: int, tokens: int) -> None:
+                 duration_ms: float, tokens: int) -> None:
     """写入 LLM 决策审计（P0-3）：prompt 快照 + 原始输出 + 解析结果，可复现排查。
 
     审计写入失败不阻断主流程（技术记录，容错丢弃）；滚动保留最近 _AUDIT_MAX_ROWS 条。
@@ -120,7 +120,7 @@ def _call_llm(
         try:
             resp = client.chat.completions.create(
                 model=model,
-                messages=messages,
+                messages=messages,  # type: ignore[arg-type]  # OpenAI SDK Param 类型严格，dict 消息运行时兼容
                 temperature=temperature,
                 max_tokens=max_tokens,
             )

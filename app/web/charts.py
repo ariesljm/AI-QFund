@@ -74,5 +74,5 @@ def make_dual_svg(pcts: Sequence[float], hs_pcts: Sequence[float]) -> tuple[str,
 
 def quality_curve_svg(points: Sequence[QualityPoint]) -> tuple[str, float]:
     """累计超额曲线 SVG（单线），points=[{cum_abs_ret,...}] 按时间序。返回 (path, baseline_y)。"""
-    return smooth_svg_path([float(p["cum_abs_ret"]) for p in points if p.get("cum_abs_ret") is not None],
+    return smooth_svg_path([float(p["cum_abs_ret"] or 0) for p in points if p.get("cum_abs_ret") is not None],
                            pad_ratio=0.15)

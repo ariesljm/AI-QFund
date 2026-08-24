@@ -350,7 +350,7 @@ def fetch(
                                _short_url(url), attempt + 1, delay, str(e)[:120])
                 time.sleep(delay)
 
-    raise last_error
+    raise last_error or RuntimeError("请求失败")
 
 
 def _fetch_push2_curl_cffi(url: str, hdrs: dict, timeout: float) -> tuple[Any, int | None]:

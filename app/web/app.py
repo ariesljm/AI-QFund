@@ -37,7 +37,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="AI Quant Terminal", lifespan=lifespan)
+app = FastAPI(title="AI Quant Terminal", lifespan=lifespan)  # type: ignore[arg-type]  # FastAPI lifespan 签名严格
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

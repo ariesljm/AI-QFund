@@ -169,7 +169,7 @@ _HOLDING_ROW_RE = re.compile(
 )
 
 
-def _parse_holdings_html(text: str) -> tuple[str, str | None, list[dict], bool]:
+def _parse_holdings_html(text: str) -> tuple[str | None, list[dict]]:
     date_m = _HOLDING_DATE_RE.search(text)
     report_date = date_m.group(1) if date_m else None
     holdings = []
@@ -201,7 +201,7 @@ async def _async_fetch_holdings_one(
     code: str,
     holdings_url: str,
     semaphore: asyncio.Semaphore,
-) -> tuple[str, str | None, list[dict]]:
+) -> tuple[str, str | None, list[dict], bool]:
     params = {"type": "jjcc", "code": code, "topline": "10", "year": "", "month": ""}
     async with semaphore:
         try:

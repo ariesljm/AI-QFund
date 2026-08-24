@@ -13,6 +13,7 @@
 import numpy as np
 
 import app.repo as repo
+from app import domain
 from app.utils.log import get_logger
 from backtest.backtest import run_backtest
 
@@ -33,7 +34,7 @@ _ELITE = 2
 _TOURNAMENT_K = 3
 
 
-def _encode(cfg: dict) -> np.ndarray:
+def _encode(cfg: dict | domain.RankingConfig) -> np.ndarray:
     """配置 → [0,1]^5 基因向量（按边界线性映射）。"""
     v = np.zeros(len(_GENE_KEYS))
     for i, k in enumerate(_GENE_KEYS):
@@ -150,7 +151,7 @@ def ga_optimize_ranking(population: int = 4, generations: int = 2,
 
 if __name__ == "__main__":
     import sys
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]  # sys.stdout 运行时为 TextIOWrapper
     cfg, f = ga_optimize_ranking()
     print("最优配置:", cfg)
     print("适应度:", f)

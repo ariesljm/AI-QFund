@@ -178,7 +178,7 @@ def train(X_train: pd.DataFrame, y_train: pd.Series,
           X_val: pd.DataFrame | None = None,
           y_val: pd.Series | None = None,
           w_val: np.ndarray | None = None,
-          save_path: str | None = MODEL_PATH) -> lgb.Booster:
+          save_path: str | Path | None = MODEL_PATH) -> lgb.Booster:
     """训练 LightGBM：L1 回归 + 低学习率/少叶子 + 固定 50 轮。
 
     面板样本训练集与验证集存在分布漂移（时间衰减权重 + 验证期行情差异），

@@ -214,7 +214,7 @@ def quality_block() -> QualityBlock:
     """质量度量块：最近 6 期度量 + 累计超额曲线 SVG + 最新一期指标（模板上下文用）。"""
     quality_metrics = repo.get_quality_metrics(6)
     quality_curve_svg = ""
-    quality_curve_baseline = 50
+    quality_curve_baseline = 50.0
     if quality_metrics:
         _pts = quality_metrics[0].get("points") or []
         if len(_pts) >= 2:

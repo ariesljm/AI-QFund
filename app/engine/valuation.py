@@ -83,8 +83,8 @@ def portfolio_series() -> tuple[list[str], list[float], list[float]]:
     pairs = [(d, p, h) for d, p, h in zip(dates, port_pcts, hs_pcts, strict=False) if p is not None and h is not None]
     if len(pairs) < 2:
         return [], [], []
-    dates, port_pcts, hs_pcts = zip(*pairs, strict=False)
-    return list(dates), list(port_pcts), list(hs_pcts)
+    z_dates, z_pcts, z_hs = zip(*pairs, strict=False)
+    return list(z_dates), list(z_pcts), list(z_hs)
 
 
 def period_returns(code: str) -> dict[str, float | None]:

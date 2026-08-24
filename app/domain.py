@@ -335,9 +335,9 @@ def parse_macro_summary(mn: dict | None) -> dict:
             for s in (mn.get("flow_outflows") or [])
         ]
         # 赛道分析（context_json 合并行）
-        sector_reasoning = zh_regime(mn.get("sector_reasoning") or "")
+        sector_reasoning = zh_regime(mn.get("sector_reasoning") or "") or ""
         # 大盘状态（LLM 可能输出 bullish/bearish/bull/bear 等变体，统一归一）
-        regime_label = normalize_regime_label(mn.get("regime_label"))
+        regime_label = normalize_regime_label(mn.get("regime_label") or "")
     macro_data = {
         "news": "；".join(it["title"] for it in news_items),
         "news_items": news_items,

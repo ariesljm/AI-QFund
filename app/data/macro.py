@@ -178,10 +178,10 @@ def fetch_news(date_str: str, sectors: list) -> dict:
     news = ""
     if em_entries:
         lines = []
-        for e in em_entries:
-            line = f"[{e['time']}] {e['title']}"
-            if e.get("summary"):
-                line += f"：{e['summary']}"
+        for item in em_entries:
+            line = f"[{item['time']}] {item['title']}"
+            if item.get("summary"):
+                line += f"：{item['summary']}"
             lines.append(line)
         news = "\n".join(lines)
 
@@ -201,7 +201,7 @@ def fetch_news(date_str: str, sectors: list) -> dict:
 
 def fetch_flow(date_str: str, sectors: list) -> dict:
     """抓取行业板块资金流排名（主力净流入/涨跌），排除概念/风格板块。"""
-    result = {"summary": ""}
+    result: dict[str, object] = {"summary": ""}
     try:
         if not sectors:
             return result

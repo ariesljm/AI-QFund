@@ -53,7 +53,7 @@ def _score_funds_at_date(nav_df: pd.DataFrame, idx_df: pd.DataFrame,
     regime = _regime_at_date(idx_df, bt_date)
     cfg = repo.get_ranking_cfg()
     if cfg_override:
-        cfg = {**cfg.to_dict(), **cfg_override}
+        cfg = {**cfg.to_dict(), **cfg_override}  # type: ignore[assignment]  # cfg 从 RankingConfig 有意覆盖为 dict
 
     idx_recent = idx_close.iloc[max(0, idx_pos - 20): idx_pos + 1]
     idx_mom = (idx_recent.iloc[-1] / idx_recent.iloc[0] - 1) * 100 if len(idx_recent) >= 21 else 0.0

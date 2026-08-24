@@ -72,12 +72,12 @@ class StructLogger(logging.LoggerAdapter):
 
     def with_cid(self, cid: str) -> "StructLogger":
         """返回绑定新 cid 的副本（不可变：原 adapter 不受影响）。"""
-        return StructLogger(self.logger, dict(self.extra), cid=cid)
+        return StructLogger(self.logger, dict(self.extra or {}), cid=cid)
 
-    def log(self, level: int, msg: str, *args: object, event: str = "",
+    def log(self, level: int, msg: str, *args: object, event: str = "",  # type: ignore[override]  # LoggerAdapter.log 扩展 event/extra 参数
             extra: dict | None = None, exc_info=None,
             **kwargs: object) -> None:
-        log_extra = dict(self.extra)
+        log_extra = dict(self.extra or {})
         if extra:
             log_extra.update(extra)
         if event:
