@@ -74,11 +74,6 @@ async def index(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "index.html", dashboard.index_context())
 
 
-@app.get("/v1", response_class=HTMLResponse)
-async def index_v1(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request, "index_v1.html", dashboard.index_context())
-
-
 @app.get("/api/logs")
 async def get_logs(lines: int = 200, after: int = 0, before: int = 0) -> dict[str, object]:
     """从 SQLite 返回日志；after 为增量游标（拉新），before 为向前翻页游标（拉更早）。"""

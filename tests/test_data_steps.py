@@ -56,3 +56,39 @@ class TestDailySteps:
         assert fd._STEP_HOLDINGS == 4
         assert fd._STEP_FEATURES == 7
         assert fd.ALL_STEPS == frozenset({1, 2, 3, 4, 6, 7, 8})
+
+
+class TestUpdateFundListWeekly:
+    """空列表守卫：源解析失败返回空时拒绝落库（防全表清空 + 周更不自愈）。"""
+
+    def test_empty_list_skips_save_and_timestamp(self, monkeypatch, tmp_path):
+        """fetch 返回空 → 不调 save_fund_list、不置位周更时间戳。"""
+        _seed_meta(monkeypatch, tmp_path, None)
+        saved = {"called": False}
+        monkeypatch.setattr(fd, "fetch_fund_list", lambda: [])
+        monkeypatch.setattr(fd, "save_fund_list",
+                            lambda funds: saved.update(called=True) or 0)
+        n = fd.update_fund_list_weekly()
+        assert n == 0
+        assert not saved["called"]          # 空列表绝不清空 fund_basic
+        import sqlite3 as _s3
+        conn = _s3.connect(str(tmp_path / "steps.db"))
+        ts = conn.execute(
+            "SELECT value FROM meta WHERE key = 'fund_list_last_update'").fetchone()
+        conn.close()
+        assert ts is None                    # 不置位 → 下次运行自动重试
+
+    def test_nonempty_list_saves_and_marks(self, monkeypatch, tmp_path):
+        """正常列表 → 落库并置位周更时间戳。"""
+        _seed_meta(monkeypatch, tmp_path, None)
+        monkeypatch.setattr(fd, "fetch_fund_list",
+                            lambda: [{"code": "000001", "name": "测试", "type": "股票型", "is_buyable": 1}])
+        monkeypatch.setattr(fd, "save_fund_list", lambda funds: len(funds))
+        n = fd.update_fund_list_weekly()
+        assert n == 1
+        import sqlite3 as _s3
+        conn = _s3.connect(str(tmp_path / "steps.db"))
+        ts = conn.execute(
+            "SELECT value FROM meta WHERE key = 'fund_list_last_update'").fetchone()
+        conn.close()
+        assert ts is not None

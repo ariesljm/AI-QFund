@@ -63,12 +63,15 @@ def fitness(cfg: dict, repeats: int = 1) -> float:
     P2-10：repeats>1 时重复评估取中位数——fast 回测 profit_rate 噪声 ≈±8pp
     （fitness ±16），单次评估的选择偏差大；月度重量活可设 repeats=3 降噪（成本 ×3）。
     """
-    s = run_backtest(cfg_override=cfg, fast=True, lookback_days=730)
-    if not s:
-        return -1e9
-    profit = float(s.get("profit_rate_pct", 0.0))
-    abs_ret = float(s.get("mean_top_abs_pct", 0.0))
-    return profit * 2.0 + abs_ret
+    vals: list[float] = []
+    for _ in range(repeats):
+        s = run_backtest(cfg_override=cfg, fast=True, lookback_days=730)
+        if not s:
+            return -1e9
+        profit = float(s.get("profit_rate_pct", 0.0))
+        abs_ret = float(s.get("mean_top_abs_pct", 0.0))
+        vals.append(profit * 2.0 + abs_ret)
+    return float(np.median(vals)) if len(vals) > 1 else vals[0]
 
 
 def _tournament(pop_fit: list[tuple[np.ndarray, float]], rng: np.random.Generator) -> np.ndarray:
@@ -87,7 +90,7 @@ def _mutate(v: np.ndarray, rng: np.random.Generator) -> np.ndarray:
 
 
 def ga_optimize_ranking(population: int = 4, generations: int = 2,
-                        seed: int | None = None) -> tuple[dict, float]:
+                        seed: int | None = None, repeats: int = 1) -> tuple[dict, float]:
     """遗传算法寻优排序配置。
 
     返回 (最优配置 dict, 最优适应度)；调用方决定是否写入 meta。
@@ -96,10 +99,11 @@ def ga_optimize_ranking(population: int = 4, generations: int = 2,
 
     P2-10 稳健化：seed 默认 None → 时间种子（每次寻优探索不同邻域，避免固定 seed
     退化为确定性扰动）；显式传 seed 保持可复现（测试/审计用）。日志记录实际 seed。
+    repeats>1：每次适应度评估取多次回测中位数降噪（月度重量活设 3，成本 ×3）。
     """
     rng = np.random.default_rng(seed)
-    logger.info("GA 寻优启动: population=%d, generations=%d, seed=%s",
-                population, generations, seed if seed is not None else "time-random")
+    logger.info("GA 寻优启动: population=%d, generations=%d, repeats=%d, seed=%s",
+                population, generations, repeats, seed if seed is not None else "time-random")
     cur = repo.get_ranking_cfg()
 
     # 初始化：当前配置为种子 + 随机个体
@@ -109,7 +113,7 @@ def ga_optimize_ranking(population: int = 4, generations: int = 2,
     pop_fit: list[tuple[np.ndarray, float]] = []
     for v in pop:
         cfg = _decode(v)
-        f = fitness(cfg)
+        f = fitness(cfg, repeats=repeats)
         pop_fit.append((v, f))
         logger.info("GA 初始个体 %s → fitness=%.3f", cfg, f)
 
@@ -128,7 +132,7 @@ def ga_optimize_ranking(population: int = 4, generations: int = 2,
         new_fit = []
         for v in next_pop[len(elite):]:
             cfg = _decode(v)
-            f = fitness(cfg)
+            f = fitness(cfg, repeats=repeats)
             new_fit.append((v, f))
             logger.info("GA 第 %d 代新个体 %s → fitness=%.3f", gen + 1, cfg, f)
         pop_fit = elite + new_fit

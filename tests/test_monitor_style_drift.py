@@ -57,6 +57,25 @@ class TestStyleDriftDoubleCheck:
         result = StyleDriftRule().check(_ctx(cur_feat={}, entry_rbsa=("半导体", 50.0)))
         assert result is None
 
+    def test_industry_switch_without_weight_still_triggers(self):
+        """当前权重缺失（rbsa_weight_1=None）但行业已切换 → 仍触发 EXIT。
+
+        修复：旧逻辑先判 cur_w None 早退，行业切换被漏检。
+        """
+        result = StyleDriftRule().check(_ctx(
+            cur_feat={"rbsa_industry_1": "白酒"},  # 无权重
+            entry_rbsa=("半导体", 37.0)))
+        assert result is not None
+        assert result.signal == "EXIT"
+        assert "半导体" in result.reason and "白酒" in result.reason
+
+    def test_weight_missing_and_same_industry_holds(self):
+        """权重缺失且行业未变 → 不误报（无依据判定权重下降）。"""
+        result = StyleDriftRule().check(_ctx(
+            cur_feat={"rbsa_industry_1": "半导体"},
+            entry_rbsa=("半导体", 50.0)))
+        assert result is None
+
 
 class TestSectorAnchorRule:
     """R3a 赛道锚点：命中回避赛道 / 离开推荐赛道 → WARNING（ctx 预装配）。"""

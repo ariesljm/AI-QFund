@@ -156,9 +156,12 @@ def _ga_adjust(force: bool = False) -> str | None:
         logger.warning("GA 模块不可用，跳过寻优: %s", str(e)[:120])
         return None
 
-    best_cfg, best_f = ga_optimize_ranking()
+    # P2-10 降噪：月度重量活评估取 repeats=3 回测中位数（噪声 ±8pp → ±4.6pp 量级）；
+    # 当前配置与最优配置必须用同一 repeats 评估才可比
+    repeats = 3
+    best_cfg, best_f = ga_optimize_ranking(repeats=repeats)
     cur_cfg = repo.get_ranking_cfg()
-    cur_f = fitness(cur_cfg.to_dict())
+    cur_f = fitness(cur_cfg.to_dict(), repeats=repeats)
     logger.info("GA 对比: 当前 fitness=%.3f vs 最优 fitness=%.3f", cur_f, best_f)
     repo.save_meta(META.LAST_GA_RUN, datetime.now().strftime("%Y-%m-%d"))
     # 显著改善才应用（阶段5 新 fitness = 赚钱胜率×2 + 期望收益%：
@@ -515,8 +518,10 @@ def _save_self_fix(fix: str) -> None:
     key = _fix_key(fix)
     if any(_fix_key(e) == key for e in repo.get_all_insights()):
         return
-    # GA 应用/自纠偏是已发生事实，置信度保持 1.0（不属元分析试用期范畴）
-    repo.insert_insight(fix, "ranking", datetime.now().strftime("%Y-%m-%d"), active=1)
+    # GA 应用/自纠偏是已发生事实，置信度按 1.0 起步（不属元分析试用期范畴）
+    # 修复：原 insert 不带 confidence → NULL，decay 时按 0.5 兑底并与注释声称的 1.0 不符
+    repo.insert_insight(fix, "ranking", datetime.now().strftime("%Y-%m-%d"), active=1,
+                        confidence=1.0)
     logger.info("排分自纠偏: %s", fix[:60])
 
 
@@ -609,6 +614,7 @@ def run_evolve(month: str | None = None) -> None:
       自纠偏 + GA 寻优 + LLM 元分析（增量游标）+ 置信度衰减。
     month 参数仅用于补算历史月份的质量度量（如 evolve 2026-07）。
     """
+    explicit_month = month is not None
     if month is None:
         month = _default_evolve_month()
 
@@ -643,7 +649,10 @@ def run_evolve(month: str | None = None) -> None:
         logger.warning("推荐质量度量失败: %s", str(e)[:120], exc_info=True)
 
     # 3. 月度重量活（自纠偏 + GA + 元分析 + 衰减）：手动补算或距上次 ≥28 天
-    heavy = month is not None or _monthly_due()
+    # 修复：heavy 必须用显式传参标志（explicit_month）判断——原 `month is not None`
+    # 在 month 已被默认值填充后恒为 True，导致每日路径也执行重量活并每天覆盖
+    # LAST_MONTHLY_EVOLVE，使 _monthly_due() 的 28 天限频成为死代码
+    heavy = explicit_month or _monthly_due()
     if heavy:
         try:
             # 3a. 排分自纠偏（每月必跑）

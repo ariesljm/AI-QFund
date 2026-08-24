@@ -15,7 +15,7 @@ import json
 import time
 from datetime import date
 
-from app.database import db_conn, meta_get, meta_set
+from app.repo.base import get_meta, save_meta
 from app.utils.log import get_logger
 
 logger = get_logger("trading_calendar")
@@ -60,8 +60,7 @@ def _fetch_trade_dates() -> list[str]:
 
 
 def _load_from_meta() -> set[str] | None:
-    with db_conn() as conn:
-        raw = meta_get(conn, _META_KEY)
+    raw = get_meta(_META_KEY)
     if not raw:
         return None
     try:
@@ -72,8 +71,7 @@ def _load_from_meta() -> set[str] | None:
 
 
 def _save_to_meta(days: list[str]) -> None:
-    with db_conn() as conn:
-        meta_set(conn, _META_KEY, json.dumps(days))
+    save_meta(_META_KEY, json.dumps(days))
 
 
 def _refresh_cache(day: date) -> bool:

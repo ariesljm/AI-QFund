@@ -9,9 +9,13 @@ import time
 from datetime import datetime, timedelta
 
 
-from app.database import db_conn, meta_get, meta_set, DB_PATH
+from app.database import db_conn, DB_PATH
 from app.data.fetchers import fetch, fetch_async
 from app.repo import meta_keys as META
+from app.repo.base import (get_meta, save_meta, get_buyable_codes,
+                         get_holdings_report_dates, get_nav_time_state, has_nav_data,
+                         has_index_data, get_industry_map_gap_count,
+                         get_industry_map_targets, get_industry_map_stats)
 from app.utils.trading_calendar import trading_day_lag  # 滞后交易日数单一来源
 from app.data.ingest import run_batched_fetch, filter_cooldown_targets
 from app.data.nav import async_update_nav_incremental, async_download_all_nav
@@ -68,9 +72,8 @@ _LIST_UPDATE_INTERVAL_DAYS = 7
 
 
 def update_fund_list_weekly(force: bool = False) -> int:
-    with db_conn() as conn:
-        last = meta_get(conn, META.FUND_LIST_LAST_UPDATE)
-        if last and not force:
+    last = get_meta(META.FUND_LIST_LAST_UPDATE)
+    if last and not force:
             last_dt = datetime.strptime(last, "%Y-%m-%d")
             age_days = (datetime.now() - last_dt).days
             if age_days < _LIST_UPDATE_INTERVAL_DAYS:
@@ -78,9 +81,15 @@ def update_fund_list_weekly(force: bool = False) -> int:
                             age_days, _LIST_UPDATE_INTERVAL_DAYS)
                 return -1
     funds = fetch_fund_list()
+    if not funds:
+        # 空列表守卫：源解析失败/接口异常返回空时拒绝落库（save_fund_list 是
+        # 全表 DELETE 后重建，空列表入库会清空候选池且 7 天内不自愈）。
+        # 不置位周更时间戳，下次运行自动重试；已有数据不受本次失败影响。
+        logger.error("基金列表拉取结果为空（源解析失败或接口异常），保留现有 fund_basic 不变，"
+                     "等待下次运行重试")
+        return 0
     n = save_fund_list(funds)
-    with db_conn() as conn:
-        meta_set(conn, META.FUND_LIST_LAST_UPDATE, datetime.now().strftime("%Y-%m-%d"))
+    save_meta(META.FUND_LIST_LAST_UPDATE, datetime.now().strftime("%Y-%m-%d"))
     logger.info("基金列表更新完成，写入 %d 条", n)
     return n
 
@@ -125,6 +134,16 @@ def fetch_etf_daily(datalen: int = 4000) -> list[dict]:
     return _fetch_kline(_API_ETF510300_SYMBOL, datalen)
 
 
+# 指数增量窗口：本地已有数据时每日拉取条数。需覆盖：特征计算 idx_ma60/bias_60d
+# 回看 60 条、EMA60 预热、指数动量 21 日——120 条留足余量。
+_INDEX_INCREMENT_WINDOW = 120
+# 首次/空表时拉取上限内最大值（约 3451 条 ≈ 13.5 年），与原行为一致。
+_INDEX_BACKFILL_WINDOW = 4000
+
+
+
+
+
 # ── 持仓数据 ──
 
 _HOLDING_DATE_RE = re.compile(r"([\d]{4}-[\d]{2}-[\d]{2})</font></label>")
@@ -137,7 +156,7 @@ _HOLDING_ROW_RE = re.compile(
 )
 
 
-def _parse_holdings_html(text: str) -> tuple[str | None, list[dict]]:
+def _parse_holdings_html(text: str) -> tuple[str, str | None, list[dict], bool]:
     date_m = _HOLDING_DATE_RE.search(text)
     report_date = date_m.group(1) if date_m else None
     holdings = []
@@ -199,39 +218,33 @@ async def async_download_all_holdings(
 ) -> int:
     holdings_url = _API_HOLDINGS_URL
 
-    with db_conn() as conn:
-        all_codes = [
-            r[0] for r in conn.execute(
-                "SELECT code FROM fund_basic WHERE is_buyable = 1"
-            ).fetchall()
-        ]
+    all_codes = get_buyable_codes()
 
-        today = datetime.now()
-        m, d = today.month, today.day
-        if m < 4:
-            latest_quarter = f"{today.year - 1}-09-30"
-        elif m == 4 and d <= 21:
-            latest_quarter = f"{today.year - 1}-12-31"
-        elif m < 7 or (m == 7 and d <= 21):
-            latest_quarter = f"{today.year}-03-31"
-        elif m < 10 or (m == 10 and d <= 21):
-            latest_quarter = f"{today.year}-06-30"
-        else:
-            latest_quarter = f"{today.year}-09-30"
+    today = datetime.now()
+    m, d = today.month, today.day
+    # 季报披露窗口：公募季报须于季度结束后 15 个工作日内披露，实际多数在
+    # 每季度末月（1/4/7/10月）下旬初公布完毕。取 22 日为切换点：
+    # 早于窗口时目标停在上一季（避免拉到半套数据），过窗后推进到最新完整季度。
+    if m == 1 and d <= 22:
+        latest_quarter = f"{today.year - 1}-09-30"
+    elif m < 4 or (m == 4 and d <= 21):
+        latest_quarter = f"{today.year - 1}-12-31"
+    elif m < 7 or (m == 7 and d <= 21):
+        latest_quarter = f"{today.year}-03-31"
+    elif m < 10 or (m == 10 and d <= 21):
+        latest_quarter = f"{today.year}-06-30"
+    else:
+        latest_quarter = f"{today.year}-09-30"
 
-        local_latest = dict(
-            conn.execute(
-                "SELECT code, MAX(report_date) FROM fund_holdings GROUP BY code"
-            ).fetchall()
-        )
-        all_codes = [
-            c for c in all_codes
-            if local_latest.get(c) is None or local_latest[c] < latest_quarter
-        ]
-        logger.info(
-            "持仓增量模式：最新季报 %s, 已是最新 %d 只跳过, 待下载 %d 只",
-            latest_quarter, len(local_latest) - len(all_codes), len(all_codes),
-        )
+    local_latest = get_holdings_report_dates()
+    all_codes = [
+        c for c in all_codes
+        if local_latest.get(c) is None or local_latest[c] < latest_quarter
+    ]
+    logger.info(
+        "持仓增量模式：最新季报 %s, 已是最新 %d 只跳过, 待下载 %d 只",
+        latest_quarter, len(local_latest) - len(all_codes), len(all_codes),
+    )
 
     all_codes = filter_cooldown_targets("holdings", all_codes, "持仓")
 
@@ -308,13 +321,9 @@ async def async_download_all_holdings(
 def update_industry_map(force: bool = False) -> int:
     with db_conn() as conn:
         # 持仓中尚未映射的股票（行业缺失 → RBSA 归为"其他"，影响特征质量）
-        unmapped_cnt = conn.execute(
-            "SELECT COUNT(*) FROM (SELECT DISTINCT h.stock_code FROM fund_holdings h "
-            "LEFT JOIN stock_industry_map i ON h.stock_code = i.stock_code "
-            "WHERE i.stock_code IS NULL)"
-        ).fetchone()[0]
+        unmapped_cnt = get_industry_map_gap_count()
         if not force:
-            last_update_raw = meta_get(conn, META.INDUSTRY_MAP_UPDATED)
+            last_update_raw = get_meta(META.INDUSTRY_MAP_UPDATED)
             if last_update_raw:
                 last_update = datetime.strptime(last_update_raw, "%Y-%m-%d")
                 if datetime.now() - last_update < timedelta(days=90) and unmapped_cnt == 0:
@@ -338,7 +347,7 @@ def update_industry_map(force: bool = False) -> int:
 
         today = datetime.now().strftime("%Y-%m-%d")
         save_industry_map(conn, records)
-        meta_set(conn, META.INDUSTRY_MAP_UPDATED, today)
+        save_meta(META.INDUSTRY_MAP_UPDATED, today)
     logger.info("行业映射更新完成: %d 条记录", len(records))
     return len(records)
 
@@ -434,16 +443,10 @@ def _fetch_industry_push2(stocks: list[str], results: dict[str, tuple[str, str]]
 
 
 def _fetch_industry_map(unmapped_only: bool = False) -> list[tuple[str, str, str]]:
-    with db_conn() as conn:
-        all_stocks = [
-            r[0] for r in conn.execute(
-                "SELECT DISTINCT stock_code FROM fund_holdings"
-            ).fetchall()
-        ]
-        if unmapped_only:
-            # 增量语义：只查尚未映射的股票（90 天全量重查由 force 路径触发）
-            mapped = {r[0] for r in conn.execute("SELECT stock_code FROM stock_industry_map")}
-            all_stocks = [s for s in all_stocks if s not in mapped]
+    all_stocks, mapped = get_industry_map_targets()
+    if unmapped_only:
+        # 增量语义：只查尚未映射的股票（90 天全量重查由 force 路径触发）
+        all_stocks = [s for s in all_stocks if s not in mapped]
     all_stocks = filter_cooldown_targets("industry_map", all_stocks, "行业映射")
     if not all_stocks:
         return []
@@ -585,11 +588,10 @@ def mark_short_history_funds() -> int:
     """
     fresh: list[str] = []
     cutoff = (datetime.now().date() - timedelta(days=_MIN_NAV_DAYS)).isoformat()
-    with db_conn() as conn:
-        for code, first in conn.execute(
-            "SELECT code, MIN(date) FROM fund_nav GROUP BY code").fetchall():
-            if first and first > cutoff:
-                fresh.append(code)
+    ranges, _ = get_nav_time_state()
+    for code, (first, _last) in ranges.items():
+        if first and first > cutoff:
+            fresh.append(code)
         if fresh:
             mark_funds_unbuyable(fresh)
     if fresh:
@@ -619,19 +621,19 @@ def mark_stale_funds() -> int:
     后自动恢复，仅屏蔽重建窗口内停更的基金。返回打标数量。
     """
     stale: list[str] = []
-    with db_conn() as conn:
-        global_max = conn.execute("SELECT MAX(date) FROM fund_nav").fetchone()[0]
-        if not global_max:
-            return 0
-        dates = sorted(r[0] for r in conn.execute("SELECT DISTINCT date FROM fund_nav").fetchall())
-        dates_set = set(dates)
-        for code, latest in conn.execute(
-            "SELECT code, MAX(date) FROM fund_nav GROUP BY code").fetchall():
-            # 滞后判定单一来源：trading_day_lag（用净值实际日期集保持原口径，消除 O(N) 位置映射）
-            if latest and trading_day_lag(latest, global_max, days=dates_set) > _STALE_NAV_LAG_DAYS:
-                stale.append(code)
-        if stale:
-            mark_funds_unbuyable(stale)
+    ranges, dates = get_nav_time_state()
+    if not ranges:
+        return 0
+    global_max = max(v[1] for v in ranges.values() if v[1])
+    if not global_max:
+        return 0
+    dates_set = set(dates)
+    for code, (_first, latest) in ranges.items():
+        # 滞后判定单一来源：trading_day_lag（用净值实际日期集保持原口径）
+        if latest and trading_day_lag(latest, global_max, days=dates_set) > _STALE_NAV_LAG_DAYS:
+            stale.append(code)
+    if stale:
+        mark_funds_unbuyable(stale)
     if stale:
         logger.info("停更打标: %d 只基金净值滞后超 %d 个交易日，is_buyable=0",
                     len(stale), _STALE_NAV_LAG_DAYS)
@@ -661,8 +663,7 @@ def daily_steps() -> list[int]:
     失败不更新、下次运行自动重试；首次部署无记录视为到期（触发自举）。
     原 pipeline._daily_data_steps 与此重复（两套编号漂移），现收敛于此。
     """
-    with db_conn() as conn:
-        last_raw = meta_get(conn, META.HOLDINGS_LAST_RUN)
+    last_raw = get_meta(META.HOLDINGS_LAST_RUN)
     if last_raw:
         try:
             last = datetime.strptime(last_raw, "%Y-%m-%d").date()
@@ -689,7 +690,7 @@ def run_pipeline(steps: list[int] | None = None) -> None:
             logger.info("Step1 基金列表完成 (%.0fms)", (time.time() - t1) * 1000)
 
         if _STEP_NAV in steps:
-            has_nav = conn.execute("SELECT 1 FROM fund_nav LIMIT 1").fetchone()
+            has_nav = has_nav_data()
             if has_nav:
                 logger.info("=== Step 2: 净值增量更新（并发增量）===")
                 t2 = time.time()
@@ -706,20 +707,24 @@ def run_pipeline(steps: list[int] | None = None) -> None:
 
         if _STEP_INDEX in steps:
             logger.info("=== Step 3: 宏观指数获取 ===")
+            # 增量窗口 120 条（覆盖 EMA60 预热 + 特征/回测最大回看窗口，含余量）：
+            # 本地已有数据时无需拉 13.5 年全量；save_index_daily 的缺口补齐只在
+            # 接口窗口内生效，历史断档由 --index-backfill 显式补拉。
+            datalen = _INDEX_INCREMENT_WINDOW if has_index_data() else _INDEX_BACKFILL_WINDOW
             try:
-                index_data = fetch_index_daily(datalen=4000)
+                index_data = fetch_index_daily(datalen=datalen)
                 n = save_index_daily("sh000300", index_data)
                 logger.info("沪深300日线新增 %d 条", n)
             except Exception as e:
                 logger.error("沪深300 日线获取失败: %s", str(e)[:120], exc_info=True)
             try:
-                sse_data = fetch_index_daily(datalen=4000, symbol="sh000001")
+                sse_data = fetch_index_daily(datalen=datalen, symbol="sh000001")
                 n_sse = save_index_daily("sh000001", sse_data)
                 logger.info("上证指数日线新增 %d 条", n_sse)
             except Exception as e:
                 logger.error("上证指数 日线获取失败: %s", str(e)[:120], exc_info=True)
             try:
-                etf_data = fetch_etf_daily(datalen=4000)
+                etf_data = fetch_etf_daily(datalen=datalen)
                 n_etf = save_index_daily("sh510300", etf_data)
                 logger.info("沪深300ETF(510300)日线新增 %d 条", n_etf)
             except Exception as e:
@@ -733,16 +738,11 @@ def run_pipeline(steps: list[int] | None = None) -> None:
             logger.info("行业映射完成: %d 条", total_mapped)
             # Step 4 成功后才置位持仓周期标记：失败不更新，下次运行自动重试
             # （此前在 pipeline 提前置位，失败也被记作"今天已跑"）
-            meta_set(conn, META.HOLDINGS_LAST_RUN, datetime.now().strftime("%Y-%m-%d"))
+            save_meta(META.HOLDINGS_LAST_RUN, datetime.now().strftime("%Y-%m-%d"))
 
         if _STEP_RBSA_STATS in steps:
             logger.info("=== Step 6: RBSA 行业暴露 ===")
-            mapped = conn.execute(
-                "SELECT COUNT(*) FROM stock_industry_map"
-            ).fetchone()[0]
-            holdings_funds = conn.execute(
-                "SELECT COUNT(DISTINCT code) FROM fund_holdings"
-            ).fetchone()[0]
+            mapped, holdings_funds = get_industry_map_stats()
             logger.info("stock_industry_map: %d 条, fund_holdings 覆盖: %d 只基金",
                         mapped, holdings_funds)
 
@@ -784,6 +784,15 @@ if __name__ == "__main__":
     elif len(sys.argv) > 1 and sys.argv[1] == "--industry-map":
         n = update_industry_map(force=True)
         logger.info("行业映射强制更新完成: %d 条", n)
+    elif len(sys.argv) > 1 and sys.argv[1] == "--index-backfill":
+        # 历史断档补拉：Step3 每日增量窗口只有 120 条，停跑超窗口的历史缺口用本命令补
+        for sym in (_API_HS300_SYMBOL, "sh000001", _API_ETF510300_SYMBOL):
+            try:
+                data = fetch_index_daily(datalen=_INDEX_BACKFILL_WINDOW, symbol=sym)
+                n = save_index_daily(sym, data)
+                logger.info("%s 历史补拉: 新增 %d 条", sym, n)
+            except Exception as e:
+                logger.error("%s 历史补拉失败: %s", sym, str(e)[:120], exc_info=True)
     elif len(sys.argv) > 1 and sys.argv[1] == "--prune-nav":
         from app.data.nav import prune_nav_history
         n = prune_nav_history()

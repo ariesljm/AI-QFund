@@ -115,7 +115,8 @@ class TestSymmetricAnchorSlice:
     def test_anchor_report_slice_used(self, monkeypatch):
         """库中有锚点报告期数据 → 取前 10（对称），不退回快照前 5。"""
         rows = [{"stock_name": f"股{i}", "weight": 10 - i} for i in range(10)]
-        monkeypatch.setattr(mon, "get_holdings_at_report",
+        from app.llm import context as ctx_mod
+        monkeypatch.setattr(ctx_mod.repo, "get_holdings_at_report",
                             lambda c, d, n: rows if (c, d, n) == ("A", "2026-03-31", 10) else [])
         snapshot = {
             "rbsa_industry_1": "半导体", "holdings_report_date": "2026-03-31",
@@ -128,7 +129,8 @@ class TestSymmetricAnchorSlice:
 
     def test_fallback_to_snapshot_when_missing(self, monkeypatch):
         """库中无锚点报告期数据 → 回退快照 top_holdings（前 5）。"""
-        monkeypatch.setattr(mon, "get_holdings_at_report", lambda c, d, n: [])
+        from app.llm import context as ctx_mod
+        monkeypatch.setattr(ctx_mod.repo, "get_holdings_at_report", lambda c, d, n: [])
         snapshot = {
             "rbsa_industry_1": "半导体", "holdings_report_date": "2026-03-31",
             "top_holdings": [

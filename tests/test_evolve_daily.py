@@ -46,17 +46,19 @@ class TestRunEvolveDaily:
                                 lambda k: last_monthly_evolve_days_ago)
 
     def test_not_due_runs_only_settle(self, monkeypatch):
-        """重量活未到期：自纠偏/GA/元分析/衰减均不执行。"""
+        """重量活未到期：自纠偏/GA/元分析/衰减均不执行。
+
+        修复：原断言用抛异常 + evolve 内部宽 except 吞掉 → 假阳性。
+        改用记录式 spy：重量活子调用一经触达即断言失败。
+        """
         self._stub_daily(monkeypatch, 10)
-        monkeypatch.setattr(evolve, "_review_ranking_all",
-                            lambda: (_ for _ in ()).throw(AssertionError("不应触发自纠偏")))
-        monkeypatch.setattr(evolve, "_ga_adjust",
-                            lambda force=False: (_ for _ in ()).throw(AssertionError("不应触发GA")))
-        monkeypatch.setattr(evolve, "_run_meta_analysis",
-                            lambda m, d: (_ for _ in ()).throw(AssertionError("不应触发元分析")))
-        monkeypatch.setattr(evolve, "_decay_insights",
-                            lambda: (_ for _ in ()).throw(AssertionError("不应触发衰减")))
+        calls = []
+        monkeypatch.setattr(evolve, "_review_ranking_all", lambda: calls.append("review") or [])
+        monkeypatch.setattr(evolve, "_ga_adjust", lambda force=False: calls.append("ga") or None)
+        monkeypatch.setattr(evolve, "_run_meta_analysis", lambda m, d: calls.append("meta"))
+        monkeypatch.setattr(evolve, "_decay_insights", lambda: calls.append("decay") or 0)
         evolve.run_evolve()  # 自动路径：无 month 参数
+        assert calls == []  # 未到期 → 重量活全部不执行
 
     def test_due_runs_heavy(self, monkeypatch):
         """重量活到期：自纠偏 → GA → 元分析 → 衰减 依次执行。"""
@@ -149,7 +151,7 @@ class TestSaveSelfFixDedup:
         monkeypatch.setattr(evolve.repo, "get_all_insights",
                             lambda: ["GA寻优应用: fitness 28.000→30.500, 配置 {'model_weight': 0.8}"])
         monkeypatch.setattr(evolve.repo, "insert_insight",
-                            lambda t, typ, d, active=1: inserted.append(t))
+                            lambda t, typ, d, active=1, confidence=None: inserted.append(t))
         evolve._save_self_fix("GA寻优应用: fitness 30.000→45.000, 配置 {'model_weight': 0.8}")
         assert inserted == []  # 数字归一化后与既有记录相同 → 去重
 
@@ -157,6 +159,7 @@ class TestSaveSelfFixDedup:
         inserted = []
         monkeypatch.setattr(evolve.repo, "get_all_insights", lambda: ["其他记录"])
         monkeypatch.setattr(evolve.repo, "insert_insight",
-                            lambda t, typ, d, active=1: inserted.append(t))
+                            lambda t, typ, d, active=1, confidence=None: inserted.append((t, confidence)))
         evolve._save_self_fix("GA寻优应用: fitness 30.000→45.000, 配置 {'model_weight': 0.8}")
         assert len(inserted) == 1
+        assert inserted[0][1] == 1.0  # 事实记录按 1.0 起步（与注释一致，non-NULL）

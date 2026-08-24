@@ -36,7 +36,13 @@ class TestSuggestQuantEmptyDecision:
             excluded=[], reasoning="量化定池: 候选3个, regime=BULL")
 
     def _suggest(self, monkeypatch, llm_content):
-        monkeypatch.setattr(macro_agent, "call_llm", lambda *a, **k: llm_content)
+        # call_llm_json 契约：成功返回已解析业务对象；解析失败/None → fallback=None
+        def _fake_json(*a, **k):
+            try:
+                return json.loads(llm_content) if llm_content else None
+            except Exception:
+                return None
+        monkeypatch.setattr(macro_agent, "call_llm_json", _fake_json)
         monkeypatch.setattr(macro_agent, "build_sector_pool", lambda date_str: self._pool())
         monkeypatch.setattr(macro_agent, "_load_sector_insights", lambda: [])
         monkeypatch.setattr(macro_agent, "_load_available_sectors", lambda: ["食品", "饮料", "半导体"])
@@ -60,7 +66,7 @@ class TestSuggestQuantEmptyDecision:
         def fake_llm(*a, **k):
             calls["n"] += 1
             return None
-        monkeypatch.setattr(macro_agent, "call_llm", fake_llm)
+        monkeypatch.setattr(macro_agent, "call_llm_json", fake_llm)
         monkeypatch.setattr(macro_agent, "build_sector_pool", lambda date_str: SectorPool(
             date="2026-08-01", regime="BEAR", candidates=[],
             excluded=[{"sector": "食品", "reason": "5日动量不足"}],
@@ -74,12 +80,12 @@ class TestSuggestQuantEmptyDecision:
         assert calls["n"] == 0   # 池空纯量化判定，不调 LLM
 
     def test_call_failure_raises(self, monkeypatch):
-        """call_llm 返回 None（调用失败）→ 抛异常（不降级、不兜底）。"""
+        """call_llm_json 返回 None（技术失败抛/解析失败走 fallback=None）→ 抛异常（不降级、不兜底）。"""
         with pytest.raises(RuntimeError):
             self._suggest(monkeypatch, None)
 
     def test_parse_failure_raises(self, monkeypatch):
-        """非法 JSON → 抛异常（不降级、不兜底）。"""
+        """LLM 输出非 JSON 对象（call_llm_json 解析失败 → None）→ 抛异常（不降级、不兜底）。"""
         with pytest.raises(RuntimeError):
             self._suggest(monkeypatch, "not json{{{")
 

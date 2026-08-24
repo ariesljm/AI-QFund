@@ -47,18 +47,49 @@ class TestNextRunFor:
         assert nxt.startswith(expected_day)
 
     def test_past_run_tomorrow(self, monkeypatch):
-        """已过触发时刻 → 该时刻顺延一天（与实现同一推算规则自洽验证）。"""
+        """已过触发时刻且当日已跑 → 该时刻顺延一天（与实现同一推算规则自洽验证）。"""
         now = datetime.now()
         past = now - timedelta(minutes=30)
         h, m = past.strftime("%H"), past.strftime("%M")
         monkeypatch.setattr(runner, "load_settings",
                             lambda: {"scheduler": {"hour": h, "minute": m}})
+        monkeypatch.setattr(runner, "has_run_today", lambda slot: True)
         nxt = runner.next_run_for("全流程")
         assert nxt is not None
         expect = now.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
         expected_day = ((expect + timedelta(days=1)).strftime("%Y-%m-%d")
                         if expect <= now else expect.strftime("%Y-%m-%d"))
         assert nxt.startswith(expected_day)
+
+    def test_past_not_run_shows_today_catchup(self, monkeypatch):
+        """已过触发时刻但当日未跑（如服务重启） → 显示今天（下一 tick 即补跑），
+        与窗口触发的实际行为一致，不再误报为明天。"""
+        now = datetime.now()
+        past = now - timedelta(minutes=30)
+        h, m = past.strftime("%H"), past.strftime("%M")
+        monkeypatch.setattr(runner, "load_settings",
+                            lambda: {"scheduler": {"hour": h, "minute": m}})
+        monkeypatch.setattr(runner, "has_run_today", lambda slot: False)
+        nxt = runner.next_run_for("全流程")
+        assert nxt is not None
+        assert nxt.startswith(now.strftime("%Y-%m-%d"))
+
+    def test_sched_run_time_single_source(self, monkeypatch):
+        """_sched_run_time 单一口径：调度与展示共用的启用判定/触发点解析。
+
+        修复：展示侧曾只判 hour（仅填小时时显示启用但调度永不触发）——
+        启用语义现收敛为 time 解析器统一输出。
+        """
+        now = datetime(2026, 8, 24, 12, 0)
+        # 字符串与整数 hour 都可用
+        assert runner._sched_run_time(now, {"hour": "11", "minute": "30"}) == now.replace(
+            hour=11, minute=30)
+        assert runner._sched_run_time(now, {"hour": 11, "minute": 30}) == now.replace(
+            hour=11, minute=30)
+        # 缺 minute / 空值 → 未启用
+        assert runner._sched_run_time(now, {"hour": "11"}) is None
+        assert runner._sched_run_time(now, {"hour": "", "minute": "30"}) is None
+        assert runner._sched_run_time(now, {}) is None
 
 
 class TestHasRunToday:

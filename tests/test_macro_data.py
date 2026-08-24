@@ -24,7 +24,7 @@ class TestLoadBoardSectors:
 
 class TestFetchEmFinanceNews:
     def test_parse_dedupe_and_page_stop(self, monkeypatch):
-        """正常解析：时间/标题/摘要投影、标题去重、空页停。"""
+        """正常解析：时间/标题/摘要投影、标题去重、空页停；返回实际新闻日期。"""
         pages = iter([
             {"data": {"list": [
                 {"showTime": "2026-08-11 09:30", "title": "新闻A", "summary": "摘要A"},
@@ -34,11 +34,12 @@ class TestFetchEmFinanceNews:
             {"data": {"list": []}},
         ])
         monkeypatch.setattr(macro, "_http_get", lambda url, timeout=12: json.dumps(next(pages)))
-        got = macro.fetch_em_finance_news("2026-08-11")
+        got, news_date = macro.fetch_em_finance_news("2026-08-11")
         assert got == [
             {"time": "09:30", "title": "新闻A", "summary": "摘要A"},
             {"time": "09:10", "title": "新闻B", "summary": ""},
         ]
+        assert news_date == "2026-08-11"
 
     def test_cross_day_fallback_to_latest(self, monkeypatch):
         """跨日运行（凌晨）：当天新闻未生成时回退到接口返回的最新日期。"""
@@ -46,8 +47,9 @@ class TestFetchEmFinanceNews:
             {"showTime": "2026-08-10 15:00", "title": "昨闻", "summary": ""},
         ]}}
         monkeypatch.setattr(macro, "_http_get", lambda url, timeout=12: json.dumps(payload))
-        got = macro.fetch_em_finance_news("2026-08-11")
+        got, news_date = macro.fetch_em_finance_news("2026-08-11")
         assert got == [{"time": "15:00", "title": "昨闻", "summary": ""}]
+        assert news_date == "2026-08-10"
 
     def test_mixed_days_uses_today_when_first_is_yesterday(self, monkeypatch):
         """首条是昨日深夜新闻但列表含当天新闻：以最大日期判定，收当天不误回退（8-12 复现）。"""
@@ -57,10 +59,11 @@ class TestFetchEmFinanceNews:
             {"showTime": "2026-08-12 09:00", "title": "今日早间", "summary": ""},
         ]}}
         monkeypatch.setattr(macro, "_http_get", lambda url, timeout=12: json.dumps(payload))
-        got = macro.fetch_em_finance_news("2026-08-12")
+        got, news_date = macro.fetch_em_finance_news("2026-08-12")
         titles = [g["title"] for g in got]
         assert "今日新闻" in titles and "今日早间" in titles
         assert "昨日深夜" not in titles
+        assert news_date == "2026-08-12"
 
     def test_paging_keeps_target_day(self, monkeypatch):
         """翻页时目标日期沿用第一页：第二页首条已非当天则停止，不收集昨日新闻。"""
@@ -74,8 +77,9 @@ class TestFetchEmFinanceNews:
             ]}},
         ])
         monkeypatch.setattr(macro, "_http_get", lambda url, timeout=12: json.dumps(next(pages)))
-        got = macro.fetch_em_finance_news("2026-08-12")
+        got, news_date = macro.fetch_em_finance_news("2026-08-12")
         assert [g["title"] for g in got] == ["当天A", "当天B"]
+        assert news_date == "2026-08-12"
 
     def test_retries_then_raises(self, monkeypatch):
         """连续失败重试耗尽后抛异常终止管线（不用空数据兜底）。"""
@@ -100,15 +104,31 @@ class TestFetchNews:
             {"n": "半导体", "c": "BK1036", "u": -2.0, "zjl": -50},
         ]
         saved = {}
-        monkeypatch.setattr(macro.repo, "save_macro_news", lambda *a: saved.update(args=a))
-        monkeypatch.setattr(macro, "fetch_em_finance_news", lambda date_str: [
-            {"time": "09:30", "title": "新闻A", "summary": "摘要A"}])
+        monkeypatch.setattr(macro.repo, "save_macro_news",
+                            lambda *a, **kw: saved.update(args=a, kwargs=kw))
+        monkeypatch.setattr(macro, "fetch_em_finance_news", lambda date_str: (
+            [{"time": "09:30", "title": "新闻A", "summary": "摘要A"}], "2026-08-11"))
         got = macro.fetch_news("2026-08-11", sectors)
         assert got["top_gainers"] == "食品饮料(+1.50%)、半导体(-2.00%)"
         assert got["top_losers"] == "半导体(-2.00%)、食品饮料(+1.50%)"
         assert got["etf_net_flow"] == "食品饮料: 100元"
         assert "[09:30] 新闻A：摘要A" in got["summary"]
+        assert got["news_date"] == "2026-08-11"
         assert saved  # save_macro_news 被调用
+
+    def test_fetch_news_fallback_tags_t1_date(self, monkeypatch):
+        """跨日回退：昨日新闻入库时必须带真实归属日期（T-1），不误标为今日。"""
+        sectors = [{"n": "食品饮料", "c": "BK0438", "u": 1.5, "zjl": 100}]
+        saved = {}
+        monkeypatch.setattr(macro.repo, "save_macro_news",
+                            lambda *a, **kw: saved.update(args=a, kwargs=kw))
+        # 当天（2026-08-11）无新闻，回退到 T-1
+        monkeypatch.setattr(macro, "fetch_em_finance_news", lambda date_str: (
+            [{"time": "15:00", "title": "昨闻", "summary": ""}], "2026-08-10"))
+        got = macro.fetch_news("2026-08-11", sectors)
+        assert got["news_date"] == "2026-08-10"
+        assert saved["kwargs"]["news_date"] == "2026-08-10"
+        assert saved["args"][0] == "2026-08-11"  # 行主键仍是决策日期
 
 
 class TestFetchFlow:

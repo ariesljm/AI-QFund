@@ -10,11 +10,8 @@ from app import domain
 
 
 def series(code: str, since: str | None = None, until: str | None = None,
-           limit: int | None = None, conn=None) -> list[tuple[str, float]]:
-    """单只基金净值行 (date, cum_nav) 升序；since/until 过滤日期区间，limit 取最近 N 条。
-
-    conn 为内部批量 seam（批量特征计算路径复用连接避免每基金一次连接）；缺省时自开连接。
-    """
+           limit: int | None = None) -> list[tuple[str, float]]:
+    """单只基金净值行 (date, cum_nav) 升序；since/until 过滤日期区间，limit 取最近 N 条。"""
     sql = 'SELECT date, cum_nav FROM fund_nav WHERE code = ?'
     params: list = [code]
     if since:
@@ -28,17 +25,11 @@ def series(code: str, since: str | None = None, until: str | None = None,
         # 最近 N 条：降序取前 N 再反转回升序
         sql = sql.replace('ORDER BY date ASC', 'ORDER BY date DESC LIMIT ?')
         params.append(limit)
-        if conn is not None:
-            rows = conn.execute(sql, params).fetchall()
-        else:
-            with db_conn() as conn:
-                rows = conn.execute(sql, params).fetchall()
-        return [(r[0], r[1]) for r in reversed(rows)]
-    if conn is not None:
-        rows = conn.execute(sql, params).fetchall()
-    else:
         with db_conn() as conn:
             rows = conn.execute(sql, params).fetchall()
+        return [(r[0], r[1]) for r in reversed(rows)]
+    with db_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
     return [(r[0], r[1]) for r in rows]
 
 
@@ -63,9 +54,9 @@ def at_or_before(code: str, date: str) -> float | None:
     return row[0] if row else None
 
 
-def latest_dates(conn=None) -> dict[str, str]:
+def latest_dates() -> dict[str, str]:
     """code → 最新净值日期 映射（批量计算跳过判断用）。"""
-    with conn or db_conn() as conn:
+    with db_conn() as conn:
         rows = conn.execute('SELECT code, MAX(date) FROM fund_nav GROUP BY code').fetchall()
     return dict(rows)
 

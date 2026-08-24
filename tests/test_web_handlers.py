@@ -80,12 +80,26 @@ class TestIndexContextBlocks:
         monkeypatch.setattr(webapp.repo, "get_latest_macro_news", lambda: None)
         monkeypatch.setattr(webapp.repo, "get_empty_recommendation", lambda d: None)
         (macro, gainers, losers, inflow, outflow, max_in,
-         max_out, reasoning, regime, empty, flow_net, macro_date) = dashboard.macro_block("2026-08-08")
+         max_out, reasoning, regime, empty, flow_net, macro_date, news_date) = dashboard.macro_block("2026-08-08")
         assert regime == domain.REGIME_NEUTRAL
         assert empty is None
         assert max_in == 0 and max_out == 0
         assert flow_net is None
         assert macro_date == ""
+        assert news_date == ""
+
+    def test_macro_block_stale_news_date(self, monkeypatch):
+        """跨日回退：news_date 为 T-1 时透传给模板，供"非今日新闻"角标展示。"""
+        monkeypatch.setattr(webapp.repo, "get_latest_macro_news", lambda: {
+            "news_summary": "[15:00] 昨闻", "top_gainers": "", "top_losers": "",
+            "etf_net_flow": "", "flow_inflows": [], "flow_outflows": [],
+            "flow_net_total": None, "sector_reasoning": "", "regime_label": "NEUTRAL",
+            "date": "2026-08-11", "news_date": "2026-08-10",
+        })
+        monkeypatch.setattr(webapp.repo, "get_empty_recommendation", lambda d: None)
+        result = dashboard.macro_block("2026-08-11")
+        assert result[-1] == "2026-08-10"   # news_date
+        assert result[-2] == "2026-08-11"   # macro_date
 
     def test_quality_block_empty(self, monkeypatch):
         monkeypatch.setattr(webapp.repo, "get_quality_metrics", lambda n: [])

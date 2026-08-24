@@ -27,14 +27,14 @@ from app.repo import (nav, get_latest_features,
                       get_rbsa_at_date, get_first_rbsa_after,
                       get_holding_log_id, insert_monitor_event, exit_position,
                       get_entry_sector_anchor, get_entry_feature_snapshot,
-                      get_latest_holdings_date, get_holdings_at_report,
+                      get_latest_holdings_date,
                       get_index_rows,
                       get_available_sectors, insert_monitor_score,
                       get_recent_scores, get_recent_monitor_signals)
 from app.model import score as model_score, latest_market_state, model_version
 from app.features.calculator import ema60_exit  # R1 判定单一来源（回测模拟共用）
 from app.llm.client import call_llm_json, LLMError
-from app.llm.context import build_holdings_text
+from app.llm.context import build_holdings_text, rbsa_distribution, anchor_holdings_text
 from app.llm.prompts import monitor_logic_prompt
 from app import domain
 
@@ -158,20 +158,19 @@ class StyleDriftRule(DefenseRule):
         cur_feat = ctx.cur_feat
         cur_ind = _first_industry(cur_feat)
         cur_w = cur_feat.get("rbsa_weight_1")
-        if cur_w is None:
-            return None
         init_ind, init_w = ctx.entry_rbsa or (None, None)
         if init_ind is None and init_w is None:
             return None
-        # 双检 1：行业切换（权重相同但第一行业更换）
+        # 双检 1：行业切换（权重相同但第一行业更换）——即使当前权重缺失也检测，
+        # 防止 rbsa_weight_1 短暂缺失时漏掉行业切换（修复：旧逻辑先判 cur_w None 早退）
         if init_ind and cur_ind and init_ind != cur_ind:
             return DefenseResult(
                 signal=domain.SIGNAL_EXIT, drift=True,
                 reason=f"风格漂移: 第一行业 {init_ind} → {cur_ind}"
                        + (f"（买入权重{init_w:.2f}）" if init_w is not None else ""),
             )
-        # 双检 2：同一行业权重下降超过阈值
-        if init_w is not None and (init_w - cur_w) > _DRIFT_THRESHOLD:
+        # 双检 2：同一行业权重下降超过阈值（需当前权重）
+        if init_w is not None and cur_w is not None and (init_w - cur_w) > _DRIFT_THRESHOLD:
             return DefenseResult(
                 signal=domain.SIGNAL_EXIT, drift=True,
                 reason=(f"风格漂移: 买入权重{init_w:.2f} - 当前{cur_w:.2f}"
@@ -416,52 +415,19 @@ def _parse_logic_result(parsed) -> dict | None:
 
 
 def _rbsa_distribution(feat: dict | None) -> str:
-    """基金 RBSA 行业暴露分布（如 '半导体(4.6%), 通信设备(4.1%), 电源设备(4.1%)'）。
+    """基金 RBSA 行业暴露分布（实现收敛到 llm.context，候选4 单一来源）。
 
-    特征由装配层传入（run_monitor 已取 get_latest_features），判定侧不直读 DB。
+    保留本包装：测试 monkeypatch mon._rbsa_distribution 的装配 seam 兼容。
     """
-    if not feat:
-        return ""
-    parts = []
-    for i in range(1, 4):
-        ind = feat.get(f"rbsa_industry_{i}")
-        w = feat.get(f"rbsa_weight_{i}")
-        if ind and w:
-            parts.append(f"{ind}({w:.1f}%)")
-    return ", ".join(parts)
+    return rbsa_distribution(feat)
 
 
 def _format_anchor_holdings(snapshot: dict, code: str | None = None) -> tuple[str, str, str]:
-    """从推荐时 feature_snapshot 提取论点锚点：(核心行业, 重仓股文本, 报告期)。
+    """从推荐时 feature_snapshot 提取论点锚点（实现收敛到 llm.context，候选4 单一来源）。
 
-    对称切片（R4）：报告期不同时锚点持仓取锚点报告期前 10 大（与最新前 10 大对称），
-    避免"锚点前5 vs 最新前10"切片不对称、第 6-10 名被误判为新增偏离；
-    历史报告期数据缺失时回退快照内 top_holdings（前 5）。
-    兼容新落库的 top_holdings（[{stock_code, stock_name, weight}]）与旧快照（无该字段）。
+    保留本包装：测试直调 _format_anchor_holdings 的兼容 seam。
     """
-    if not snapshot:
-        return "", "", ""
-    core_sector = snapshot.get("rbsa_industry_1") or snapshot.get("sector") or ""
-    report_date = snapshot.get("holdings_report_date") or ""
-    if code and report_date:
-        rows = get_holdings_at_report(code, report_date, 10)
-        if rows:
-            parts = []
-            for h in rows:
-                name = h.get("stock_name") or h.get("stock_code") or ""
-                w = h.get("weight")
-                parts.append(f"{name}({w:.1f}%)" if w is not None else name)
-            return core_sector, ", ".join(parts), report_date
-    holdings = snapshot.get("top_holdings") or []
-    if not holdings:
-        return core_sector, "", report_date
-    parts = []
-    for h in holdings[:5]:
-        name = h.get("stock_name") or h.get("stock_code") or ""
-        w = h.get("weight")
-        if name:
-            parts.append(f"{name}({w:.1f}%)" if w is not None else name)
-    return core_sector, ", ".join(parts), report_date
+    return anchor_holdings_text(snapshot, code)
 
 
 def _check_logic_enhanced(ctx: DefenseContext) -> dict | None:

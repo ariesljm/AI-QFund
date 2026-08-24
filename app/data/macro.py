@@ -87,12 +87,15 @@ def load_board_sectors() -> list[dict]:
     ]
 
 
-def fetch_em_finance_news(date_str: str, retries: int = 3) -> list[dict]:
+def fetch_em_finance_news(date_str: str, retries: int = 3) -> tuple[list[dict], str]:
     """抓取东方财富「财经要闻」栏目（column=346）当天的新闻。
 
-    返回: [{"time": "HH:MM", "title": "...", "summary": "..."}]
-    优先取 date_str 当天；跨日运行（凌晨）当天新闻未生成时回退到最近交易日（T-1），
-    与板块/资金流数据同口径。避免全量 7×24 新闻造成的上下文过大。
+    返回: (entries, news_date)
+    - entries: [{"time": "HH:MM", "title": "...", "summary": "..."}]
+    - news_date: 条目实际归属日期。优先取 date_str 当天；跨日运行（凌晨）当天
+      新闻未生成时回退到最近交易日（T-1），与板块/资金流数据同口径。
+      调用方必须用 news_date 标注入库/展示，避免昨日新闻被误标为今日。
+    避免全量 7×24 新闻造成的上下文过大。
 
     抓取失败时自动重试，重试耗尽仍失败则抛异常终止推荐管线，
     避免用旧/空数据兜底导致推荐结果失真。
@@ -144,7 +147,7 @@ def fetch_em_finance_news(date_str: str, retries: int = 3) -> list[dict]:
                     })
                 if len(items) < 50:
                     break
-            return entries
+            return entries, target_day
         except Exception as e:
             last_err = e
             logger.warning("东方财富财经要闻抓取失败(第%d/%d次): %s",
@@ -169,7 +172,7 @@ def fetch_news(date_str: str, sectors: list) -> dict:
     except Exception as e:
         logger.warning("板块排行抓取失败: %s", str(e)[:120], exc_info=True)
 
-    em_entries = fetch_em_finance_news(date_str)
+    em_entries, news_date = fetch_em_finance_news(date_str)
 
     news = ""
     if em_entries:
@@ -182,13 +185,16 @@ def fetch_news(date_str: str, sectors: list) -> dict:
         news = "\n".join(lines)
 
     if top_gainers or top_losers or em_entries:
-        repo.save_macro_news(date_str, news, top_gainers, top_losers, etf_net_flow)
-    logger.info("快讯入库: 领涨[%s] 领跌[%s] 东财要闻=%d条",
-                top_gainers[:40], top_losers[:40], len(em_entries))
+        # news_date：条目实际归属日期（跨日回退时为 T-1）。行主键仍是决策日期
+        # （与 context_json/flow_json 同行），真实新闻日期单独存列供 UI 区分展示。
+        repo.save_macro_news(date_str, news, top_gainers, top_losers, etf_net_flow,
+                             news_date=news_date)
+    logger.info("快讯入库(%s): 领涨[%s] 领跌[%s] 东财要闻=%d条",
+                news_date, top_gainers[:40], top_losers[:40], len(em_entries))
     return {
         "summary": news, "top_gainers": top_gainers,
         "top_losers": top_losers, "etf_net_flow": etf_net_flow,
-        "em_entries": em_entries,
+        "em_entries": em_entries, "news_date": news_date,
     }
 
 

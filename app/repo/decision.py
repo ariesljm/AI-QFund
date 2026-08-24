@@ -4,7 +4,8 @@ from app.repo import meta_keys as META
 from pathlib import Path
 import json as _json
 
-from app.database import db_conn, meta_get, meta_set
+from app.database import db_conn
+from app.repo.base import get_meta, save_meta
 from app import domain
 from app.utils.log import get_logger
 
@@ -209,12 +210,13 @@ def get_holding_log_id(code: str, statuses: tuple[str, ...]) -> int | None:
 def get_latest_macro_news() -> dict | None:
     """读取最近一条宏观摘要（Web 面板展示用，推荐决策域的一部分）。"""
     with db_conn() as conn:
-        row = conn.execute('SELECT news_summary, top_gainers, top_losers, etf_net_flow, flow_json, context_json, date FROM macro_news ORDER BY date DESC LIMIT 1').fetchone()
+        row = conn.execute('SELECT news_summary, top_gainers, top_losers, etf_net_flow, flow_json, context_json, date, news_date FROM macro_news ORDER BY date DESC LIMIT 1').fetchone()
     if not row:
         return None
     flow = _json.loads(row[4]) if row[4] else {}
     ctx = _json.loads(row[5]) if row[5] else {}
-    return {'news_summary': row[0] or '', 'top_gainers': row[1] or '', 'top_losers': row[2] or '', 'etf_net_flow': row[3] or '', 'flow_inflows': flow.get('top_flows', []), 'flow_outflows': flow.get('top_outflows', []), 'flow_net_total': flow.get('total_net'), 'recommended_sectors': ctx.get('recommended_sectors', []), 'risk_sectors': ctx.get('risk_sectors', []), 'sector_reasoning': ctx.get('sector_reasoning', ''), 'regime_label': ctx.get('regime_label', 'NEUTRAL'), 'date': row[6] or ''}
+    # news_date：新闻条目实际归属日期；旧行无该列时回退行日期（行为不变）
+    return {'news_summary': row[0] or '', 'top_gainers': row[1] or '', 'top_losers': row[2] or '', 'etf_net_flow': row[3] or '', 'flow_inflows': flow.get('top_flows', []), 'flow_outflows': flow.get('top_outflows', []), 'flow_net_total': flow.get('total_net'), 'recommended_sectors': ctx.get('recommended_sectors', []), 'risk_sectors': ctx.get('risk_sectors', []), 'sector_reasoning': ctx.get('sector_reasoning', ''), 'regime_label': ctx.get('regime_label', 'NEUTRAL'), 'date': row[6] or '', 'news_date': row[7] or row[6] or ''}
 
 
 def get_latest_monitor_event(code: str) -> dict | None:
@@ -322,8 +324,7 @@ def get_ranking_cfg() -> domain.RankingConfig:
     返回不可变 RankingConfig；meta 中未知字段忽略（字段漂移防护）。
     """
     cfg = domain.RankingConfig()
-    with db_conn() as conn:
-        raw = meta_get(conn, META.RANKING_CFG)
+    raw = get_meta(META.RANKING_CFG)
     if raw:
         try:
             # 仅取 dataclass 字段（方法/类属性如 to_dict/QUALITY_RATIO 不参与构造）
@@ -371,7 +372,10 @@ def insert_insight(insight: str, insight_type: str, created_date: str, active: i
                      (insight, insight_type, created_date, active, confidence, condition))
 
 def insert_monitor_event(code: str, date: str, signal: str, trailing: bool, drift: bool, sector_adv: bool, logic_verdict: str, sector_risk: bool, holding_risk: bool, detail: str, log_id: int | None, is_stale: bool = False) -> None:
+    """写入监控事件。同 (code, date) 幂等：同日重复运行（手动+调度双跑）覆盖旧行，
+    避免 WARNING 升级序列把同一天的重复记录当多个监控日计数。"""
     with db_conn() as conn:
+        conn.execute('DELETE FROM monitor_events WHERE code = ? AND date = ?', (code, date))
         conn.execute('INSERT INTO monitor_events (code, date, signal, trigger_trailing, trigger_drift, trigger_sector_adv, logic_verdict, sector_risk, holding_risk, detail, recommend_log_id, is_stale) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (code, date, signal, trailing, drift, sector_adv, logic_verdict, sector_risk, holding_risk, detail, log_id, 1 if is_stale else 0))
 
 
@@ -479,7 +483,8 @@ def mark_insights_applied(insight_ids: list[int], date: str) -> None:
 
 
 def adjust_insight_confidence(insight_id: int, delta: float) -> None:
-    """按采纳结果调整洞察置信度，clamp 到 [0,1]（Q4 反馈回路：胜 +0.05、负 -0.05）。"""
+    """按采纳结果调整洞察置信度，clamp 到 [0,1]（Q4 反馈回路：胜 +、负 -，
+    幅度由调用方传 _INSIGHT_REWARD_DELTA=±0.10）。"""
     with db_conn() as conn:
         conn.execute('UPDATE evolution_insights SET confidence = MIN(MAX(confidence + ?, 0.0), 1.0) WHERE id = ?', (delta, insight_id))
 
@@ -528,10 +533,15 @@ def save_sector_snapshot(date_str: str, sectors: list[dict]) -> None:
             'sector_name = excluded.sector_name, pct_chg = excluded.pct_chg, net_flow = excluded.net_flow',
             rows)
 
-def save_macro_news(date_str: str, news: str, top_gainers: str, top_losers: str, etf_net_flow: str) -> None:
-    """写入当日宏观摘要（新闻/领涨领跌/资金流，推荐决策域的一部分）。"""
+def save_macro_news(date_str: str, news: str, top_gainers: str, top_losers: str, etf_net_flow: str,
+                    news_date: str = "") -> None:
+    """写入当日宏观摘要（新闻/领涨领跌/资金流，推荐决策域的一部分）。
+
+    news_date：新闻条目实际归属日期（跨日回退时为 T-1），供 UI 区分展示；
+    行主键仍是决策日期 date_str。
+    """
     with db_conn() as conn:
-        conn.execute('INSERT INTO macro_news (date, news_summary, top_gainers, top_losers, etf_net_flow) VALUES (?, ?, ?, ?, ?) ON CONFLICT(date) DO UPDATE SET news_summary=excluded.news_summary, top_gainers=excluded.top_gainers, top_losers=excluded.top_losers, etf_net_flow=excluded.etf_net_flow', (date_str, news, top_gainers, top_losers, etf_net_flow))
+        conn.execute('INSERT INTO macro_news (date, news_summary, top_gainers, top_losers, etf_net_flow, news_date) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(date) DO UPDATE SET news_summary=excluded.news_summary, top_gainers=excluded.top_gainers, top_losers=excluded.top_losers, etf_net_flow=excluded.etf_net_flow, news_date=excluded.news_date', (date_str, news, top_gainers, top_losers, etf_net_flow, news_date))
 
 def save_quality_metrics(m: dict) -> None:
     """保存一次质量度量结果（同区间幂等：重复运行覆盖）。"""
@@ -541,8 +551,7 @@ def save_quality_metrics(m: dict) -> None:
 
 def save_ranking_cfg(weights: dict) -> None:
     """写入排序权重（进化自纠偏用）。"""
-    with db_conn() as conn:
-        meta_set(conn, META.RANKING_CFG, _json.dumps(weights))
+    save_meta(META.RANKING_CFG, _json.dumps(weights))
 
 def update_highest_nav(code: str, highest: float, statuses: tuple[str, ...]) -> None:
     placeholders = ','.join('?' * len(statuses))

@@ -21,7 +21,7 @@ from app.features.calculator import (score_frame,
                                       apply_momentum_guard,
                                       market_state_features)
 from app.llm.macro_agent import build_macro_context, MacroContext
-from app.llm.client import call_llm, parse_llm_json
+from app.llm.client import call_llm_json, parse_llm_json
 from app.llm.prompts import final_pick_prompt, final_pick_system_prompt
 from app import domain
 from app.utils.trading_calendar import trading_day_lag  # 滞后交易日数单一来源
@@ -141,8 +141,8 @@ def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> list[dict]:
     df = pd.DataFrame(expanded)
 
     # 回避赛道整体过滤：第一行业命中回避赛道的基金直接剔除，
-    # 防止基金以次要行业身份入选、监控按第一行业判定后被否决（推荐/监控赛道不一致）
-    df = df[~df["rbsa_industry_1"].isin(risk_set)]
+    # 防止基金以次要行业身份入选、监控按第一行业判定后被否决（推荐/监控赛道不一致；
+    # sector 已锚定 rbsa_industry_1，单次过滤即覆盖两个键）
     df = df[~df["sector"].isin(risk_set)]
     if df.empty:
         logger.info("回避赛道过滤后无候选，降级为全市场 Top 10")
@@ -324,21 +324,32 @@ def _llm_final_pick(candidates: list[dict], ctx: MacroContext, insights: list) -
 
     prompt = final_pick_prompt(candidates, ctx, insights)
     system_prompt = final_pick_system_prompt()
-
-    content = call_llm(prompt, system_prompt=system_prompt, max_tokens=16384,
-                       caller="recommend_final_pick")
-    # call_llm 技术失败已统一抛 LLMError（候选 7），此处不再自行判断 None
-
     valid_codes = {c["code"]: c["name"] for c in candidates}
-    result = _parse_llm_result(content, valid_codes)
+
+    # 候选3 收敛：统一走 call_llm_json——结构校验入 validator（返回 None 视为解析失败），
+    # 审计 ok 语义与选赛道/监控/进化一致；技术失败仍抛 LLMError（候选 7）
+    result = call_llm_json(
+        prompt, system_prompt=system_prompt, max_tokens=16384,
+        fallback=None, caller="recommend_final_pick",
+        validator=lambda parsed: _validate_final_pick(parsed, valid_codes),
+    )
     if result is not None:
         return result
 
-    raise RuntimeError(f"LLM最终定论返回无法解析: {content[:300]}")
+    raise RuntimeError("LLM最终定论返回无法解析（原始输出见 llm_audit）")
 
 
 def _parse_llm_result(content: str, valid_codes: dict) -> dict | None:
+    """解析终选定论（兼容旧调用/测试）：parse_llm_json + 结构校验 core。
+
+    call_llm_json 路径由 _validate_final_pick 复用同一校验 core（候选3 收敛）。
+    """
     parsed = parse_llm_json(content)
+    return _validate_final_pick(parsed, valid_codes)
+
+
+def _validate_final_pick(parsed, valid_codes: dict) -> dict | None:
+    """终选定论结构校验（validator core）：非 dict / 代码不在候选 → None（视为解析失败）。"""
     if not isinstance(parsed, dict):
         return None
     result = {str(k).strip(". "): v for k, v in parsed.items()}

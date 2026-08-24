@@ -54,6 +54,21 @@ class TestStaleEventIsolation:
         ev = repo.get_latest_monitor_event("A")
         assert ev["is_stale"] == 0
 
+    def test_same_day_duplicate_overwrites(self, monkeypatch, tmp_path):
+        """同日重复运行（手动+调度双跑）→ 覆盖旧行，不产生重复监控日。
+
+        修复：旧实现同日双跑插入两行，WARNING 升级序列把同一天当两天计数（加速升级）。
+        """
+        monkeypatch.setattr(db_mod, "DB_PATH", str(tmp_path / "test.db"))
+        lid = self._seed_holding()
+        repo.insert_monitor_event("A", "2026-08-03", "WARNING", False, False, True,
+                                  "维持", False, False, "赛道优势丧失", lid)
+        # 同日再次运行（如手动触发）→ 覆盖为最新 HOLD
+        repo.insert_monitor_event("A", "2026-08-03", "HOLD", False, False, False,
+                                  "维持", False, False, "信号回落", lid)
+        rows = repo.get_recent_monitor_signals("A", 10)
+        assert rows == [("2026-08-03", "HOLD")]  # 同日只有一行，且为最新信号
+
 
 class TestMonitorStalePath:
     """run_monitor 净值陈旧分支：写数据告警事件，不改持仓状态。"""

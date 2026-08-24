@@ -132,8 +132,12 @@
     </section>
 
     <!-- 实时快讯轮播（标题 + 摘要单行：摘要向左滚动，滚动完成后切下一条） -->
+    {% set _news_stale = news_date and macro_date and news_date != today %}
     <section class="bg-surface-container-lowest rounded-xl border border-surface-border px-4 md:px-5 py-2.5 shadow-sm flex flex-wrap items-center gap-x-3 gap-y-1.5 min-w-0" id="newsCarousel">
       <span class="material-symbols-outlined text-[16px] text-accent shrink-0">campaign</span>
+      {% if _news_stale %}
+      <span class="shrink-0 font-data-sm text-[11px] font-bold text-warn bg-warn-soft border border-warning-amber/30 rounded px-1.5 py-0.5" title="今日快讯尚未生成，当前展示 {{ news_date }} 的新闻">{{ news_date }} 新闻</span>
+      {% endif %}
       <button class="shrink-0 max-w-[120px] sm:max-w-[260px] lg:max-w-[340px] text-left overflow-hidden" onclick="openNewsDetail()" title="点击查看完整快讯">
         <span class="block truncate font-data-sm font-bold text-on-surface" id="newsCurrentText"></span>
       </button>
@@ -785,5 +789,7 @@
 <script>window.__NEWS_ITEMS__ = {{ macro.news_items|tojson }};</script>
 <script>window.SIGNAL_LABELS = {{ signal_labels|tojson }};</script>
 <script src="/static/app.js"></script>
+<script src="/static/js/manage.js"></script>
+<script src="/static/js/content.js"></script>
 </body>
 </html>

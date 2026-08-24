@@ -359,4 +359,6 @@ def parse_macro_summary(mn: dict | None) -> dict:
         "sector_reasoning": sector_reasoning,
         "regime_label": regime_label,
         "macro_date": (mn or {}).get("date") or "",
+        # 新闻条目实际归属日期（跨日回退时为 T-1）：UI 据此区分"数据日期"与"新闻日期"
+        "news_date": (mn or {}).get("news_date") or "",
     }

@@ -9,6 +9,7 @@ import pandas as pd
 
 from app import domain
 import app.repo as repo
+from app.data.store import save_fund_features, trim_fund_features
 
 logger = get_logger("features")
 
@@ -385,20 +386,16 @@ def calc_rbsa(holdings: list[dict], industry_map: dict[str, str] | None = None) 
 
 def calc_features(code: str,
                   idx_closes: np.ndarray | None = None,
-                  idx_volumes: np.ndarray | None = None,
-                  conn=None) -> dict:
-    """计算单只基金特征并返回（内部函数，仅 calc_all_features / 回测调用）。
-
-    ``conn`` 为内部批量 seam：批量路径复用连接，避免逐基金开连接；缺省时自开。
-    """
-    rows = repo.nav.series(code, conn=conn)
+                  idx_volumes: np.ndarray | None = None) -> dict:
+    """计算单只基金特征并返回（内部函数，仅 calc_all_features / 回测调用）。"""
+    rows = repo.nav.series(code)
     if len(rows) < 60:
         logger.warning("基金 %s 净值数据不足 (%d 天)，跳过特征计算", code, len(rows))
         return {}
     dates = [r[0] for r in rows]
     navs = np.array([r[1] for r in rows], dtype=float)
     if idx_closes is None:
-        idx_rows = repo.get_index_rows(conn=conn)
+        idx_rows = repo.get_index_rows()
         idx_volumes = np.array([r[2] for r in idx_rows], dtype=float) if idx_rows else np.array([])
         idx_closes = np.array([r[1] for r in idx_rows], dtype=float) if idx_rows else np.array([])
     feat = compute_fund_features(navs, idx_closes, idx_volumes)
@@ -422,89 +419,86 @@ def calc_features(code: str,
 
 
 def calc_all_features(batch_commit: int = 500) -> int:
-    from app.database import db_conn
-
-    with db_conn() as conn:
-        all_codes = repo.get_buyable_codes(conn)
-        total = len(all_codes)
-        # 预加载全局不变的数据，避免逐基金/逐持仓重复查询（N+1）；
-        # 全部走共享连接（conn 口径统一，连接生命周期单一来源）
-        industry_map = repo.get_industry_map(conn)
-        idx_rows = repo.get_index_rows(conn=conn)
-        idx_volumes = np.array([r[2] for r in idx_rows], dtype=float) if idx_rows else np.array([])
-        idx_closes = np.array([r[1] for r in idx_rows], dtype=float) if idx_rows else np.array([])
-        rbsa_data: dict[str, list[dict]] = {}
-        _rbsa_buf: dict[str, list[dict]] = {}
-        for code, sc, sn, w in repo.get_latest_holdings_rows(conn):
-            _rbsa_buf.setdefault(code, []).append({"stock_code": sc, "stock_name": sn, "weight": w})
-        for code, holdings in _rbsa_buf.items():
-            top = calc_rbsa(holdings, industry_map)
-            if top:
-                rbsa_data[code] = top
-        logger.info("RBSA 预加载完成: %d 只基金有行业暴露", len(rbsa_data))
-        # 行业映射缺失告警：industry_map 为空时 calc_rbsa 会把持仓全部归为"其他"，
-        # 直接导致可用赛道清单只剩"其他"、LLM 无法选赛道；此处显式暴露，避免静默降级。
-        if rbsa_data:
-            _other_cnt = sum(
-                1 for tops in rbsa_data.values() if tops and tops[0]["industry"] == "其他")
-            if _other_cnt / len(rbsa_data) > 0.3:
-                logger.warning(
-                    "行业映射疑似缺失: RBSA 首位行业为'其他'的基金占 %.0f%% (%d/%d)；"
-                    "请检查 stock_industry_map 是否为空，必要时运行 --industry-map 强制拉取",
-                    _other_cnt / len(rbsa_data) * 100, _other_cnt, len(rbsa_data),
-                )
-        # 大盘状态机：沪深300 close vs MA60 → BULL/BEAR（repo 单一来源）
-        regime = repo.get_market_regime(conn)
-        logger.info("大盘状态机: %s", regime)
-        feature_dates = repo.get_feature_dates_map(conn)
-        nav_latest = repo.nav.latest_dates(conn)
-        holdings_need_rbsa = set()
-        for c in repo.get_codes_missing_rbsa(conn):
-            if c in rbsa_data:
+    # 连接管理已收敛（Q4-B/Q5）：repo/store 各自取连接，批量路径不再贯穿 conn——
+    # 连接工厂缓存 schema 初始化后单次连接成本可忽略，5000 只基金的连接开销 <2%。
+    # batch_commit 保留为进度日志节律（提交粒度由 store.save_fund_features 内部负责）。
+    all_codes = repo.get_buyable_codes()
+    total = len(all_codes)
+    # 预加载全局不变的数据，避免逐基金/逐持仓重复查询（N+1）
+    industry_map = repo.get_industry_map()
+    idx_rows = repo.get_index_rows()
+    idx_volumes = np.array([r[2] for r in idx_rows], dtype=float) if idx_rows else np.array([])
+    idx_closes = np.array([r[1] for r in idx_rows], dtype=float) if idx_rows else np.array([])
+    rbsa_data: dict[str, list[dict]] = {}
+    _rbsa_buf: dict[str, list[dict]] = {}
+    for code, sc, sn, w in repo.get_latest_holdings_rows():
+        _rbsa_buf.setdefault(code, []).append({"stock_code": sc, "stock_name": sn, "weight": w})
+    for code, holdings in _rbsa_buf.items():
+        top = calc_rbsa(holdings, industry_map)
+        if top:
+            rbsa_data[code] = top
+    logger.info("RBSA 预加载完成: %d 只基金有行业暴露", len(rbsa_data))
+    # 行业映射缺失告警：industry_map 为空时 calc_rbsa 会把持仓全部归为"其他"，
+    # 直接导致可用赛道清单只剩"其他"、LLM 无法选赛道；此处显式暴露，避免静默降级。
+    if rbsa_data:
+        _other_cnt = sum(
+            1 for tops in rbsa_data.values() if tops and tops[0]["industry"] == "其他")
+        if _other_cnt / len(rbsa_data) > 0.3:
+            logger.warning(
+                "行业映射疑似缺失: RBSA 首位行业为'其他'的基金占 %.0f%% (%d/%d)；"
+                "请检查 stock_industry_map 是否为空，必要时运行 --industry-map 强制拉取",
+                _other_cnt / len(rbsa_data) * 100, _other_cnt, len(rbsa_data),
+            )
+    # 大盘状态机：沪深300 close vs MA60 → BULL/BEAR（repo 单一来源）
+    regime = repo.get_market_regime()
+    logger.info("大盘状态机: %s", regime)
+    feature_dates = repo.get_feature_dates_map()
+    nav_latest = repo.nav.latest_dates()
+    holdings_need_rbsa = set()
+    for c in repo.get_codes_missing_rbsa():
+        if c in rbsa_data:
+            holdings_need_rbsa.add(c)
+    # 行业映射更新后，强制重算已过期RBSA
+    industry_map_date = repo.get_meta(META.INDUSTRY_MAP_UPDATED)
+    if industry_map_date:
+        for c in repo.get_feature_codes_before(industry_map_date):
+            if c in rbsa_data and c not in holdings_need_rbsa:
                 holdings_need_rbsa.add(c)
-        # 行业映射更新后，强制重算已过期RBSA
-        industry_map_date = repo.get_meta(META.INDUSTRY_MAP_UPDATED)
-        if industry_map_date:
-            for c in repo.get_feature_codes_before(industry_map_date, conn):
-                if c in rbsa_data and c not in holdings_need_rbsa:
-                    holdings_need_rbsa.add(c)
-        skip_codes = {
-            c for c in all_codes
-            if c in feature_dates and c in nav_latest and feature_dates[c] >= nav_latest[c]
-            and c not in holdings_need_rbsa
-        }
-        logger.info(
-            "待计算特征基金: %d 只, 跳过已最新 %d 只, 强制重算RBSA %d 只",
-            total - len(skip_codes), len(skip_codes), len(holdings_need_rbsa),
-        )
-        done = 0
-        saved = 0
-        start_time = time.monotonic()
-        for code in all_codes:
-            if code in skip_codes:
-                done += 1
-                continue
-            features = calc_features(code, idx_closes, idx_volumes, conn)
+    skip_codes = {
+        c for c in all_codes
+        if c in feature_dates and c in nav_latest and feature_dates[c] >= nav_latest[c]
+        and c not in holdings_need_rbsa
+    }
+    logger.info(
+        "待计算特征基金: %d 只, 跳过已最新 %d 只, 强制重算RBSA %d 只",
+        total - len(skip_codes), len(skip_codes), len(holdings_need_rbsa),
+    )
+    done = 0
+    saved = 0
+    start_time = time.monotonic()
+    for code in all_codes:
+        if code in skip_codes:
             done += 1
-            if features:
-                top = rbsa_data.get(code, [])
-                features["regime"] = regime
-                features["rbsa_industry_1"] = top[0]["industry"] if len(top) > 0 else ""
-                features["rbsa_weight_1"] = top[0]["weight"] if len(top) > 0 else 0.0
-                features["rbsa_industry_2"] = top[1]["industry"] if len(top) > 1 else ""
-                features["rbsa_weight_2"] = top[1]["weight"] if len(top) > 1 else 0.0
-                features["rbsa_industry_3"] = top[2]["industry"] if len(top) > 2 else ""
-                features["rbsa_weight_3"] = top[2]["weight"] if len(top) > 2 else 0.0
-                repo.save_fund_features(features, conn)
-                saved += 1
-            if saved % batch_commit == 0:
-                conn.commit()
-                elapsed = time.monotonic() - start_time
-                speed = done / elapsed if elapsed > 0 else 0
-                logger.info("特征计算进度: %d/%d, speed=%.1f/s", done, total, speed)
-        # 修剪：每只基金仅保留最近 N 行特征快照，防止历史快照无限累积
-        repo.trim_fund_features(_FEATURE_RETENTION_ROWS, conn)
-        conn.commit()
+            continue
+        features = calc_features(code, idx_closes, idx_volumes)
+        done += 1
+        if features:
+            top = rbsa_data.get(code, [])
+            features["regime"] = regime
+            features["rbsa_industry_1"] = top[0]["industry"] if len(top) > 0 else ""
+            features["rbsa_weight_1"] = top[0]["weight"] if len(top) > 0 else 0.0
+            features["rbsa_industry_2"] = top[1]["industry"] if len(top) > 1 else ""
+            features["rbsa_weight_2"] = top[1]["weight"] if len(top) > 1 else 0.0
+            features["rbsa_industry_3"] = top[2]["industry"] if len(top) > 2 else ""
+            features["rbsa_weight_3"] = top[2]["weight"] if len(top) > 2 else 0.0
+            save_fund_features(features)
+            saved += 1
+        if saved % batch_commit == 0:
+            elapsed = time.monotonic() - start_time
+            speed = done / elapsed if elapsed > 0 else 0
+            logger.info("特征计算进度: %d/%d, speed=%.1f/s", done, total, speed)
+    # 修剪：每只基金仅保留最近 N 行特征快照，防止历史快照无限累积
+    trim_fund_features(_FEATURE_RETENTION_ROWS)
     elapsed = time.monotonic() - start_time
     logger.info("特征计算完成: %d/%d 只基金入库, 耗时 %.1f 秒", saved, total, elapsed)
     return saved

@@ -43,9 +43,9 @@ def get_available_sectors() -> list[str]:
         ).fetchall()
     return [r[0] for r in rows]
 
-def get_buyable_codes(conn=None) -> list[str]:
-    """可投基金代码全集（特征批量计算用）。"""
-    with conn or db_conn() as conn:
+def get_buyable_codes() -> list[str]:
+    """可投基金代码全集（持仓/净值下载、特征批量计算共用；buyable 查询单一归属）。"""
+    with db_conn() as conn:
         rows = conn.execute('SELECT code FROM fund_basic WHERE is_buyable = 1').fetchall()
     return [r[0] for r in rows]
 
@@ -63,21 +63,21 @@ def get_buyable_feature_stats() -> list[tuple]:
             "AND ff.date = (SELECT MAX(date) FROM fund_features)").fetchall()
     return list(rows)
 
-def get_codes_missing_rbsa(conn=None) -> list[str]:
+def get_codes_missing_rbsa() -> list[str]:
     """RBSA 行业暴露缺失的基金（强制重算 RBSA 用）。"""
-    with conn or db_conn() as conn:
+    with db_conn() as conn:
         rows = conn.execute("SELECT code FROM fund_features WHERE (rbsa_industry_1 IS NULL OR rbsa_industry_1 = '' OR rbsa_industry_1 = '其他')   OR (rbsa_industry_2 IS NULL OR rbsa_industry_2 = '')   OR (rbsa_industry_3 IS NULL OR rbsa_industry_3 = '')").fetchall()
     return [r[0] for r in rows]
 
-def get_feature_codes_before(date: str, conn=None) -> list[str]:
+def get_feature_codes_before(date: str) -> list[str]:
     """特征日期早于指定日期的基金（行业映射更新后强制重算用）。"""
-    with conn or db_conn() as conn:
+    with db_conn() as conn:
         rows = conn.execute('SELECT code FROM fund_features WHERE date < ?', (date,)).fetchall()
     return [r[0] for r in rows]
 
-def get_feature_dates_map(conn=None) -> dict[str, str]:
+def get_feature_dates_map() -> dict[str, str]:
     """code → 最近特征日期 映射（批量计算跳过判断用）。"""
-    with conn or db_conn() as conn:
+    with db_conn() as conn:
         rows = conn.execute('SELECT code, date FROM fund_features').fetchall()
     return dict(rows)
 
@@ -123,14 +123,9 @@ def get_index_momentum(code: str='sh000300', days: int=21) -> float:
         idx = conn.execute('SELECT close FROM index_daily WHERE code = ? ORDER BY date DESC LIMIT ?', (code, days)).fetchall()
     return (idx[0][0] / idx[-1][0] - 1) * 100 if len(idx) >= days else 0.0
 
-def get_index_rows(code: str='sh000300', conn=None) -> list[tuple]:
-    """宽基指数日线行 (date, close, volume)，按日期升序（特征计算/回测共用）。
-
-    conn 为内部批量 seam（批量特征计算路径复用连接）；缺省时自开连接。
-    """
+def get_index_rows(code: str='sh000300') -> list[tuple]:
+    """宽基指数日线行 (date, close, volume)，按日期升序（特征计算/回测共用）。"""
     sql = 'SELECT date, close, volume FROM index_daily WHERE code = ? ORDER BY date ASC'
-    if conn is not None:
-        return conn.execute(sql, (code,)).fetchall()
     with db_conn() as conn:
         return conn.execute(sql, (code,)).fetchall()
 
@@ -146,9 +141,9 @@ def get_index_series(code: str='sh000300', columns: tuple[str, ...]=('date', 'cl
         rows = conn.execute(sql + ' ORDER BY date ASC', params).fetchall()
     return rows
 
-def get_industry_map(conn=None) -> dict[str, str]:
+def get_industry_map() -> dict[str, str]:
     """stock_code → industry_name 全量映射（RBSA 聚合用）。"""
-    with conn or db_conn() as conn:
+    with db_conn() as conn:
         rows = conn.execute('SELECT stock_code, industry_name FROM stock_industry_map').fetchall()
     return dict(rows)
 
@@ -178,17 +173,79 @@ def get_latest_holdings_date(code: str) -> str | None:
         row = conn.execute('SELECT MAX(report_date) FROM fund_holdings WHERE code = ?', (code,)).fetchone()
     return row[0] if row else None
 
-def get_latest_holdings_rows(conn=None) -> list[tuple]:
+def get_latest_holdings_rows() -> list[tuple]:
     """全部基金最新报告期持仓行 (code, stock_code, stock_name, weight)（RBSA 预加载用）。"""
-    with conn or db_conn() as conn:
+    with db_conn() as conn:
         rows = conn.execute('SELECT code, stock_code, stock_name, weight FROM fund_holdings WHERE report_date IN (SELECT MAX(report_date) FROM fund_holdings GROUP BY code)').fetchall()
     return list(rows)
 
-def get_market_regime(conn=None) -> str:
+def get_market_regime() -> str:
     """沪深300 close vs EMA60 → BULL/BEAR/NEUTRAL（大盘状态机单一来源）。"""
-    with conn or db_conn() as conn:
+    with db_conn() as conn:
         row = conn.execute("SELECT close, ema60 FROM index_daily WHERE code='sh000300' AND close IS NOT NULL AND ema60 IS NOT NULL ORDER BY date DESC LIMIT 1").fetchone()
     return domain.regime_from_close_ema60(row[0] if row else None, row[1] if row else None)
+
+def get_holdings_report_dates() -> dict[str, str]:
+    """各基金最新持仓报告期（持仓增量下载的本地最新窗口判断，原 foundation 内联 GROUP BY）。"""
+    with db_conn() as conn:
+        rows = conn.execute(
+            "SELECT code, MAX(report_date) FROM fund_holdings GROUP BY code").fetchall()
+    return dict(rows)
+
+
+def get_nav_time_state() -> tuple[dict[str, tuple[str, str]], list[str]]:
+    """净值时间状态（单一归属）：(每基金日期区间 {code:(首日,末日)}, 全部净值日期升序)。
+
+    打标/陈旧/增量下载共用：全局最新净值日 = max(v[1] for v in ranges.values())，
+    滞后计数用完整日期集（trading_day_lag 口径）。替代 foundation/nav 四处逐行重复。
+    """
+    with db_conn() as conn:
+        rows = conn.execute(
+            "SELECT code, MIN(date), MAX(date) FROM fund_nav GROUP BY code").fetchall()
+        ranges = {r[0]: (r[1], r[2]) for r in rows}
+        dates = sorted(r[0] for r in conn.execute(
+            "SELECT DISTINCT date FROM fund_nav").fetchall())
+    return ranges, dates
+
+
+def has_nav_data() -> bool:
+    """基金净值表是否已有数据（增量 vs 首装全量分支）。"""
+    with db_conn() as conn:
+        return conn.execute("SELECT 1 FROM fund_nav LIMIT 1").fetchone() is not None
+
+
+def has_index_data() -> bool:
+    """指数表是否已有数据（Step3 增量窗口 vs 历史全量）。"""
+    with db_conn() as conn:
+        return conn.execute("SELECT 1 FROM index_daily LIMIT 1").fetchone() is not None
+
+
+def get_industry_map_gap_count() -> int:
+    """持仓中未映射行业的股票数（行业映射 90 天跳过判定，原 foundation 内联子查询）。"""
+    with db_conn() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM (SELECT DISTINCT h.stock_code FROM fund_holdings h "
+            "LEFT JOIN stock_industry_map i ON h.stock_code = i.stock_code "
+            "WHERE i.stock_code IS NULL)").fetchone()[0]
+
+
+def get_industry_map_targets() -> tuple[list[str], set[str]]:
+    """行业映射同步输入：(全部持仓股票, 已映射股票集)（增量过滤，原 foundation 两条内联读）。"""
+    with db_conn() as conn:
+        all_stocks = [r[0] for r in conn.execute(
+            "SELECT DISTINCT stock_code FROM fund_holdings").fetchall()]
+        mapped = {r[0] for r in conn.execute(
+            "SELECT stock_code FROM stock_industry_map").fetchall()}
+    return all_stocks, mapped
+
+
+def get_industry_map_stats() -> tuple[int, int]:
+    """RBSA 统计：已映射股票数, 有持仓基金数（Step6 面板，原 foundation 两条内联读）。"""
+    with db_conn() as conn:
+        mapped = conn.execute("SELECT COUNT(*) FROM stock_industry_map").fetchone()[0]
+        funds = conn.execute("SELECT COUNT(DISTINCT code) FROM fund_holdings").fetchone()[0]
+    return mapped, funds
+
 
 def get_market_technical() -> dict | None:
     """沪深300最新技术面快照（结构化数据），供 LLM regime 判定注入 prompt；数据不足返回 None。
@@ -478,36 +535,11 @@ def get_candidate_nav_summaries(items: list[tuple[str, str]]) -> dict[str, dict]
     return out
 
 
-def save_fund_features(features: dict, conn=None) -> None:
-    """写入一条基金特征快照（INSERT OR REPLACE）。
-
-    ``conn`` 为内部批量 seam：特征全量计算（calc_all_features）复用连接避免逐条重开；
-    缺省时自开连接。普通调用不需要也不应传 conn。
-    """
-    sql = 'INSERT OR REPLACE INTO fund_features (code, date, regime, hurst_60d, momentum_20d, calmar, downside_vol, capture_up, capture_down, bias_60d, drawdown_60d, reversal_20d, mom_5d, mom_60d, vol_20d, rbsa_industry_1, rbsa_weight_1, rbsa_industry_2, rbsa_weight_2, rbsa_industry_3, rbsa_weight_3) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    params = (features['code'], features['date'], features['regime'], features.get('hurst_60d'), features.get('momentum_20d'), features.get('calmar'), features.get('downside_vol'), features.get('capture_up'), features.get('capture_down'), features.get('bias_60d'), features.get('drawdown_60d'), features.get('reversal_20d'), features.get('mom_5d'), features.get('mom_60d'), features.get('vol_20d'), features.get('rbsa_industry_1', ''), features.get('rbsa_weight_1', 0.0), features.get('rbsa_industry_2', ''), features.get('rbsa_weight_2', 0.0), features.get('rbsa_industry_3', ''), features.get('rbsa_weight_3', 0.0))
-    if conn is not None:
-        conn.execute(sql, params)
-    else:
-        with db_conn() as conn:
-            conn.execute(sql, params)
-
 def set_model_last_trained(date_str: str) -> None:
     """记录最近一次模型训练日期。"""
     with db_conn() as conn:
         meta_set(conn, META.MODEL_LAST_TRAINED, date_str)
 
-def trim_fund_features(retention: int, conn=None) -> None:
-    """修剪每只基金特征快照至最近 retention 行（防历史快照无限累积）。
-
-    ``conn`` 为内部批量 seam：特征全量计算路径复用连接；缺省时自开连接。
-    """
-    sql = 'DELETE FROM fund_features WHERE rowid IN (  SELECT rowid FROM (    SELECT rowid, ROW_NUMBER() OVER (PARTITION BY code ORDER BY date DESC) rk    FROM fund_features) WHERE rk > ?)'
-    if conn is not None:
-        conn.execute(sql, (retention,))
-    else:
-        with db_conn() as conn:
-            conn.execute(sql, (retention,))
 
 
-__all__ = ["FEATURE_COLS", "MARKET_COLS", "FORWARD_WINDOW", "check_data_ready", "is_recommend_data_ready", "get_all_ranking_rows", "get_available_sectors", "get_buyable_codes", "get_buyable_feature_stats", "get_candidate_nav_summaries", "get_codes_missing_rbsa", "get_feature_codes_before", "get_feature_dates_map", "get_fund_name", "get_fund_pool_stats", "get_holdings", "get_holdings_at_report", "get_index_close", "get_index_momentum", "get_index_rows", "get_index_series", "get_industry_map", "get_latest_feature_date", "get_latest_feature_date_before", "get_latest_features", "get_latest_holdings_date", "get_latest_holdings_rows", "get_market_regime", "get_market_technical", "get_meta", "get_model_last_trained", "get_data_latest_date", "get_interval_days", "get_int_cursor", "get_sector_momentum_median", "get_sector_momentum_medians", "get_rbsa_at_date", "get_first_rbsa_after", "get_sector_candidates", "get_sector_heatmap", "get_system_logs", "get_train_fund_codes", "get_uptime_days", "sample_fund_codes_before", "save_fund_features", "save_meta", "set_model_last_trained", "trim_fund_features"]
+__all__ = ["FEATURE_COLS", "MARKET_COLS", "FORWARD_WINDOW", "check_data_ready", "is_recommend_data_ready", "get_all_ranking_rows", "get_available_sectors", "get_buyable_codes", "get_buyable_feature_stats", "get_candidate_nav_summaries", "get_codes_missing_rbsa", "get_feature_codes_before", "get_feature_dates_map", "get_fund_name", "get_fund_pool_stats", "get_holdings", "get_holdings_at_report", "get_holdings_report_dates", "get_index_close", "get_index_momentum", "get_index_rows", "get_index_series", "get_industry_map", "get_industry_map_gap_count", "get_industry_map_stats", "get_industry_map_targets", "get_latest_feature_date", "get_latest_feature_date_before", "get_latest_features", "get_latest_holdings_date", "get_latest_holdings_rows", "get_market_regime", "get_market_technical", "get_meta", "get_model_last_trained", "get_data_latest_date", "get_interval_days", "get_int_cursor", "get_nav_time_state", "get_sector_momentum_median", "get_sector_momentum_medians", "get_rbsa_at_date", "get_first_rbsa_after", "get_sector_candidates", "get_sector_heatmap", "get_system_logs", "get_train_fund_codes", "get_uptime_days", "has_index_data", "has_nav_data", "sample_fund_codes_before", "save_meta", "set_model_last_trained"]

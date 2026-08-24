@@ -101,7 +101,9 @@ CREATE TABLE IF NOT EXISTS macro_news (
     top_losers TEXT,
     etf_net_flow TEXT,
     flow_json TEXT,
-    context_json TEXT
+    context_json TEXT,
+    -- 新闻条目实际归属日期（跨日回退时为 T-1），供 UI 区分展示；行主键仍是决策日期
+    news_date TEXT
 );
 
 -- 通用元数据（键值对）

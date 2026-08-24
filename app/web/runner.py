@@ -55,13 +55,18 @@ pipeline_lock = threading.Lock()
 # T-1 净值已完整公布后跑（建议盘后/盘中），推荐宏观分析用当日完整板块数据。
 
 
+def _slot_key(slot: str) -> str:
+    """槽位去重键（meta key 构造单一来源，候选5 收敛）。"""
+    return f"{META.SCHED_LAST_RUN_PREFIX}{slot}"
+
+
 def slot_last_run(slot: str) -> str | None:
     """槽位最近一次已执行的日期（meta 持久化，按槽位独立去重）。"""
-    return repo.get_meta(f"{META.SCHED_LAST_RUN_PREFIX}{slot}")
+    return repo.get_meta(_slot_key(slot))
 
 
 def mark_slot_run(slot: str, day: str) -> None:
-    repo.save_meta(f"{META.SCHED_LAST_RUN_PREFIX}{slot}", day)
+    repo.save_meta(_slot_key(slot), day)
 
 
 def run_pipeline_wrapper(slot: str | None = None) -> None:
@@ -118,20 +123,34 @@ def last_run_date() -> str | None:
     return max(days) if days else None
 
 
+def _sched_run_time(now: datetime, sched: dict) -> datetime | None:
+    """调度窗口触发点（单一口径，候选5 收敛：scheduler_loop 与 next_run_for 共用）。
+
+    hour/min 都非空才视为启用（修复：展示页曾只判 hour——仅填小时时显示启用但
+    调度永不触发）；返回今日该时刻；None = 未启用。窗口到期 = now >= 返回值，
+    由调用方按各自语义判断（scheduler_loop：到期且当日未跑 → 触发；
+    next_run_for：到期且当日已跑 → 顺延一天展示）。
+    """
+    h = (str(sched.get("hour") or "")).strip()
+    m = (str(sched.get("minute") or "")).strip()
+    if h == "" or m == "":
+        return None
+    return now.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
+
+
 def next_run_for(slot: str = "full") -> str | None:
     """槽位下次执行时间文本（调度触发与展示页共用单一来源，架构深化 K）。
 
-    口径与 scheduler_loop 一致：hour 与 minute 都非空才视为启用——
-    修复：展示页曾只判 hour，仅填小时时显示启用但调度永不触发。
+    窗口触发语义与 scheduler_loop 一致：今天已过点且当日未跑 →
+    下一 tick 即补跑（显示为即将执行而非顺延一天），与实际行为一致。
     """
     s = load_settings()
     sched = s.get("scheduler", {}) or {}
-    h, m = sched.get("hour", ""), sched.get("minute", "")
-    if h == "" or m == "":
-        return None
     now = datetime.now()
-    run = now.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
-    if run <= now:
+    run = _sched_run_time(now, sched)
+    if run is None:
+        return None
+    if run <= now and has_run_today("full"):
         run = run + timedelta(days=1)
     return f"{run.strftime('%Y-%m-%d %H:%M')}（{slot}）"
 
@@ -155,17 +174,19 @@ def scheduler_loop() -> None:
     while True:
         try:
             s = load_settings()
-            sched = s.get("scheduler", {})
+            sched = s.get("scheduler", {}) or {}
             today = datetime.now().strftime("%Y-%m-%d")
             now = datetime.now()
-            h, m = sched.get("hour", ""), sched.get("minute", "")
-            if h != "" and m != "" and now.hour == int(h) and now.minute == int(m) \
-                    and not has_run_today("full"):
-                mark_slot_run("full", today)  # 先置位，防同分钟重复触发
+            # 窗口判断而非等分钟匹配（_sched_run_time 单一口径，候选5 收敛）：
+            # tick 落点漂移（如 11:29:59.5 → 下一 tick 11:31:00.x）不会跳过目标分钟；
+            # 当天已触发则去重，错过时间后次日不再补跑。
+            run_at = _sched_run_time(now, sched)
+            if run_at is not None and now >= run_at and not has_run_today("full"):
+                mark_slot_run("full", today)  # 先置位，防同日重复触发
                 if not is_trading_day(now.date()):
                     _sched_logger.info("定时跳过：%s 非交易日，不启动全流程", today)
                 else:
-                    _sched_logger.info("定时触发: %s %02d:%02d（全流程）", today, int(h), int(m))
+                    _sched_logger.info("定时触发: %s %s（全流程）", today, run_at.strftime("%H:%M"))
                     run_pipeline_wrapper()  # slot=None → 数据基座→推荐→监控→进化
         except Exception as e:
             _sched_logger.error("调度器异常: %s", e, exc_info=True)

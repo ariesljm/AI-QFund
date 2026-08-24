@@ -149,7 +149,8 @@ def macro_block(today: str) -> tuple:
     return (macro["macro"], macro["sector_gainers"], macro["sector_losers"],
             macro["flow_inflows"], macro["flow_outflows"], macro["max_inflow"],
             macro["max_outflow"], macro["sector_reasoning"], macro["regime_label"],
-            empty_today, macro["flow_net_total"], macro["macro_date"])
+            empty_today, macro["flow_net_total"], macro["macro_date"],
+            macro["news_date"])
 
 
 def model_trained_at() -> str | None:
@@ -217,7 +218,7 @@ def index_context() -> dict[str, object]:
     # 宏观摘要 + 空推荐日标记
     (macro_data, sector_gainers, sector_losers, flow_inflows, flow_outflows,
      max_inflow, max_outflow, sector_reasoning, regime_label, empty_today,
-     flow_net_total, macro_date) = macro_block(today)
+     flow_net_total, macro_date, news_date) = macro_block(today)
 
     # 质量度量 + 累计超额曲线 + 最新一期指标
     (quality_metrics, quality_curve_svg, quality_curve_baseline,
@@ -295,6 +296,7 @@ def index_context() -> dict[str, object]:
         "max_outflow": max_outflow,
         "empty_today": empty_today,
         "macro_date": macro_date,
+        "news_date": news_date,
         "quality_metrics": quality_metrics,
         "quality_curve_svg": quality_curve_svg,
         "quality_curve_baseline": quality_curve_baseline,

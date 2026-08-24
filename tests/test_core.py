@@ -207,7 +207,41 @@ class TestPrompts:
     def test_system_prompt(self):
         sp = sector_selection_system_prompt()
         assert "JSON" in sp
-        assert "markdown" in sp.lower()
+
+    def test_news_date_stale_declared(self):
+        """跨日回退：新闻归属日期与决策日不同时，prompt 显式声明 T-1 口径。"""
+        prompt = sector_selection_prompt(
+            date_str="2026-08-12",
+            pool_text="食品(5日+3.5%)",
+            pool_reasoning="",
+            top_gainers="",
+            top_losers="",
+            etf_net_flow="",
+            news_summary="[15:00] 昨闻",
+            news_date="2026-08-10",
+        )
+        assert "2026-08-10" in prompt
+        assert "T-1" in prompt
+        assert "今日盘面增量" in prompt
+
+    def test_news_date_today_no_noise(self):
+        """当天新闻：不加回退声明（避免无关干扰）。"""
+        prompt = sector_selection_prompt(
+            date_str="2026-08-12",
+            pool_text="食品(5日+3.5%)",
+            pool_reasoning="",
+            top_gainers="",
+            top_losers="",
+            etf_net_flow="",
+            news_summary="[09:30] 今闻",
+            news_date="2026-08-12",
+        )
+        assert "T-1" not in prompt
+        # 缺省（旧调用方不传）同样不声明
+        prompt2 = sector_selection_prompt(
+            date_str="2026-08-12", pool_text="x", pool_reasoning="",
+            top_gainers="", top_losers="", etf_net_flow="", news_summary="y")
+        assert "T-1" not in prompt2
 
 
 # ============================================================

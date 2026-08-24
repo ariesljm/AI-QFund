@@ -14,10 +14,13 @@ def sector_selection_prompt(
     flow_summary: str | None = None,
     lessons: str | None = None,
     market_tech: str | None = None,
+    news_date: str | None = None,
 ) -> str:
     """选赛道 prompt（D5 定案）：LLM 只能在量化候选池内选 3-5 个，可否决池内赛道。
 
     pool_text：量化定池产出的候选池文本（含 5/20/60 日动量信号）。
+    news_date：新闻条目实际归属日期。与决策日不同（跨日回退）时向 LLM
+    显式声明，避免把 T-1 盘后消息误判为今日增量信息。
     """
     lines = [
         f"你是专业的宏观分析师。基于 {date_str} 的多源数据，"
@@ -39,6 +42,15 @@ def sector_selection_prompt(
         f"主力资金净流入: {etf_net_flow or '无数据'}",
         "",
         "【财经新闻】（独立来源：东方财富财经要闻）",
+    ]
+    # 新闻时间锚点：归属日期与决策日不同（跨日回退）时显式声明，
+    # 防止 LLM 把 T-1 盘后消息误判为今日增量信息；相同时不额外干扰。
+    if news_date and news_date != date_str:
+        lines += [
+            f"注意：今日（{date_str}）新闻尚未生成，以下为最近一个交易日"
+            f"（{news_date}）的新闻，请按 T-1 信息口径解读，勿视为今日盘面增量。",
+        ]
+    lines += [
         news_summary or "无数据",
         "",
         "【数据同源提示（P1-6）】",
@@ -86,22 +98,6 @@ def sector_selection_prompt(
 
 def sector_selection_system_prompt() -> str:
     return "你是量化宏观分析师。只输出纯 JSON 对象，禁止 markdown。"
-
-
-def news_brief_prompt(news_summary: str) -> str:
-    lines = [
-        "你是财经新闻摘要员。把下方的今日财经新闻压缩为精炼摘要，供基金监控判读。",
-        "",
-        "【要求】",
-        "1. 保留：涉及的行业/板块名、公司/股票名、政策事件",
-        "2. 标注每条新闻对相关行业的利好/利空/中性倾向",
-        "3. 控制在 200 字以内，保留最关键信息",
-        "4. 新闻较多时按重要程度取舍，宁可少而准",
-        "",
-        "【今日财经新闻】",
-        news_summary or "无数据",
-    ]
-    return "\n".join(lines)
 
 
 # P2-8 R4 判定阈值（单一来源，prompt 与日志共用）：把"大幅下降/大面积退出"等模糊表述

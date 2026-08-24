@@ -156,6 +156,39 @@ class TestGeneticAlgorithm:
         assert best_cfg["momentum_guard_pct"] == -5.0
         assert "momentum_guard_pct" not in ga._GENE_KEYS
 
+    def test_fitness_repeats_median(self, monkeypatch):
+        """P2-10 降噪：repeats>1 时 fitness 取多次回测中位数（原实现忽略了 repeats）。"""
+        calls = []
+
+        def fake_backtest(cfg_override=None, fast=False, lookback_days=365):
+            calls.append(1)
+            v = cfg_override.get("model_weight", 0.5)
+            # 波动回测：奇数次调用=主流值 51，偶数次=异常高 61.5（3 次评估取中位数应落在 61.5 或主流值）
+            idx = len(calls)
+            if idx % 2 == 0:
+                return {"profit_rate_pct": v * 60.0, "mean_top_abs_pct": v * 3.0}  # 61.5
+            return {"profit_rate_pct": v * 50.0, "mean_top_abs_pct": v * 2.0}     # 51.0
+
+        monkeypatch.setattr(ga, "run_backtest", fake_backtest)
+        f1 = ga.fitness({"model_weight": 0.5}, repeats=1)  # idx1 → 51.0
+        f3 = ga.fitness({"model_weight": 0.5}, repeats=3)  # idx2,3,4 → [61.5, 51.0, 61.5]
+        assert f1 == 51.0
+        assert f3 == 61.5  # 中位数（异常值已占多数则体现中位值，而非对噪声取均值的 58.0）
+        assert len(calls) == 4  # 1 + 3 次回测
+
+    def test_ga_optimize_forwards_repeats(self, monkeypatch):
+        """ga_optimize_ranking 把 repeats 转发到 fitness（月度降噪接线完整）。"""
+        monkeypatch.setattr(ga, "repo", repo)
+        monkeypatch.setattr(ga.repo, "get_ranking_cfg", lambda: {
+            "model_weight": 0.5, "rel_strength_weight": 0.15,
+            "calmar_weight": 0.1, "hurst_weight": 0.1, "momentum_guard_pct": -5.0,
+        })
+        seen = []
+        monkeypatch.setattr(ga, "fitness",
+                            lambda cfg, repeats=1: seen.append(repeats) or 1.0)
+        ga.ga_optimize_ranking(population=3, generations=1, seed=3, repeats=2)
+        assert seen and all(r == 2 for r in seen)  # 全部评估都按 repeats=2
+
     def test_apply_weights_preserves_guard(self, monkeypatch):
         """写库防线：GA 配置即使携带 guard 值，落库时也沿用当前 guard。"""
         from app.engine import evolve
@@ -202,7 +235,7 @@ class TestGaFrequencyLimit:
         monkeypatch.setattr(evolve, "_save_self_fix", lambda fix: None)  # 防止写生产库 evolution_insights
         monkeypatch.setattr("app.engine.ga.ga_optimize_ranking",
                             lambda *a, **k: ({"model_weight": 0.8}, 45.0))
-        monkeypatch.setattr("app.engine.ga.fitness", lambda cfg: 30.0)
+        monkeypatch.setattr("app.engine.ga.fitness", lambda cfg, repeats=1: 30.0)
 
         note = evolve._ga_adjust()
         assert note is not None
@@ -223,7 +256,7 @@ class TestGaFrequencyLimit:
         # Δfitness = 1.9 ≤ 10.0（Q5 上修门槛）→ 不应用，但记录评估时间
         monkeypatch.setattr("app.engine.ga.ga_optimize_ranking",
                             lambda *a, **k: ({"model_weight": 0.8}, 29.9))
-        monkeypatch.setattr("app.engine.ga.fitness", lambda cfg: 28.0)
+        monkeypatch.setattr("app.engine.ga.fitness", lambda cfg, repeats=1: 28.0)
 
         assert evolve._ga_adjust() is None
         assert applied == []

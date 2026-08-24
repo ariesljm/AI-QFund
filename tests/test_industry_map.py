@@ -94,21 +94,15 @@ class TestFetchIndustryPush2:
 class TestFetchIndustryMapFallback:
     def test_f10_failure_falls_back_to_push2(self, monkeypatch):
         """F10 全部失败时，push2 批量兜底应补齐行业映射。"""
-        conn = _mk_conn()
-        conn.executemany(
-            "INSERT INTO fund_holdings VALUES (?,?,?,?,?)",
-            [
-                ("000001", "2026-06-30", "601899", "紫金矿业", 10.0),
-                ("000002", "2026-06-30", "000858", "五粮液", 8.0),
-            ],
-        )
-        conn.commit()
 
         def fake_fetch_async(session, url, params=None, timeout=15, headers=None):
             raise httpx.TransportError("F10 被限流")
 
         monkeypatch.setattr(foundation, "fetch_async", fake_fetch_async)
-        monkeypatch.setattr(foundation, "db_conn", lambda: conn)
+        # 候选股票来源已收敛到 repo 概念服务（候选2 Q3：内联读沉 repo）——
+        # 测试 seam 随之上移：mock 服务而非旧 foundation.db_conn
+        monkeypatch.setattr(foundation, "get_industry_map_targets",
+                            lambda: (["601899", "000858"], set()))
         monkeypatch.setattr(foundation, "filter_cooldown_targets", lambda *a, **k: a[1])
         monkeypatch.setattr(foundation, "run_backfill_rounds", lambda *a, **k: [])
 

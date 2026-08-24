@@ -11,14 +11,21 @@ logger = get_logger("database")
 
 DB_PATH = Path("data/qfund.db")
 
+# Q4-B 连接工厂：schema 初始化与迁移按库路径缓存（同一路径仅初始化一次）。
+# 生产路径一次性建表；测试注入的临时库（每测试独立路径）各自首访时初始化，
+# 消除 get_db 每次调用重复的 _init_schema/_migrate（39 个 repo getter 自开连接场景）。
+_INITIALIZED_PATHS: set[str] = set()
+
 
 def get_db() -> sqlite3.Connection:
     # timeout=30：管线批量写（长事务）+ web/调度器并发连接时，等待写锁 30s 而非默认 5s 抛 locked
     conn = sqlite3.connect(str(DB_PATH), timeout=30)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
-    _init_schema(conn)
-    _migrate(conn)
+    if str(DB_PATH) not in _INITIALIZED_PATHS:
+        _init_schema(conn)
+        _migrate(conn)
+        _INITIALIZED_PATHS.add(str(DB_PATH))
     return conn
 
 
@@ -112,7 +119,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
     if "macro_news" in tables:
         macro_cols = {r[1] for r in conn.execute("PRAGMA table_info(macro_news)").fetchall()}
-        for col, typ in [("flow_json", "TEXT"), ("context_json", "TEXT")]:
+        for col, typ in [("flow_json", "TEXT"), ("context_json", "TEXT"),
+                         ("news_date", "TEXT")]:
             if col not in macro_cols:
                 conn.execute(f"ALTER TABLE macro_news ADD COLUMN {col} {typ}")
                 conn.commit()
