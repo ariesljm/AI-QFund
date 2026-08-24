@@ -20,11 +20,6 @@ data/backtest_*.json
 data/exit_*.csv
 data/bt_*.json
 
-# 文档 / 说明（非运行必需）
-docs/
-AGENTS.md
-CONTEXT.md
-
 # 环境与密钥
 .env
 *.local
