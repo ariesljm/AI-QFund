@@ -127,14 +127,10 @@ def compute_quality_metrics(period_start: str, period_end: str) -> dict:
             for cc in json.loads(candidate_codes):
                 if cc == code:
                     continue
-                cand_navs = repo.nav.series(cc, since=reco_date, limit=domain.FORWARD_DAYS + 1)
-                if len(cand_navs) < domain.FORWARD_DAYS + 1:
-                    continue
-                cs, ce = cand_navs[0][1], cand_navs[domain.FORWARD_DAYS][1]
-                if cs and ce and cs > 0:
-                    cr = ce / cs - 1.0
-                    if np.isfinite(cr):
-                        cand_rets.append(cr)
+                # 20 日绝对收益单一来源（架构深化 C）：与结算/反事实同口径
+                cr = repo.nav.forward_return(cc, reco_date)
+                if cr is not None and np.isfinite(cr):
+                    cand_rets.append(cr)
             if cand_rets:
                 cand_mean = sum(cand_rets) / len(cand_rets)
                 decision_loss = abs_ret - cand_mean
