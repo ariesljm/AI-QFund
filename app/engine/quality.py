@@ -8,6 +8,7 @@ IC 的 Spearman 秩相关用 numpy 手写（含并列平均秩），不依赖 sc
 """
 
 import json
+from collections.abc import Sequence
 
 import numpy as np
 
@@ -22,7 +23,7 @@ def _rankdata(x: np.ndarray) -> np.ndarray:
     x = np.asarray(x, dtype=float)
     n = x.size
     sorter = np.argsort(x, kind="stable")
-    inv = np.empty(n, dtype=np.intp)
+    inv: np.ndarray = np.empty(n, dtype=np.intp)
     inv[sorter] = np.arange(n)
     sx = x[sorter]
     obs = np.concatenate(([True], sx[1:] != sx[:-1]))
@@ -42,26 +43,26 @@ def spearman(x: list[float], y: list[float]) -> float | None:
     return float(corr) if not np.isnan(corr) else None
 
 
-def profit_stats(rets: list[float | None], threshold: float = domain.PROFIT_THRESHOLD) -> dict:
+def profit_stats(rets: Sequence[float | None], threshold: float = domain.PROFIT_THRESHOLD) -> dict:
     """对收益序列算赚钱口径（单一来源）：名义胜率 / 赚钱胜率 / 盈亏比。
 
     赚钱 = 绝对收益 > threshold（覆盖申赎成本）。quality 度量与回测汇总共用，
     序列与阈值单位一致即可（小数序列配 0.01，百分数序列配 1.0）。
     返回 {win_rate, profit_rate, payoff_ratio, mean}；空序列全 None。
     """
-    rets = [float(r) for r in rets if r is not None]
-    if not rets:
+    clean = [float(r) for r in rets if r is not None]
+    if not clean:
         return {"win_rate": None, "profit_rate": None, "payoff_ratio": None, "mean": None}
-    gains = [r for r in rets if r > threshold]
-    losses = [r for r in rets if r <= threshold]
+    gains = [r for r in clean if r > threshold]
+    losses = [r for r in clean if r <= threshold]
     loss_mean = (sum(losses) / len(losses)) if losses else 0.0
     payoff = ((sum(gains) / len(gains)) / abs(loss_mean)
               if gains and abs(loss_mean) > 1e-12 else None)
     return {
-        "win_rate": sum(1 for r in rets if r > 0) / len(rets),
-        "profit_rate": len(gains) / len(rets),
+        "win_rate": sum(1 for r in clean if r > 0) / len(clean),
+        "profit_rate": len(gains) / len(clean),
         "payoff_ratio": payoff,
-        "mean": sum(rets) / len(rets),
+        "mean": sum(clean) / len(clean),
     }
 
 

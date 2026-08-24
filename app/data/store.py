@@ -329,7 +329,7 @@ def list_failures(fetch_type: str | None = None, status: str | None = None,
             "first_failed_at", "last_failed_at", "recovered_at")
     with db_conn() as conn:
         rows = conn.execute(sql, params).fetchall()
-    return [dict(zip(cols, r)) for r in rows]
+    return [dict(zip(cols, r, strict=False)) for r in rows]
 
 
 def run_backfill_rounds(fetch_type: str, failed: list, backfill_one, total: int,

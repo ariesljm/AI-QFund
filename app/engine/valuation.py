@@ -37,7 +37,7 @@ def portfolio_series() -> tuple[list[str], list[float], list[float]]:
     if not funds or not min_date:
         return [], [], []
     rows = repo.nav.batch_latest([f["code"] for f in funds])
-    nav_by_fund = {}
+    nav_by_fund: dict[str, dict[str, float]] = {}
     date_set = set()
     for code, d, nav in rows:
         if nav is None or nav <= 0:
@@ -80,10 +80,10 @@ def portfolio_series() -> tuple[list[str], list[float], list[float]]:
         else:
             hs_pcts.append(None)
     # 裁剪到组合与基准均有值的连续区间
-    pairs = [(d, p, h) for d, p, h in zip(dates, port_pcts, hs_pcts) if p is not None and h is not None]
+    pairs = [(d, p, h) for d, p, h in zip(dates, port_pcts, hs_pcts, strict=False) if p is not None and h is not None]
     if len(pairs) < 2:
         return [], [], []
-    dates, port_pcts, hs_pcts = zip(*pairs)
+    dates, port_pcts, hs_pcts = zip(*pairs, strict=False)
     return list(dates), list(port_pcts), list(hs_pcts)
 
 

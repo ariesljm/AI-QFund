@@ -418,7 +418,7 @@ def _decay_insights() -> int:
     """降低旧洞察置信度，长期无用则标记非活跃。"""
     rows = repo.list_active_insights()
     decayed = 0
-    for rid, conf, cnt in rows:
+    for rid, conf, _cnt in rows:
         # 旧数据 confidence 可能为 NULL（schema DEFAULT 对历史行无效），按初始置信度兜底
         new_conf = float(conf if conf is not None else _INSIGHT_INITIAL_CONF) * 0.95
         # P0-2 阈值统一：与 get_active_insights 的进 prompt 门槛一致（0.3）

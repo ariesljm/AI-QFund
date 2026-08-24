@@ -596,7 +596,7 @@ def _run_r4_batch(ctxs: list[DefenseContext]) -> None:
 
     with ThreadPoolExecutor(max_workers=workers) as ex:
         results = list(ex.map(_verify, pending))
-    for ctx, logic in zip(pending, results):
+    for ctx, logic in zip(pending, results, strict=False):
         ctx.r4_logic = logic
         ctx.r4_precomputed = True
         ctx.r4_skipped = logic is None
@@ -610,7 +610,7 @@ def _build_defense_context(row: dict, date_str: str, trade_dates: list[str],
     真 bug 曾栖息于 run_monitor 的位置解包与落库时序——现收敛为单一深模块；
     净值陈旧返回 None（数据告警已记，不参与防线链）。
     """
-    code_str, name = row["code"], row["name"]
+    code_str, _name = row["code"], row["name"]
     reco_date, buy_reason, sector = row["reco_date"], row["buy_reason"], row["sector"]
 
     # 净值新鲜度护栏：净值陈旧（停牌/数据断裂）→ 记录数据告警事件（is_stale=1），

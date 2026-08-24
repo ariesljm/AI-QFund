@@ -277,12 +277,14 @@ async def async_download_all_holdings(
             def _save_holdings_batch(conn_, results) -> dict:
                 nonlocal total_rows, funds_with_holdings
                 batch_rows = 0
-                outcome = {"new_count": 0, "success": set(), "no_update": [], "failed": []}
+                success: set[str] = set()
+                failed_codes: list[str] = []
+                no_update: list[str] = []
                 for code, (report_date, holdings), failed in results:
                     if failed:
-                        outcome["failed"].append(code)
+                        failed_codes.append(code)
                         continue
-                    outcome["success"].add(code)
+                    success.add(code)
                     if holdings and report_date and report_date != local_latest.get(code):
                         save_holdings_batch(conn_, [
                             (code, report_date, h["stock_code"], h["stock_name"], h["weight"])
@@ -292,9 +294,9 @@ async def async_download_all_holdings(
                         funds_with_holdings += 1
                         local_latest[code] = report_date
                 conn_.commit()
-                outcome["new_count"] = batch_rows
                 total_rows += batch_rows
-                return outcome
+                return {"new_count": batch_rows, "success": success,
+                        "no_update": no_update, "failed": failed_codes}
 
             def _backfill_holdings(code) -> None:
                 nonlocal total_rows, funds_with_holdings
@@ -494,14 +496,15 @@ def _fetch_industry_map(unmapped_only: bool = False) -> list[tuple[str, str, str
 
     def _handle_batch(conn_, batch_results) -> dict:
         """收集 F10 结果到共享 results；不落库（入库由 update_industry_map 统一执行）。"""
-        outcome = {"new_count": 0, "success": set(), "no_update": [], "failed": []}
+        success: set[str] = set()
+        failed_codes: list[str] = []
         for code, payload, failed in batch_results:
             if failed:
-                outcome["failed"].append(code)
+                failed_codes.append(code)
                 continue
-            outcome["success"].add(code)
+            success.add(code)
             results[code] = payload
-        return outcome
+        return {"new_count": 0, "success": success, "no_update": [], "failed": failed_codes}
 
     async def _run() -> dict:
         limits = httpx.Limits(max_connections=10, max_keepalive_connections=10)
@@ -694,7 +697,7 @@ def run_pipeline(steps: list[int] | None = None) -> None:
     all_steps = ALL_STEPS
     steps = steps or sorted(all_steps)
 
-    with db_conn() as conn:
+    with db_conn():
 
         if _STEP_FUND_LIST in steps:
             logger.info("=== Step 1: 基金列表获取与过滤 ===")

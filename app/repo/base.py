@@ -24,7 +24,7 @@ def get_all_ranking_rows() -> list[dict]:
     with db_conn() as conn:
         rows = conn.execute(f"SELECT ff.code, fb.name, ff.regime, ff.rbsa_industry_1, ff.rbsa_weight_1, {feat_cols} FROM fund_features ff JOIN fund_basic fb ON fb.code = ff.code WHERE fb.is_buyable = 1 AND ff.rbsa_industry_1 IS NOT NULL AND ff.rbsa_industry_1 != ''").fetchall()
     names = ['code', 'name', 'regime', 'rbsa_industry_1', 'rbsa_weight_1'] + FEATURE_COLS
-    return [dict(zip(names, r)) for r in rows]
+    return [dict(zip(names, r, strict=False)) for r in rows]
 
 def get_available_sectors() -> list[str]:
     """可用赛道清单（真实 RBSA 行业，排除空值与兜底'其他'）。
@@ -348,7 +348,8 @@ def get_sector_momentum_medians(sector: str, date: str) -> dict | None:
             (sector, date)).fetchall()
     if len(rows) < 3:
         return None
-    med = lambda vals: (lambda v: v[len(v) // 2] if len(v) % 2 else (v[len(v) // 2 - 1] + v[len(v) // 2]) / 2)(sorted(vals))
+    def med(vals):
+        return (lambda v: v[len(v) // 2] if len(v) % 2 else (v[len(v) // 2 - 1] + v[len(v) // 2]) / 2)(sorted(vals))
     return {
         "mom_5d": med([r[0] for r in rows]),
         "mom_20d": med([r[1] for r in rows]),
@@ -386,7 +387,7 @@ def get_sector_candidates(sectors: list[str]) -> list[dict]:
     with db_conn() as conn:
         rows = conn.execute(f'SELECT ff.code, fb.name, ff.regime, ff.rbsa_industry_1, ff.rbsa_weight_1, ff.rbsa_industry_2, ff.rbsa_weight_2, ff.rbsa_industry_3, ff.rbsa_weight_3, {feat_cols} FROM fund_features ff JOIN fund_basic fb ON fb.code = ff.code WHERE fb.is_buyable = 1 AND (ff.rbsa_industry_1 IN ({placeholders})   OR ff.rbsa_industry_2 IN ({placeholders})   OR ff.rbsa_industry_3 IN ({placeholders}))', sectors + sectors + sectors).fetchall()
     names = ['code', 'name', 'regime', 'rbsa_industry_1', 'rbsa_weight_1', 'rbsa_industry_2', 'rbsa_weight_2', 'rbsa_industry_3', 'rbsa_weight_3'] + FEATURE_COLS
-    return [dict(zip(names, r)) for r in rows]
+    return [dict(zip(names, r, strict=False)) for r in rows]
 
 def get_sector_heatmap(limit: int=6) -> list[dict]:
     """行业热力图：平均 RBSA 权重与平均动量的 Top 行业（结构化行）。"""

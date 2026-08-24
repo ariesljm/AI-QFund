@@ -77,7 +77,7 @@ def save_settings(settings: dict) -> bool:
     toml_ok = False
     try:
         text = SETTINGS_PATH.read_text(encoding="utf-8")
-        for section, values in settings.items():
+        for _section, values in settings.items():
             for key, value in values.items():
                 if isinstance(value, bool):
                     line = f'{key} = {"true" if value else "false"}'

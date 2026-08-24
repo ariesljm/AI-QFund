@@ -101,9 +101,9 @@ def _call_llm(
     t0 = time.time()
     try:
         from openai import OpenAI
-    except ImportError:
+    except ImportError as e:
         _audit_write(caller, prompt, "", None, False, 0, 0)
-        raise LLMError("openai 库未安装")
+        raise LLMError("openai 库未安装") from e
 
     base_url = llm_cfg.get("base_url", "https://api.openai.com/v1")
     model = llm_cfg.get("model", "gpt-4o-mini")
@@ -150,13 +150,13 @@ def _call_llm(
             if status and isinstance(status, int) and 400 <= status < 500 and status != 429:
                 _audit_write(caller, prompt, "", None, False,
                              (time.time() - t0) * 1000, 0)
-                raise LLMError(f"LLM 客户端错误({status}): {e}")
+                raise LLMError(f"LLM 客户端错误({status}): {e}") from e
             is_last = attempt == _LLM_MAX_ATTEMPTS - 1
             if is_last:
                 _audit_write(caller, prompt, "", None, False,
                              (time.time() - t0) * 1000, 0)
                 logger.error("LLM 调用 %d 次重试均失败: %s", _LLM_MAX_ATTEMPTS, str(e)[:200], exc_info=True)
-                raise LLMError(f"LLM 调用重试耗尽: {e}")
+                raise LLMError(f"LLM 调用重试耗尽: {e}") from e
             # 暂时性错误：指数退避 + 抖动；503/429 服务端恢复慢，基础间隔更大
             base = _LLM_RETRY_BASE_SLOW if status in (503, 429) else _LLM_RETRY_BASE_FAST
             delay = min(base * (2 ** attempt) + random.uniform(0, 1), _LLM_RETRY_MAX_DELAY)

@@ -274,8 +274,8 @@ def parse_macro_summary(mn: dict | None) -> dict:
 
     news_items = [{"title": "暂无快讯", "summary": "暂无快讯"}]
     sector_gainers = sector_losers = []
-    flow_inflows = []
-    flow_outflows = []
+    flow_inflows: list[dict] = []
+    flow_outflows: list[dict] = []
     sector_reasoning = ""
     regime_label = REGIME_NEUTRAL
     if mn:
@@ -319,13 +319,13 @@ def parse_macro_summary(mn: dict | None) -> dict:
         if top_losers:
             raw_l = _re.findall(r"([^(]+)\(([^)]+)\)", top_losers)[:3]
             if raw_l:
-                l = [(n.strip("、 "), float(p.replace("%", ""))) for n, p in raw_l]
-                l.sort(key=lambda x: x[1])
-                if l:
-                    m = len(l)
+                losers = [(n.strip("、 "), float(p.replace("%", ""))) for n, p in raw_l]
+                losers.sort(key=lambda x: x[1])
+                if losers:
+                    m = len(losers)
                     sector_losers = [
                         {"name": n, "pct": f"{v:+.2f}%", "s": 1 - i / (m - 1) if m > 1 else 0.5}
-                        for i, (n, v) in enumerate(l)
+                        for i, (n, v) in enumerate(losers)
                     ]
                     sector_losers.reverse()  # 左浅右深：跌幅从小到大排列
         # 资金流向（flow_json 合并行）

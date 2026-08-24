@@ -6,8 +6,8 @@
 
 import time
 import uuid
-from datetime import datetime
 from collections.abc import Callable
+from datetime import datetime
 
 import app.repo as repo
 from app.data.foundation import daily_steps, update_industry_map

@@ -91,7 +91,7 @@ def _ema_series(navs: np.ndarray, span: int = _EMA_SPAN) -> np.ndarray:
     return ema
 
 
-def ema60_trigger_index(navs: list[float], confirm_days: int = _EMA_CONFIRM_DAYS,
+def ema60_trigger_index(navs: list[float] | np.ndarray, confirm_days: int = _EMA_CONFIRM_DAYS,
                         span: int = _EMA_SPAN) -> int | None:
     """EMA60 连续 confirm 日 < EMA 的首个触发下标；不触发/数据不足返回 None。
 
@@ -101,7 +101,7 @@ def ema60_trigger_index(navs: list[float], confirm_days: int = _EMA_CONFIRM_DAYS
     """
     if len(navs) < span + 2:
         return None
-    arr = np.asarray(navs, dtype=float)
+    arr: np.ndarray = np.asarray(navs, dtype=float)
     if np.any(arr <= 0):
         return None
     below = arr < _ema_series(arr, span)
@@ -121,7 +121,7 @@ def ema60_exit(navs: list[float], confirm_days: int = _EMA_CONFIRM_DAYS) -> tupl
     idx = ema60_trigger_index(navs, confirm_days)
     if idx is None:
         return False, ""
-    arr = np.asarray(navs, dtype=float)
+    arr: np.ndarray = np.asarray(navs, dtype=float)
     peak = float(np.max(arr[:idx + 1]))
     drawdown = (peak - arr[idx]) / peak
     return True, (
@@ -144,7 +144,7 @@ def sim_ema60_exit(daily_navs: list[float], confirm_days: int = _EMA_CONFIRM_DAY
     entry = daily_navs[0]
     if entry is None or entry <= 0:
         return None
-    arr = np.asarray(daily_navs[:max_days + 1], dtype=float)
+    arr: np.ndarray = np.asarray(daily_navs[:max_days + 1], dtype=float)
     idx = ema60_trigger_index(arr)
     if idx is not None:
         return arr[idx] / arr[0] - 1.0
@@ -197,7 +197,7 @@ def calc_hurst(series: np.ndarray, max_lag: int = 20) -> float:
         for i in range(n_blocks):
             block = series[i * lag : (i + 1) * lag]
             mean_block = np.mean(block)
-            deviations = np.cumsum(block - mean_block)
+            deviations: np.ndarray = np.cumsum(block - mean_block)
             r = np.max(deviations) - np.min(deviations)
             s = np.std(block, ddof=1) if np.std(block, ddof=1) > 0 else 1e-10
             rs_list.append(r / s)
@@ -304,7 +304,7 @@ def combo_score(score_norm: float, rel_strength: float, calmar: float, hurst: fl
             + rbsa_weight * _COMBO_RBSA_W)
 
 
-def regime_combo_weights(regime: str, cfg: dict) -> dict:
+def regime_combo_weights(regime: str, cfg: dict | domain.RankingConfig) -> dict:
     """根据大盘状态调整因子权重：BULL 偏动量+赫斯特，BEAR 偏卡玛。"""
     w_model = cfg["model_weight"]
     w_rs = cfg["rel_strength_weight"]
@@ -394,7 +394,7 @@ def calc_features(code: str,
         return {}
     dates = [r[0] for r in rows]
     navs = np.array([r[1] for r in rows], dtype=float)
-    if idx_closes is None:
+    if idx_closes is None or idx_volumes is None:
         idx_rows = repo.get_index_rows()
         idx_volumes = np.array([r[2] for r in idx_rows], dtype=float) if idx_rows else np.array([])
         idx_closes = np.array([r[1] for r in idx_rows], dtype=float) if idx_rows else np.array([])

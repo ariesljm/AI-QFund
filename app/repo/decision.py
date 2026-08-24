@@ -189,8 +189,8 @@ def get_entry_feature_snapshot(code: str, statuses: tuple[str, ...]=('HOLD', 'BU
     with db_conn() as conn:
         row = conn.execute(
             'SELECT feature_snapshot FROM recommend_log '
-            'WHERE code = ? AND status IN (%s) AND feature_snapshot IS NOT NULL '
-            'ORDER BY id DESC LIMIT 1' % ','.join('?' * len(statuses)),
+            'WHERE code = ? AND status IN ({}) AND feature_snapshot IS NOT NULL '
+            'ORDER BY id DESC LIMIT 1'.format(','.join('?' * len(statuses))),
             (code, *statuses)).fetchone()
     if not row or not row[0]:
         return None
@@ -226,9 +226,9 @@ def get_latest_monitor_event(code: str) -> dict | None:
     if not row:
         return None
     keys = ["signal", "logic_verdict", "sector_risk", "holding_risk", "detail", "date", "is_stale"]
-    return dict(zip(keys, row))
+    return dict(zip(keys, row, strict=False))
 
-def get_latest_reco_id() -> tuple[int, str]:
+def get_latest_reco_id() -> tuple[int, str | None]:
     with db_conn() as conn:
         row = conn.execute('SELECT id, created_at FROM recommend_log ORDER BY id DESC LIMIT 1').fetchone()
     return (row[0], row[1]) if row else (0, None)
@@ -284,7 +284,7 @@ def get_settled_cases_after(ss_id: int, limit: int = 300) -> list[dict]:
             "regime_label", "outcome", "outcome_note", "buy_reason", "code", "name",
             "signal", "trigger_trailing", "trigger_drift", "trigger_sector_adv",
             "logic_verdict", "sector_risk", "holding_risk", "detail"]
-    return [dict(zip(cols, r)) for r in rows]
+    return [dict(zip(cols, r, strict=False)) for r in rows]
 
 def get_pending_sector_selections() -> list[tuple]:
     """全部待结算的赛道选择，返回 (id, recommend_log_id, used_insight_ids, pool_sectors)。
@@ -433,7 +433,7 @@ def insert_recommendation(date_str: str, code: str, name: str, rank: int, score:
                  entry_nav, cand_json, row[0]))
             return row[0]
         cur = conn.execute('INSERT INTO recommend_log (recommend_date, code, name, rank, score, combo, regime, buy_reason, status, feature_snapshot, entry_nav, candidate_codes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (date_str, code, name, rank, score, combo, regime, buy_reason, status, feature_snapshot, entry_nav, cand_json))
-        return cur.lastrowid
+        return cur.lastrowid or 0
 
 def insert_sector_selection(date_str: str, log_id: int, recommended_sectors: list, risk_sectors: list, sector_reasoning: str, regime_label: str, used_insight_ids: list | None = None, pool_sectors: list | None = None) -> None:
     """写入当日赛道选择快照。used_insight_ids：选赛道时实际携带的 sector 洞察 id（Q4 反馈回路关联）。
