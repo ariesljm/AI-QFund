@@ -79,6 +79,11 @@ def sim_hard_stop(daily_navs: list[float], stop_pct: float = 0.10,
 
 _EMA_SPAN = 60
 _EMA_CONFIRM_DAYS = 2
+EMA_WARMUP_NAVS = _EMA_SPAN + _EMA_CONFIRM_DAYS
+"""EMA60 预热所需最少净值条数（span+confirm=62）。
+
+公开常量：监控趋势防线（ema60_exit）、候选池数据不足打标（mark_short_history_funds）
+共用此单一来源，避免各自硬编码阈值漂移。"""
 
 
 def _ema_series(navs: np.ndarray, span: int = _EMA_SPAN) -> np.ndarray:

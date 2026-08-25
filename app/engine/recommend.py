@@ -23,7 +23,7 @@ from app.features.calculator import apply_momentum_guard, market_state_features,
 from app.llm.client import call_llm_json, parse_llm_json
 from app.llm.macro_agent import MacroContext, build_macro_context
 from app.llm.prompts import final_pick_prompt, final_pick_system_prompt
-from app.model import get_or_train
+from app.model import get_or_train, model_version
 from app.repo import meta_keys as META
 from app.utils.log import get_logger
 from app.utils.trading_calendar import trading_day_lag  # 滞后交易日数单一来源
@@ -648,6 +648,8 @@ def run_recommendation(retrain: bool = False) -> None:
                 for h in anchor_holdings
             ],
             "holdings_report_date": repo.get_latest_holdings_date(selected["selected_code"]),
+            # R2c 版本边界：记录买入时模型版本，监控侧跨版本时跳过相对买入分比较
+            "model_version": model_version(),
         }, ensure_ascii=False)
 
         new_rows = fetch_fund_nav_incremental(selected["selected_code"])

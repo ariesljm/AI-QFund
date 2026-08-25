@@ -93,27 +93,29 @@ class TestFeatureFreshness:
 
 
 class TestMarkShortHistoryFunds:
-    """数据不足打标：首条净值距今不足 60 天 → is_buyable=0（与特征最小窗口对齐）。"""
+    """数据不足打标：净值条数 < EMA_WARMUP_NAVS(62) → is_buyable=0（与 EMA 预热/特征窗口对齐）。"""
 
     def _fresh_db(self, monkeypatch, tmp_path):
         monkeypatch.setattr(db_mod, "DB_PATH", tmp_path / "test.db")
         conn = get_db()
         return conn
 
+    @staticmethod
+    def _seed_nav_rows(conn, code: str, n: int) -> None:
+        from datetime import date, timedelta
+        conn.execute("INSERT INTO fund_basic (code, name, type, is_buyable) "
+                     "VALUES (?, ?, '股票型', 1)", (code, f"基金{code}"))
+        start = date(2026, 1, 1)
+        rows = [(code, (start + timedelta(days=i)).isoformat(), 1.0) for i in range(n)]
+        conn.executemany("INSERT INTO fund_nav (code, date, cum_nav) VALUES (?, ?, ?)", rows)
+
     def test_short_history_marked_long_kept(self, monkeypatch, tmp_path):
-        """首条净值 <60 天 → 打标；≥60 天 → 保留。"""
-        from datetime import datetime, timedelta
+        """净值 <62 条 → 打标；≥62 条 → 保留。"""
+        from app.features.calculator import EMA_WARMUP_NAVS
         conn = self._fresh_db(monkeypatch, tmp_path)
         try:
-            today = datetime.now().date()
-            old_first = (today - timedelta(days=400)).isoformat()
-            new_first = (today - timedelta(days=30)).isoformat()
-            conn.execute("INSERT INTO fund_basic (code, name, type, is_buyable) "
-                         "VALUES ('OLD', '老基金', '股票型', 1), ('NEW', '新基金', '股票型', 1)")
-            conn.execute("INSERT INTO fund_nav (code, date, cum_nav) VALUES (?, ?, 1.0)",
-                         ("OLD", old_first))
-            conn.execute("INSERT INTO fund_nav (code, date, cum_nav) VALUES (?, ?, 1.0)",
-                         ("NEW", new_first))
+            self._seed_nav_rows(conn, "OLD", EMA_WARMUP_NAVS + 8)  # 充足历史
+            self._seed_nav_rows(conn, "NEW", 5)                    # 数据不足
             conn.commit()
 
             n = mark_short_history_funds()
@@ -136,20 +138,16 @@ class TestMarkShortHistoryFunds:
         finally:
             conn.close()
 
-    def test_boundary_exactly_60_days_kept(self, monkeypatch, tmp_path):
-        """恰好满 60 天（cutoff 当日）不打标——首条净值 > cutoff 才打标。"""
-        from datetime import datetime, timedelta
+    def test_boundary_exactly_warmup_rows_kept(self, monkeypatch, tmp_path):
+        """恰好 62 条不打标（边界含等号），61 条打标。"""
+        from app.features.calculator import EMA_WARMUP_NAVS
         conn = self._fresh_db(monkeypatch, tmp_path)
         try:
-            today = datetime.now().date()
-            first = (today - timedelta(days=60)).isoformat()
-            conn.execute("INSERT INTO fund_basic (code, name, type, is_buyable) "
-                         "VALUES ('EDGE', '边界', '股票型', 1)")
-            conn.execute("INSERT INTO fund_nav (code, date, cum_nav) VALUES (?, ?, 1.0)",
-                         ("EDGE", first))
+            self._seed_nav_rows(conn, "EDGE", EMA_WARMUP_NAVS)      # 恰好达标 → 保留
+            self._seed_nav_rows(conn, "LOW", EMA_WARMUP_NAVS - 1)   # 差一条 → 打标
             conn.commit()
-            assert mark_short_history_funds() == 0
-            assert conn.execute(
-                "SELECT is_buyable FROM fund_basic WHERE code='EDGE'").fetchone()[0] == 1
+            assert mark_short_history_funds() == 1
+            rows = dict(conn.execute("SELECT code, is_buyable FROM fund_basic").fetchall())
+            assert rows == {"EDGE": 1, "LOW": 0}
         finally:
             conn.close()

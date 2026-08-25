@@ -25,6 +25,7 @@ from app.data.store import (
 )
 from app.database import DB_PATH, db_conn
 from app.features import calculator as _features
+from app.features.calculator import EMA_WARMUP_NAVS
 from app.repo import meta_keys as META
 from app.repo.base import (
     get_buyable_codes,
@@ -259,7 +260,8 @@ async def async_download_all_holdings(
         latest_quarter, len(local_latest) - len(all_codes), len(all_codes),
     )
 
-    all_codes = filter_cooldown_targets("holdings", all_codes, "持仓")
+    all_codes = filter_cooldown_targets("holdings", all_codes, "持仓",
+                                        stage_cooldown_days={"no_update": _HOLDINGS_NO_UPDATE_COOLDOWN_DAYS})
 
     with db_conn() as conn:
         semaphore = asyncio.Semaphore(concurrency)
@@ -293,6 +295,10 @@ async def async_download_all_holdings(
                         batch_rows += len(holdings)
                         funds_with_holdings += 1
                         local_latest[code] = report_date
+                    elif not holdings:
+                        # 接口确认无持仓披露（ETF联接/商品基金等）：计入失败累计，
+                        # 满 3 个周期进 30 天长冷却，不再每周反复请求
+                        no_update.append(code)
                 conn_.commit()
                 total_rows += batch_rows
                 return {"new_count": batch_rows, "success": success,
@@ -320,6 +326,7 @@ async def async_download_all_holdings(
                 targets=all_codes, batch_size=batch_size, conn=conn,
                 fetch_one=_fetch_holdings, handle_batch=_save_holdings_batch,
                 backfill_one=_backfill_holdings, primary_note="持仓拉取失败",
+                no_update_note="接口无持仓披露", no_update_guard=False,
             )
             conn.commit()
 
@@ -594,25 +601,24 @@ def _fetch_industry_map(unmapped_only: bool = False) -> list[tuple[str, str, str
 
 
 def mark_short_history_funds() -> int:
-    """数据不足打标：首条净值距今不足 60 天 → is_buyable=0。
+    """数据不足打标：自身净值条数 < EMA_WARMUP_NAVS（span60+confirm2=62）→ is_buyable=0。
 
-    与特征计算最小窗口对齐（calc_features 净值 <60 天跳过特征）：不足 60 天
-    历史的基金无法参与特征/赛道链路，留在候选池只会占用下载与计算资源；
-    与停更打标同构：基金列表每周全表重建（save_fund_list 全置 1）后自动恢复，
-    净值更新后本步骤重新按首条净值日期打标（候选/特征/训练查询均带 is_buyable=1，
-    打标自动生效）。返回打标数量。
+    与监控趋势防线预热（ema60_exit 需 span+confirm 条净值）及特征最小窗口
+    （calc_features 净值 <60 条跳过）同源对齐：原按 60 自然日判定（约仅 40 个
+    交易日），基金入池后特征被静默跳过、趋势防线无法生效。改按基金自身净值
+    条数计数，单一口径。基金列表每周全表重建后自动恢复；返回打标数量。
     """
-    fresh: list[str] = []
-    cutoff = (datetime.now().date() - timedelta(days=_MIN_NAV_DAYS)).isoformat()
-    ranges, _ = get_nav_time_state()
-    for code, (first, _last) in ranges.items():
-        if first and first > cutoff:
-            fresh.append(code)
-        if fresh:
-            mark_funds_unbuyable(fresh)
+    with db_conn() as conn:
+        rows = conn.execute(
+            "SELECT code FROM fund_basic WHERE is_buyable = 1 AND code IN ("
+            "  SELECT code FROM fund_nav GROUP BY code HAVING COUNT(*) < ?)",
+            (EMA_WARMUP_NAVS,),
+        ).fetchall()
+    fresh = [r[0] for r in rows]
     if fresh:
-        logger.info("数据不足打标: %d 只基金首条净值距今不足 %d 天，is_buyable=0",
-                    len(fresh), _MIN_NAV_DAYS)
+        mark_funds_unbuyable(fresh)
+        logger.info("数据不足打标: %d 只基金净值不足 %d 条，is_buyable=0",
+                    len(fresh), EMA_WARMUP_NAVS)
     return len(fresh)
 
 
@@ -620,13 +626,6 @@ def mark_short_history_funds() -> int:
 
 _STALE_NAV_LAG_DAYS = 10
 """停更判定阈值（交易日）：净值日期滞后全局最新超该值视为停更，退出推荐/特征/训练池。"""
-
-
-_MIN_NAV_DAYS = 60
-"""候选池最小净值跨度（天）：首条净值距今不足该值视为数据不足，退出推荐/特征/训练池。
-
-与特征计算最小窗口（calc_features 净值 <60 天跳过）对齐：
-不足 60 天历史的基金连特征都算不了，不应占用候选池与下载资源。"""
 
 
 def mark_stale_funds() -> int:
@@ -669,6 +668,10 @@ _STEP_MODEL_READY = 8    # 推荐模型就绪检查（仅日志）
 ALL_STEPS = frozenset({_STEP_FUND_LIST, _STEP_NAV, _STEP_INDEX, _STEP_HOLDINGS,
                        _STEP_RBSA_STATS, _STEP_FEATURES, _STEP_MODEL_READY})
 _HOLDINGS_INTERVAL_DAYS = 7
+_HOLDINGS_NO_UPDATE_COOLDOWN_DAYS = 30
+"""无持仓披露冷却（天）：ETF联接/商品基金等在 fundf10 本就无重仓股披露，
+拉到空属常态而非故障。季报频率下月度重试足够——满 3 个周期后进 30 天冷却，
+避免每周对千余只无披露基金反复请求；基金后续首次披露时由 mark_recovered_batch 自动恢复。"""
 
 
 def daily_steps() -> list[int]:

@@ -77,6 +77,7 @@ class TestAssembleReportDateGuard:
     def _build(self, monkeypatch, snapshot, latest_date):
         monkeypatch.setattr(mon, "_check_nav_freshness", lambda c, d: (False, ""))
         monkeypatch.setattr(mon, "_nav_since", lambda c, s: [])
+        monkeypatch.setattr(mon, "_nav_pre_entry", lambda c, d, n: [])
         monkeypatch.setattr(mon, "get_latest_features", lambda c: {"date": "2026-08-10"})
         monkeypatch.setattr(mon, "get_entry_feature_snapshot", lambda c: snapshot)
         monkeypatch.setattr(mon, "get_latest_holdings_date", lambda c: latest_date)

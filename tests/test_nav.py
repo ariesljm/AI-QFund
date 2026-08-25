@@ -477,3 +477,30 @@ class TestNoUpdateSystemicGuard:
         rows = {r["target"]: r["stage"] for r in list_failures("nav_incr")}
         assert len(rows) == 9
         assert all(stage == "no_update" for stage in rows.values())
+
+    def test_guard_exempt_via_no_update_guard_false(self, iso_db):
+        """高占比\"无数据\"属常态的下载（如持仓）可豁免护栏：照常记 no_update 长冷却。"""
+        targets = [f"{i:06d}" for i in range(101)]
+        no_update = set(targets[:90])
+
+        async def fetch_one(session_, item):
+            return item, None, False
+
+        def handle_batch(conn_, results):
+            return {
+                "new_count": 0,
+                "success": {c for c, _, f in results if c not in no_update},
+                "no_update": [c for c, _, f in results if c in no_update],
+                "failed": [],
+            }
+
+        asyncio.run(run_batched_fetch(
+            session=None, fetch_type="holdings", label="持仓",
+            targets=targets, batch_size=100,
+            fetch_one=fetch_one, handle_batch=handle_batch,
+            no_update_note="接口无持仓披露", no_update_guard=False,
+        ))
+
+        rows = {r["target"]: r["stage"] for r in list_failures("holdings")}
+        assert len(rows) == 90
+        assert all(stage == "no_update" for stage in rows.values())  # 未被误判为 primary

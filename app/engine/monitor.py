@@ -21,7 +21,7 @@ from typing import Any
 import numpy as np
 
 from app import domain
-from app.features.calculator import ema60_exit  # R1 判定单一来源（回测模拟共用）
+from app.features.calculator import EMA_WARMUP_NAVS, ema60_exit  # R1 判定单一来源（回测模拟共用）
 from app.llm.client import LLMError, call_llm_json
 from app.llm.context import anchor_holdings_text, build_holdings_text, rbsa_distribution
 from app.llm.prompts import monitor_logic_prompt
@@ -58,6 +58,9 @@ _NAV_STALE_TRADE_DAYS = 3  # 净值落后最近交易日超过该数视为陈旧
 _MODEL_EXIT_CONFIRM = 3    # R2c 模型序列：连续 N 个交易日 score<0 才 EXIT（跨过 7 日惩罚赎回费率带）
 _MODEL_SERIES_N = 5        # 确认期查询的序列长度上限
 _WARNING_ESCALATE_DAYS = 20  # 阶段三：WARNING 持续 N 个监控日未缓解 → 升级 EXIT
+_UPSIDE_RATE_LIMIT_SIGNALS = 10  # R2d 加仓候选限频：近期已发 BUY_MORE 则不重复提出
+_R4_VALID_VERDICTS = {"维持", "断裂"}
+_R4_VALID_HINTS = {domain.SIGNAL_HOLD, domain.SIGNAL_BUY_MORE, domain.SIGNAL_WARNING}
 _HOLD_STATES = domain.HOLDING_STATES
 
 
@@ -100,7 +103,8 @@ class DefenseContext:
                  holdings_text: str = "", rbsa_distribution: str = "",
                  available_sectors: list[str] | None = None,
                  latest_report_date: str | None = None,
-                 r4_no_new_data: bool = False):
+                 r4_no_new_data: bool = False,
+                 recent_signals: list[tuple] | None = None):
         self.code = code
         self.buy_reason = buy_reason
         self.sector = sector
@@ -125,6 +129,9 @@ class DefenseContext:
         self.r4_logic: dict | None = None
         # P2-9：是否已预计算（区分"未预计算（需现场调用）"与"预计算失败（r4_logic=None）"）
         self.r4_precomputed: bool = False
+        # R2d 加仓候选限频数据源：近期监控信号 (date, signal) 序列（run_monitor 装配；
+        # None=未装配，规则跳过限频检查——单规则测试/旧构造不受影响）
+        self.recent_signals = recent_signals
 
 
 class DefenseRule:
@@ -264,6 +271,39 @@ class SectorAdvantageRule(DefenseRule):
         return None
 
 
+class ModelUpsideRule(DefenseRule):
+    """R2d：模型上行加仓候选——量化层唯一的正向信号。
+
+    对称设计：R2c 在模型分跌破买入分 50% 时警惕；本规则在当前预测分仍为正、
+    较买入分上涨超 50% 且 EMA60 趋势健康时提出 BUY_MORE 候选。
+    风控优先级合并保证任何 WARNING/EXIT 存在时候选被压制（压制在 detail 可见，便于复盘）。
+    阈值为暂定值（对称于 R2c 的 -50% 警戒），待回测验证后校准。
+    限频：近期已发 BUY_MORE 则不重复提出，避免逐日刷屏并反复中断 WARNING 升级序列。
+    """
+
+    severity = 33
+    short_circuit = False
+
+    def check(self, ctx: DefenseContext) -> DefenseResult | None:
+        series = ctx.scores_series
+        buy_score = ctx.entry_score
+        if not series or buy_score is None:
+            return None
+        today_score = float(series[0][1])
+        # 显著走高：当前分仍为正且较买入分上涨超 50%
+        if not (today_score > domain.MIN_PREDICTED_ALPHA and today_score > 1.5 * buy_score):
+            return None
+        exit_triggered, _ = ema60_exit(ctx.navs)
+        if exit_triggered:
+            return None
+        if any(s == domain.SIGNAL_BUY_MORE for _, s in (ctx.recent_signals or [])):
+            return None  # 限频：近期已提出过加仓候选
+        return DefenseResult(
+            signal=domain.SIGNAL_BUY_MORE,
+            reason=f"模型信号显著走强: 当前预测收益 {today_score:.4f} > 买入 {buy_score:.4f} 的150%，且趋势健康",
+        )
+
+
 class ModelSignalRule(DefenseRule):
     """R2c：模型信号序列退出（阶段二）——预测 20 日绝对收益转负确认后 EXIT。
 
@@ -271,7 +311,8 @@ class ModelSignalRule(DefenseRule):
     确认期（monitor_scores 序列，跨日状态）:
       - 连续 _MODEL_EXIT_CONFIRM 日 score<0 → EXIT（跨过 7 日惩罚赎回费率带）
       - 单日转负 → WARNING；相对买入分下降 >50% → WARNING
-    模型版本边界：确认期内模型重训（版本变化）则重置连续计数（跨版本分数不可比）。
+    模型版本边界：确认期内模型重训（版本变化）则重置连续计数（跨版本分数不可比）；
+    相对买入分比较同理——买入时快照记录了模型版本且与当前不一致时跳过该比较。
     """
 
     severity = 35
@@ -305,10 +346,14 @@ class ModelSignalRule(DefenseRule):
                 detail += f"（买入时 {buy_score:.4f}）"
             return DefenseResult(signal=domain.SIGNAL_WARNING, reason=detail)
         if buy_score is not None and today_score < 0.5 * buy_score:
-            return DefenseResult(
-                signal=domain.SIGNAL_WARNING,
-                reason=f"模型信号相对买入分下降: 当前{today_score:.4f} < 买入{buy_score:.4f}的50%",
-            )
+            # 相对买入分比较仅在可确认同版本时进行：买入分由推荐时模型计算，模型重训后
+            # 分数分布整体位移，跨版本直接比会失真（旧仓位快照无版本记录，保持原行为）
+            entry_ver = (ctx.entry_snapshot or {}).get("model_version")
+            if entry_ver is None or entry_ver == model_version():
+                return DefenseResult(
+                    signal=domain.SIGNAL_WARNING,
+                    reason=f"模型信号相对买入分下降: 当前{today_score:.4f} < 买入{buy_score:.4f}的50%",
+                )
         return None
 
 
@@ -340,6 +385,15 @@ class LogicVerificationRule(DefenseRule):
         if logic is None:
             ctx.r4_skipped = True
             return None
+        # 枚举校验：verdict 必填且合法；hint 缺失视为无提示（自然落入 HOLD），
+        # 但出现非法值（如旧别名 ADD/幻觉文本）时按解析失败处理——静默降级 HOLD 会掩盖异常输出
+        verdict = logic.get("logic_verdict")
+        hint = logic.get("signal_hint")
+        if verdict not in _R4_VALID_VERDICTS or (hint is not None and hint not in _R4_VALID_HINTS):
+            logger.warning("R4 输出枚举非法（verdict=%r, hint=%r），按解析失败跳过该防线: %s",
+                           verdict, hint, ctx.code)
+            ctx.r4_skipped = True
+            return None
         if logic["logic_verdict"] == "断裂":
             return DefenseResult(signal=domain.SIGNAL_EXIT, reason=f"LLM逻辑证伪: {logic['reason']}")
         if logic["signal_hint"] == domain.SIGNAL_BUY_MORE:
@@ -359,6 +413,30 @@ class LogicVerificationRule(DefenseRule):
 
 def _nav_since(code: str, since_date: str) -> list[float]:
     return [r[1] for r in nav.series(code, since=since_date)]
+
+
+def _nav_pre_entry(code: str, until_date: str, limit: int) -> list[tuple]:
+    """入场前净值行（date, cum_nav）升序，至多 limit 条——预热补齐 seam（测试可替换）。"""
+    return nav.series(code, until=until_date, limit=limit)
+
+
+def _nav_for_trend(code: str, reco_date: str) -> list[float]:
+    """趋势判定序列：入场后净值 + 入场前历史预热补齐至 EMA_WARMUP_NAVS 条。
+
+    R1/R2d 的 ema60_exit 需 span60+confirm2=62 条净值；纯入场后序列让每个仓位
+    都有约 3 个月趋势防线空窗，而本系统典型持仓周期仅 20 个交易日量级
+    （FORWARD_DAYS/WARNING 升级窗口），R1 实际形同虚设。用入场前历史预热 EMA，
+    防线买入首日即生效。代价：买入时已处于 EMA60 下方 → 入场 2 日内即 EXIT
+    （风控优先，可接受）。候选池门槛保证基金至少有 EMA_WARMUP_NAVS 条净值。
+    """
+    post = _nav_since(code, reco_date)
+    missing = EMA_WARMUP_NAVS - len(post)
+    if missing <= 0:
+        return post
+    # 边界行可能与入场日重叠（series 的 until 含 reco_date 当日），多取一条后按日期去重
+    pre = [(d, v) for d, v in _nav_pre_entry(code, reco_date, missing + 1)
+           if d < reco_date][-missing:]
+    return [v for _, v in pre] + post
 
 
 # ── 净值新鲜度护栏 ──
@@ -518,11 +596,14 @@ def _warning_escalate(code: str) -> bool:
     """阶段三：WARNING 持续 _WARNING_ESCALATE_DAYS 个监控日且无缓解 → 升级 EXIT。
 
     缓解 = 任意非 WARNING 信号（HOLD/EXIT）中断连续序列；序列不足天数不升级。
+    当日信号尚未落库：此前 _WARNING_ESCALATE_DAYS - 1 个监控日全为 WARNING，
+    加上当日即满足"连续 N 个监控日未缓解"（修复原实现要求前 20 天 + 当天共 21 日的 off-by-one）。
     """
-    rows = get_recent_monitor_signals(code, _WARNING_ESCALATE_DAYS)
-    if len(rows) < _WARNING_ESCALATE_DAYS:
+    prior_days = _WARNING_ESCALATE_DAYS - 1
+    rows = get_recent_monitor_signals(code, prior_days)
+    if len(rows) < prior_days:
         return False
-    return all(s == domain.SIGNAL_WARNING for _, s in rows[: _WARNING_ESCALATE_DAYS])
+    return all(s == domain.SIGNAL_WARNING for _, s in rows)
 
 
 def _apply_defense_chain(ctx: DefenseContext,
@@ -537,6 +618,7 @@ def _apply_defense_chain(ctx: DefenseContext,
             StyleDriftRule(),
             SectorAnchorRule(),
             SectorAdvantageRule(),
+            ModelUpsideRule(),
             ModelSignalRule(),
             LogicVerificationRule(),
         ]
@@ -545,6 +627,7 @@ def _apply_defense_chain(ctx: DefenseContext,
     final_signal = "HOLD"
     reasons = []
     trailing = drift = sector_adv = False
+    buy_more_suggested = False  # 任一规则提出过加仓候选（最终被更高优先级信号压制时在 detail 可见）
 
     for rule in rules:
         result = rule.check(ctx)
@@ -559,6 +642,8 @@ def _apply_defense_chain(ctx: DefenseContext,
             return (domain.SIGNAL_EXIT, result.reason, trailing, drift, sector_adv)
         # 显式信号优先级合并（EXIT > WARNING > BUY_MORE > HOLD），替代 last-wins：
         # 高 severity 规则的加仓建议不再误覆盖低 severity 规则的警惕信号
+        if result.signal == domain.SIGNAL_BUY_MORE:
+            buy_more_suggested = True
         if domain.SIGNAL_PRIORITY[result.signal] > domain.SIGNAL_PRIORITY[final_signal]:
             final_signal = result.signal
 
@@ -567,6 +652,9 @@ def _apply_defense_chain(ctx: DefenseContext,
     # （误读为系统异常）；HOLD 是正常持有状态，需给出可读说明。
     if final_signal == domain.SIGNAL_HOLD and not detail:
         detail = "未触发任何异常信号，维持持有"
+    # 加仓压制可见化：候选被 WARNING/EXIT 压下时显式留痕，否则"错过"的加仓建议无法事后复盘
+    if buy_more_suggested and final_signal != domain.SIGNAL_BUY_MORE:
+        detail += f"（加仓建议被{final_signal}压制）"
     return (final_signal, detail, trailing, drift, sector_adv)
 
 
@@ -624,7 +712,7 @@ def _build_defense_context(row: dict, date_str: str, trade_dates: list[str],
         logger.warning("  %s（数据告警，不改持仓状态，不计入信号升级）", stale_reason)
         return None
 
-    navs = _nav_since(code_str, reco_date)
+    navs = _nav_for_trend(code_str, reco_date)
     # 一次性装配基金快照：防线 check 只消费 ctx（真纯函数），不再各自直读 DB
     cur_feat = get_latest_features(code_str)
     entry_snapshot = get_entry_feature_snapshot(code_str)
@@ -688,6 +776,8 @@ def run_monitor() -> None:
     # 阶段 C：串行执行防线链 + 信号处理 + 写库（规则层纯函数，结果由阶段 B 预取）
     for ctx in ctxs:
         code_str = ctx.code
+        # R2d 加仓候选限频数据源：近期监控信号序列（排除数据告警，与升级序列同口径）
+        ctx.recent_signals = get_recent_monitor_signals(code_str, _UPSIDE_RATE_LIMIT_SIGNALS)
         signal, detail, trailing, drift, sector_adv = _apply_defense_chain(ctx)
         # P0-1：R4 证伪跳过（LLM 不可用/解析失败）时显式记录，信号仍由规则层产出
         if ctx.r4_skipped:

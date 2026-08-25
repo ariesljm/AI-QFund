@@ -7,8 +7,10 @@ from app.engine import monitor as monitor_mod
 from app.engine.monitor import DefenseContext, ModelSignalRule
 
 
-def _make_ctx(code: str = "001428", scores_series=None, entry_score=None) -> DefenseContext:
-    return DefenseContext(code=code, scores_series=scores_series or [], entry_score=entry_score)
+def _make_ctx(code: str = "001428", scores_series=None, entry_score=None,
+              entry_snapshot: dict | None = None) -> DefenseContext:
+    return DefenseContext(code=code, scores_series=scores_series or [], entry_score=entry_score,
+                          entry_snapshot=entry_snapshot)
 
 
 def _seq(*scores, ver="2026-08-06|t"):
@@ -72,3 +74,23 @@ class TestModelSignalRule:
             _make_ctx(scores_series=_seq(-0.02, -0.01, -0.03)), rules=[ModelSignalRule()])
         assert signal == "EXIT"
         assert "连续3日转负" in detail
+
+    def test_halved_warning_skipped_across_model_versions(self):
+        """买入分由旧版本模型计算 → 相对比较跨版本失真，跳过该警告。"""
+        ctx = _make_ctx(scores_series=_seq(0.02), entry_score=0.10,
+                        entry_snapshot={"model_version": "旧版本v0"})
+        assert ModelSignalRule().check(ctx) is None
+
+    def test_halved_warning_kept_same_model_version(self):
+        """快照记录的版本 == 当前版本 → 相对比较照常。"""
+        from app.model import model_version
+        ctx = _make_ctx(scores_series=_seq(0.02), entry_score=0.10,
+                        entry_snapshot={"model_version": model_version()})
+        result = ModelSignalRule().check(ctx)
+        assert result is not None and result.signal == "WARNING"
+
+    def test_halved_warning_kept_for_legacy_position_without_version(self):
+        """旧仓位快照无 model_version 记录 → 保持原行为（照常比较）。"""
+        ctx = _make_ctx(scores_series=_seq(0.02), entry_score=0.10, entry_snapshot={})
+        result = ModelSignalRule().check(ctx)
+        assert result is not None and "相对买入分下降" in result.reason

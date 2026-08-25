@@ -60,6 +60,7 @@ async def run_batched_fetch(
     backfill_one=None,
     conn=None,
     no_update_note: str = "接口确认无新数据",
+    no_update_guard: bool = True,
     primary_note: str = "拉取失败",
 ) -> dict:
     """并发批次下载通用骨架：semaphore 并发 → 熔断 → 失败/恢复记录 → 多轮补查。
@@ -114,9 +115,11 @@ async def run_batched_fetch(
         mark_recovered_batch(fetch_type, sorted(success))
 
     # 确认无新数据的目标：默认记录失败（累计冷却次数），不计入熔断失败率、不触发补查；
-    # 大批量下无新数据占比超过熔断阈值时视为系统性接口异常，改按拉取失败处理并进入补查
+    # 大批量下无新数据占比超过熔断阈值时视为系统性接口异常，改按拉取失败处理并进入补查。
+    # 高占比"无数据"属常态的下载（如持仓：ETF联接/商品基金本就无重仓披露）可用
+    # no_update_guard=False 豁免护栏，让它们正常进入长冷却而非被误判为接口异常。
     if no_update:
-        if (len(targets) >= NO_UPDATE_GUARD_MIN_TARGETS
+        if (no_update_guard and len(targets) >= NO_UPDATE_GUARD_MIN_TARGETS
                 and len(no_update) / len(targets) > CIRCUIT_BREAK_FAIL_RATE):
             logger.error(
                 "%s：%d/%d 个目标确认无新数据，占比超 %.0f%%——疑似接口批量异常"

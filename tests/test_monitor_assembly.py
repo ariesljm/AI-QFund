@@ -26,6 +26,7 @@ class TestAssembleContext:
     def test_basic_assembly(self, monkeypatch):
         monkeypatch.setattr(mon, "_check_nav_freshness", lambda c, d: (False, ""))
         monkeypatch.setattr(mon, "_nav_since", lambda c, s: [1.0, 1.1])
+        monkeypatch.setattr(mon, "_nav_pre_entry", lambda c, d, n: [])
         monkeypatch.setattr(mon, "get_latest_features", lambda c: {"date": "2026-08-10", "rbsa_industry_1": "半导体"})
         monkeypatch.setattr(mon, "get_entry_feature_snapshot", lambda c: {"sector": "半导体"})
         monkeypatch.setattr(mon, "_entry_rbsa", lambda c, d, s: ("半导体", 30.0))
@@ -56,6 +57,7 @@ class TestAssembleContext:
         order = []
         monkeypatch.setattr(mon, "_check_nav_freshness", lambda c, d: (False, ""))
         monkeypatch.setattr(mon, "_nav_since", lambda c, s: [])
+        monkeypatch.setattr(mon, "_nav_pre_entry", lambda c, d, n: [])
         monkeypatch.setattr(mon, "get_latest_features", lambda c: {"date": "2026-08-10"})
         monkeypatch.setattr(mon, "get_entry_feature_snapshot", lambda c: {})
         monkeypatch.setattr(mon, "_entry_rbsa", lambda c, d, s: (None, None))
@@ -81,6 +83,7 @@ class TestAssembleContext:
         """当日无模型分（无特征/无模型）→ 不落库、序列照取。"""
         monkeypatch.setattr(mon, "_check_nav_freshness", lambda c, d: (False, ""))
         monkeypatch.setattr(mon, "_nav_since", lambda c, s: [])
+        monkeypatch.setattr(mon, "_nav_pre_entry", lambda c, d, n: [])
         monkeypatch.setattr(mon, "get_latest_features", lambda c: None)
         monkeypatch.setattr(mon, "get_entry_feature_snapshot", lambda c: {})
         monkeypatch.setattr(mon, "_entry_rbsa", lambda c, d, s: (None, None))
@@ -114,6 +117,7 @@ class TestAssembleContext:
         called = []
         monkeypatch.setattr(mon, "_check_nav_freshness", lambda c, d: (False, ""))
         monkeypatch.setattr(mon, "_nav_since", lambda c, s: [])
+        monkeypatch.setattr(mon, "_nav_pre_entry", lambda c, d, n: [])
         monkeypatch.setattr(mon, "get_latest_features", lambda c: {"date": "2026-08-10"})
         monkeypatch.setattr(mon, "get_entry_feature_snapshot", lambda c: {})
         monkeypatch.setattr(mon, "_entry_rbsa", lambda c, d, s: (None, None))
@@ -129,3 +133,59 @@ class TestAssembleContext:
         ctx = mon._build_defense_context(_row(sector=None), "2026-08-10", ["2026-08-10"], [])
         assert ctx is not None
         assert called == []
+
+
+# ───────────────────────────────────────────
+# _nav_for_trend — 入场前历史预热补齐（消除新仓位趋势防线空窗）
+# ───────────────────────────────────────────
+
+class TestNavForTrend:
+    def test_sufficient_post_rows_no_prefetch(self, monkeypatch):
+        """入场后净值已 ≥ 预热条数 → 不查入场前历史。"""
+        called = []
+        monkeypatch.setattr(mon, "_nav_since", lambda c, s: [1.0] * mon.EMA_WARMUP_NAVS)
+        monkeypatch.setattr(mon, "_nav_pre_entry",
+                            lambda c, d, n: called.append((c, d, n)))
+        navs = mon._nav_for_trend("A", "2026-08-01")
+        assert len(navs) == mon.EMA_WARMUP_NAVS
+        assert called == []
+
+    def test_prepends_pre_entry_history(self, monkeypatch):
+        """入场后不足 → 用入场前历史补齐，且排除与入场日重叠的边界行。"""
+        post = [2.0, 2.1]
+        monkeypatch.setattr(mon, "_nav_since", lambda c, s: list(post))
+
+        from datetime import date, timedelta
+        start = date(2026, 5, 1)
+        pre_rows = [( (start + timedelta(days=i)).isoformat(), 1.0 + i * 0.001)
+                    for i in range(70)]
+        # 最后一条是入场日当天（until 含当日）→ 必须被去重排除
+        pre_rows.append(("2026-07-31", 1.99))
+        fetched = []
+        def fake_pre(code, until, limit):
+            fetched.append(limit)
+            return pre_rows[-(limit):]
+        monkeypatch.setattr(mon, "_nav_pre_entry", fake_pre)
+
+        navs = mon._nav_for_trend("A", "2026-07-31")
+        assert fetched == [mon.EMA_WARMUP_NAVS - len(post) + 1]  # 多取一条用于去重
+        assert len(navs) == mon.EMA_WARMUP_NAVS
+        assert navs[-len(post):] == post  # 入场后序列完整保留在尾部
+
+    def test_fund_with_short_total_history_returns_all(self, monkeypatch):
+        """总历史都不足预热条数 → 返回全部可得净值（R1 保持不判定，不报错）。"""
+        monkeypatch.setattr(mon, "_nav_since", lambda c, s: [2.0])
+        monkeypatch.setattr(mon, "_nav_pre_entry",
+                            lambda c, d, n: [("2026-07-30", 1.9)])
+        navs = mon._nav_for_trend("A", "2026-07-31")
+        assert navs == [1.9, 2.0]
+
+    def test_r1_armed_from_entry_day(self):
+        """端到端：买入即处于 EMA60 下方 → R1 首日触发（原逻辑需等 62 个交易日）。"""
+        from app.engine.monitor import DefenseContext, EmaTrendRule
+        # 62 条：前 60 条缓慢上行至 1.06（EMA ≈ 其下），末 2 条跌破至 0.95/0.94
+        warm = [1.0 + i * 0.001 for i in range(60)]
+        navs = warm + [0.95, 0.94]
+        ctx = DefenseContext(code="A", navs=navs)
+        result = EmaTrendRule().check(ctx)
+        assert result is not None and result.signal == "EXIT"
