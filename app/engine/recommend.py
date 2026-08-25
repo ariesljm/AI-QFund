@@ -179,6 +179,11 @@ def _build_candidate_record(f: dict) -> dict:
         "score": float(f["score"]), "combo": float(f["combo"]),
         "hurst_60d": float(f["hurst_60d"]), "momentum_20d": float(f["momentum_20d"]),
         "calmar": float(f["calmar"]),
+        # 抗跌性四件套：LLM 终选素材用（带口径白话展示在 final_pick_prompt），不进模型
+        "capture_up": round(float(f.get("capture_up", 1.0)), 2),
+        "capture_down": round(float(f.get("capture_down", 1.0)), 2),
+        "downside_vol": round(float(f.get("downside_vol", 0.0)), 4),
+        "drawdown_60d": round(float(f.get("drawdown_60d", 0.0)), 1),
         "sector_rel_momentum": round(float(f.get("sector_rel_momentum", 0)), 1),
         "sector_rel_calmar": round(float(f.get("sector_rel_calmar", 0)), 1),
     }
@@ -249,6 +254,10 @@ def rank_funds(model: lgb.Booster) -> list[dict]:
             "score": float(r["score"]), "combo": float(r["combo"]),
             "hurst_60d": float(r["hurst_60d"]), "momentum_20d": float(r["momentum_20d"]),
             "calmar": float(r["calmar"]),
+            "capture_up": round(float(r.get("capture_up", 1.0)), 2),
+            "capture_down": round(float(r.get("capture_down", 1.0)), 2),
+            "downside_vol": round(float(r.get("downside_vol", 0.0)), 4),
+            "drawdown_60d": round(float(r.get("drawdown_60d", 0.0)), 1),
             "rbsa_industry_1": r.get("rbsa_industry_1", ""),
             "rbsa_weight_1": float(r.get("rbsa_weight_1", 0.0) or 0.0),
         })

@@ -244,6 +244,23 @@ def final_pick_prompt(
             f"卡玛: {c['calmar']:.2f} | "
             f"Hurst: {c['hurst_60d']:.2f} | 组合分: {c['combo']:.3f}"
         )
+        # 抗跌性白话展示（每个裸数字必须带口径与好坏方向，参考 fund-guy-skill 方法论）
+        cu = c.get("capture_up")
+        cd = c.get("capture_down")
+        if cu is not None and cd is not None:
+            lines.append(
+                f"  抗跌性: 大盘涨1%时它涨{float(cu):.2f}%（上行捕获，越高越好） | "
+                f"大盘跌1%时它跌{float(cd):.2f}%（下行捕获，越低越好，<1=比大盘抗跌）"
+            )
+        dvol = c.get("downside_vol")
+        dd60 = c.get("drawdown_60d")
+        risk_parts = []
+        if dvol is not None:
+            risk_parts.append(f"年化下行波动{float(dvol)*100:.1f}%")
+        if dd60 is not None:
+            risk_parts.append(f"近60日最大回撤{abs(float(dd60)):.1f}%（越小越好）")
+        if risk_parts:
+            lines.append(f"  风险面: {' | '.join(risk_parts)}")
         ind_parts = []
         for j in range(1, 4):
             ind = c.get(f"rbsa_industry_{j}", "")
@@ -281,6 +298,10 @@ def final_pick_prompt(
         "1. 基金所在赛道是否被宏观定论认可",
         "2. 赛道内相对强弱和量化指标",
         "3. 是否重复历史教训中提到的失败模式",
+        "4. 辨析收益来源（β/α）：候选的涨幅可能只是赛道整体上涨（行业β白送的），",
+        "   也可能是它自己跑赢同行（真本事α）。decision_logic 必须明确区分两者：",
+        "   引用「偏离」（基金20日动量−赛道同行中位数）判断——接近0说明它只是吃了行业行情，",
+        "   明显为正才是相对同行的超额；再结合抗跌性/风险面判断上涨质量。禁止把行业β当成基金能力。",
         "",
         "【输出两个理由字段，职责分离（P2-7 决策与文案解耦）】",
         '  - "decision_logic"：内部决策依据（给系统审计用），可以用专业术语（RBSA/动量/卡玛等），'
