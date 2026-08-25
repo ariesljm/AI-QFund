@@ -48,6 +48,8 @@ Thumbs.db
 # 测试
 test_basic.py
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # 模型文件（运行时生成）
 models/
