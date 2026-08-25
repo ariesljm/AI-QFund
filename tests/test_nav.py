@@ -15,6 +15,7 @@ import pytest
 
 import app.database as db_mod
 from app.data import nav
+from app.data.ingest import run_batched_fetch
 from app.data.store import list_failures, cooldown_targets
 
 
@@ -379,3 +380,100 @@ class TestIncrementalNewCount:
         self._seed("000002", "2026-07-31")
         n = self._run(monkeypatch, ["2026-07-31"])
         assert n == 0
+
+
+# ============================================================
+# _parse_lsjz_page / 增量 — 假空（反爬垃圾响应）必须按拉取失败处理
+# ============================================================
+
+class TestLsjzGarbageResponse:
+    """回归：反爬/限流返回的空 body、拦截页与\"接口确认无数据\"不可混为一谈。
+
+    修复前：_parse_lsjz_page 解析失败返回 [],0 → 被记为 no_update，
+    健康基金连续 3 个周期后误入 7 天长冷却，造成全库静默断档。
+    """
+
+    def test_parse_garbage_raises(self):
+        """空 body/HTML 拦截页/非 JSON 文本应抛 ValueError，而非静默返回空。"""
+        for garbage in ["", "  ", "<html>请开启 JavaScript</html>", "jQuery(", "null"]:
+            with pytest.raises(ValueError):
+                nav._parse_lsjz_page(garbage)
+
+    def test_parse_valid_empty_is_not_error(self):
+        """合法 JSON 且 TotalCount=0 才是真·无数据，返回空列表不抛错。"""
+        text = 'jQuery({"Data":{"LSJZList":[]},"TotalCount":0})'
+        assert nav._parse_lsjz_page(text) == ([], 0)
+
+    def test_garbage_response_recorded_as_primary_failure(self, iso_db, monkeypatch):
+        """lsjz 返回垃圾响应 → 记为 primary 拉取失败（短冷却+补查），不是 no_update。"""
+        with db_mod.db_conn() as conn:
+            conn.execute(
+                "INSERT INTO fund_basic (code, name, type, is_buyable) VALUES (?, ?, ?, ?)",
+                ("000099", "测试基金", "混合型", 1),
+            )
+            conn.execute(
+                "INSERT INTO fund_nav (code, date, cum_nav) VALUES ('000099', '2026-07-30', 1.2)")
+
+        async def fake_probe(session, headers):
+            return "2026-07-31"
+
+        async def fake_fetch(session, url, timeout=15, headers=None):
+            if "lsjz" in url:
+                return _FakeResp("")  # 反爬空 body
+            return _FakeResp("var ACWorthTrend = [];")
+
+        monkeypatch.setattr(nav, "_probe_lsjz_latest", fake_probe)
+        monkeypatch.setattr(nav, "fetch_async", fake_fetch)
+        asyncio.run(nav.async_update_nav_incremental(concurrency=1))
+
+        rows = {r["target"]: r for r in list_failures("nav_incr")}
+        assert rows["000099"]["stage"] == "primary"
+        assert rows["000099"]["attempts"] == 1
+
+
+# ============================================================
+# run_batched_fetch — 大批量"无新数据"占比过高时按系统性故障处理
+# ============================================================
+
+class TestNoUpdateSystemicGuard:
+    """回归：大批量下载中确认无新数据的占比超过熔断阈值 → 疑似接口批量异常
+    （如反爬返回空响应被解析为无数据），改按拉取失败记录，避免健康基金
+    误入长冷却；小批量维持原语义。"""
+
+    @staticmethod
+    def _run(targets: list[str], no_update_count: int) -> None:
+        no_update = set(targets[:no_update_count])
+
+        async def fetch_one(session_, item):
+            return item, None, False
+
+        def handle_batch(conn_, results):
+            return {
+                "new_count": 0,
+                "success": {c for c, _, f in results if c not in no_update and not f},
+                "no_update": [c for c, _, f in results if c in no_update],
+                "failed": [c for c, _, f in results if f],
+            }
+
+        asyncio.run(run_batched_fetch(
+            session=None, fetch_type="nav_incr", label="增量净值",
+            targets=targets, batch_size=100,
+            fetch_one=fetch_one, handle_batch=handle_batch,
+            no_update_note="接口确认无新数据", primary_note="增量净值拉取失败",
+        ))
+
+    def test_large_batch_mostly_no_update_treated_as_systemic(self, iso_db):
+        targets = [f"{i:06d}" for i in range(101)]
+        self._run(targets, no_update_count=90)  # 89% 无新数据 > 熔断阈值 50%
+
+        rows = {r["target"]: r["stage"] for r in list_failures("nav_incr")}
+        assert len(rows) == 90  # 仅无新数据的 90 只记录失败，其余 11 只按成功清除
+        assert all(stage == "primary" for stage in rows.values())  # 全部按拉取失败记录
+
+    def test_small_batch_no_update_keeps_original_semantics(self, iso_db):
+        targets = [f"{i:06d}" for i in range(10)]
+        self._run(targets, no_update_count=9)  # 占比同样 90%，但小批量不触发护栏
+
+        rows = {r["target"]: r["stage"] for r in list_failures("nav_incr")}
+        assert len(rows) == 9
+        assert all(stage == "no_update" for stage in rows.values())

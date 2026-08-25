@@ -23,6 +23,11 @@ logger = get_logger("data_ingest")
 # 熔断阈值：批次失败率超过该比例，疑似接口故障，提前中止避免白耗请求
 CIRCUIT_BREAK_FAIL_RATE = 0.5
 
+# 系统性"无新数据"护栏最小目标数：大批量下载中确认无新数据的占比超过熔断阈值时，
+# 疑似接口批量异常（如反爬返回空响应被解析为无数据），改按拉取失败处理，
+# 避免健康基金被误判停更、误入长冷却造成静默断档。小批量（补查、测试）不适用。
+NO_UPDATE_GUARD_MIN_TARGETS = 100
+
 
 def filter_cooldown_targets(fetch_type: str, targets: list, label: str,
                             stage_cooldown_days: dict[str, int] | None = None) -> list:
@@ -108,12 +113,22 @@ async def run_batched_fetch(
     if success:
         mark_recovered_batch(fetch_type, sorted(success))
 
-    # 确认无新数据的目标：记录失败（累计冷却次数），不计入熔断失败率、不触发补查
+    # 确认无新数据的目标：默认记录失败（累计冷却次数），不计入熔断失败率、不触发补查；
+    # 大批量下无新数据占比超过熔断阈值时视为系统性接口异常，改按拉取失败处理并进入补查
     if no_update:
-        for item in no_update:
-            record_failure(fetch_type, item, no_update_note, stage="no_update")
-        logger.info("%s：%d 个目标确认无新数据，已累计失败次数（满 3 次进入冷却）",
-                    label, len(no_update))
+        if (len(targets) >= NO_UPDATE_GUARD_MIN_TARGETS
+                and len(no_update) / len(targets) > CIRCUIT_BREAK_FAIL_RATE):
+            logger.error(
+                "%s：%d/%d 个目标确认无新数据，占比超 %.0f%%——疑似接口批量异常"
+                "（如反爬返回空响应），改按拉取失败处理",
+                label, len(no_update), len(targets), CIRCUIT_BREAK_FAIL_RATE * 100,
+            )
+            all_failed.extend(no_update)
+        else:
+            for item in no_update:
+                record_failure(fetch_type, item, no_update_note, stage="no_update")
+            logger.info("%s：%d 个目标确认无新数据，已累计失败次数（满 3 次进入冷却）",
+                        label, len(no_update))
 
     # 失败目标：记录并多轮补查
     if all_failed:

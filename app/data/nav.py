@@ -25,14 +25,19 @@ _LSJZ_MAX_PAGES = 400
 
 
 def _parse_lsjz_page(text: str) -> tuple[list[dict], int]:
-    """解析单页 lsjz 响应 → (navs, total_count)，兼容 jQuery 包裹与裸 JSON。"""
+    """解析单页 lsjz 响应 → (navs, total_count)，兼容 jQuery 包裹与裸 JSON。
+
+    响应不含合法 JSON（空 body/反爬拦截页）时抛 ValueError——这类"假空"
+    必须按拉取失败处理（短冷却+补查），不能与"接口确认无数据"混为一谈，
+    否则健康基金会被误判停更、误入 7 天长冷却造成静默断档。
+    """
     m = re.search(r"\{.*\}", text, re.DOTALL)
     if not m:
-        return [], 0
+        raise ValueError(f"lsjz 响应非 JSON（疑似反爬/限流）: {text[:80]!r}")
     try:
         data = json.loads(m.group(0))
-    except (json.JSONDecodeError, ValueError):
-        return [], 0
+    except (json.JSONDecodeError, ValueError) as e:
+        raise ValueError(f"lsjz 响应 JSON 解析失败（疑似反爬/限流）: {e}") from e
     records = (data.get("Data") or {}).get("LSJZList") or []
     total = int(data.get("TotalCount") or 0)
     navs = []
@@ -52,7 +57,8 @@ async def _lsjz_fetch_all(session, code: str, start_date: str,
     """分页拉取 lsjz 历史净值（pageSize 太大接口会返回空，必须逐页翻取）。
 
     全量时返回完整历史序列；带 start_date 时仅返回其后的净值。
-    空页（接口抖动返回空 body 但 HTTP 200）时重试一次，避免静默断档。
+    垃圾响应（接口抖动/反爬返回空 body 但 HTTP 200）重试一次后仍失败则向上抛，
+    由调用方按拉取失败记录（primary），不误判为"确认无新数据"。
     """
     all_navs = []
     page_index = 1
@@ -73,9 +79,10 @@ async def _lsjz_fetch_all(session, code: str, start_date: str,
         return _parse_lsjz_page(text)
 
     while page_index <= _LSJZ_MAX_PAGES:
-        navs, total = await _fetch_page()
-        if not navs:
-            # 空页重试一次（应对接口反爬/抖动返回空 body 的情形）
+        try:
+            navs, total = await _fetch_page()
+        except ValueError:
+            # 垃圾响应重试一次；仍失败则让异常传播（按拉取失败处理）
             navs, total = await _fetch_page()
         all_navs.extend(navs)
         if not navs or len(all_navs) >= total:
