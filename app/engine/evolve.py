@@ -122,7 +122,7 @@ _GA_MIN_INTERVAL_DAYS = 7
 """
 
 _MONTHLY_INTERVAL_DAYS = 28
-"""月度重量活（自纠偏/GA/元分析/衰减）最小间隔（天）。
+"""月度重任务（自纠偏/GA/元分析/衰减）最小间隔（天）。
 
 管线每天附加进化 phase，但每日只做幂等的结算与质量度量；
 元分析（LLM 调用）与 GA（分钟级回测）按此间隔限频，避免每日重复消耗。
@@ -130,7 +130,7 @@ _MONTHLY_INTERVAL_DAYS = 28
 
 
 def _monthly_due() -> bool:
-    """月度重量活是否到期：距上次 last_monthly_evolve ≥ 28 天；无记录视为到期。"""
+    """月度重任务是否到期：距上次 last_monthly_evolve ≥ 28 天；无记录视为到期。"""
     gap = repo.get_interval_days(META.LAST_MONTHLY_EVOLVE)
     if gap is None:
         return True  # 无记录视为到期
@@ -156,7 +156,7 @@ def _ga_adjust(force: bool = False) -> str | None:
         logger.warning("GA 模块不可用，跳过寻优: %s", str(e)[:120])
         return None
 
-    # P2-10 降噪：月度重量活评估取 repeats=3 回测中位数（噪声 ±8pp → ±4.6pp 量级）；
+    # P2-10 降噪：月度重任务评估取 repeats=3 回测中位数（噪声 ±8pp → ±4.6pp 量级）；
     # 当前配置与最优配置必须用同一 repeats 评估才可比
     repeats = 3
     best_cfg, best_f = ga_optimize_ranking(repeats=repeats)
@@ -447,7 +447,7 @@ def _decision_loss_streak(limit: int = 3) -> int:
 # ── P1-5 否决反事实与空仓率监控 ───────────────────────────
 
 def _veto_stats() -> list[str]:
-    """LLM 选赛道环节的偏差监控（月度重量活）：
+    """LLM 选赛道环节的偏差监控（月度重任务）：
 
     1. 空推荐率：近 60 天 空推荐日 / (空推荐日 + 实际推荐日)，过高提示系统过度保守；
     2. 否决反事实：已结算案例中"池内未选赛道均值收益显著高于选中赛道"的比例，
@@ -610,7 +610,7 @@ def run_evolve(month: str | None = None) -> None:
     每日调用（管线每天附加）：
       - 结算全部待定（幂等，满 20 日净值窗口即结算，不再等月 1 号巧合满窗）；
       - 质量度量上月（幂等覆盖：晚满窗的推荐每天重算覆盖，最终收敛到完整样本）。
-    月度到期（距上次重量活 ≥28 天）或手动传 month 时追加重量活：
+    月度到期（距上次重任务 ≥28 天）或手动传 month 时追加重任务：
       自纠偏 + GA 寻优 + LLM 元分析（增量游标）+ 置信度衰减。
     month 参数仅用于补算历史月份的质量度量（如 evolve 2026-07）。
     """
@@ -648,9 +648,9 @@ def run_evolve(month: str | None = None) -> None:
     except Exception as e:
         logger.warning("推荐质量度量失败: %s", str(e)[:120], exc_info=True)
 
-    # 3. 月度重量活（自纠偏 + GA + 元分析 + 衰减）：手动补算或距上次 ≥28 天
+    # 3. 月度重任务（自纠偏 + GA + 元分析 + 衰减）：手动补算或距上次 ≥28 天
     # 修复：heavy 必须用显式传参标志（explicit_month）判断——原 `month is not None`
-    # 在 month 已被默认值填充后恒为 True，导致每日路径也执行重量活并每天覆盖
+    # 在 month 已被默认值填充后恒为 True，导致每日路径也执行重任务并每天覆盖
     # LAST_MONTHLY_EVOLVE，使 _monthly_due() 的 28 天限频成为死代码
     heavy = explicit_month or _monthly_due()
     if heavy:
@@ -677,11 +677,11 @@ def run_evolve(month: str | None = None) -> None:
             _decay_insights()
 
             repo.save_meta(META.LAST_MONTHLY_EVOLVE, datetime.now().strftime("%Y-%m-%d"))
-            logger.info("进化月度重量活完成")
+            logger.info("进化月度重任务完成")
         except Exception as e:
-            logger.warning("进化重量活失败: %s", str(e)[:120], exc_info=True)
+            logger.warning("进化重任务失败: %s", str(e)[:120], exc_info=True)
     else:
-        logger.info("距上次重量活不足 %d 天，仅执行每日结算与质量度量", _MONTHLY_INTERVAL_DAYS)
+        logger.info("距上次重任务不足 %d 天，仅执行每日结算与质量度量", _MONTHLY_INTERVAL_DAYS)
 
     logger.info("进化完成: 结算+质量度量%s", "+元分析+衰减" if heavy else "")
 

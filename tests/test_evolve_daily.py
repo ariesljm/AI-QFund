@@ -1,4 +1,4 @@
-"""C2/C4 进化行为测试：每日结算度量、月度重量活限频、元分析增量游标、self-fix 去重。
+"""C2/C4 进化行为测试：每日结算度量、月度重任务限频、元分析增量游标、self-fix 去重。
 
 修复：月 1 号一次性进化 + 按月过滤收集 → 月中推荐永久丢失；GA 噪音重复入库。
 """
@@ -11,7 +11,7 @@ from app.engine import evolve
 
 
 class TestMonthlyDue:
-    """月度重量活间隔控制（≥28 天，经 get_interval_days 窄读）。"""
+    """月度重任务间隔控制（≥28 天，经 get_interval_days 窄读）。"""
 
     def test_no_record_due(self, monkeypatch):
         monkeypatch.setattr(evolve.repo, "get_interval_days", lambda k: None)
@@ -31,7 +31,7 @@ class TestMonthlyDue:
 
 
 class TestRunEvolveDaily:
-    """每日自动路径（无 month 参数）：重量活未到期时只做结算+度量。"""
+    """每日自动路径（无 month 参数）：重任务未到期时只做结算+度量。"""
 
     @staticmethod
     def _stub_daily(monkeypatch, last_monthly_evolve_days_ago):
@@ -46,10 +46,10 @@ class TestRunEvolveDaily:
                                 lambda k: last_monthly_evolve_days_ago)
 
     def test_not_due_runs_only_settle(self, monkeypatch):
-        """重量活未到期：自纠偏/GA/元分析/衰减均不执行。
+        """重任务未到期：自纠偏/GA/元分析/衰减均不执行。
 
         修复：原断言用抛异常 + evolve 内部宽 except 吞掉 → 假阳性。
-        改用记录式 spy：重量活子调用一经触达即断言失败。
+        改用记录式 spy：重任务子调用一经触达即断言失败。
         """
         self._stub_daily(monkeypatch, 10)
         calls = []
@@ -58,10 +58,10 @@ class TestRunEvolveDaily:
         monkeypatch.setattr(evolve, "_run_meta_analysis", lambda m, d: calls.append("meta"))
         monkeypatch.setattr(evolve, "_decay_insights", lambda: calls.append("decay") or 0)
         evolve.run_evolve()  # 自动路径：无 month 参数
-        assert calls == []  # 未到期 → 重量活全部不执行
+        assert calls == []  # 未到期 → 重任务全部不执行
 
     def test_due_runs_heavy(self, monkeypatch):
-        """重量活到期：自纠偏 → GA → 元分析 → 衰减 依次执行。"""
+        """重任务到期：自纠偏 → GA → 元分析 → 衰减 依次执行。"""
         self._stub_daily(monkeypatch, 29)
         order = []
         monkeypatch.setattr(evolve, "_review_ranking_all", lambda: [])
@@ -72,7 +72,7 @@ class TestRunEvolveDaily:
         assert order == ["ga", "meta", "decay"]
 
     def test_manual_month_always_heavy(self, monkeypatch):
-        """手动补算历史月份（month 参数）无条件执行重量活。"""
+        """手动补算历史月份（month 参数）无条件执行重任务。"""
         self._stub_daily(monkeypatch, 2)  # 未到期
         order = []
         monkeypatch.setattr(evolve, "_review_ranking_all", lambda: [])
@@ -83,7 +83,7 @@ class TestRunEvolveDaily:
         assert order == ["ga", "meta", "decay"]
 
     def test_settle_always_runs_first(self, monkeypatch):
-        """结算恒先于度量/重量活（每日路径也结算）。"""
+        """结算恒先于度量/重任务（每日路径也结算）。"""
         order = []
         monkeypatch.setattr(evolve, "_settle_outcomes", lambda: order.append("settle") or 0)
         monkeypatch.setattr(evolve, "compute_quality_metrics",

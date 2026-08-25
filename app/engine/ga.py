@@ -62,7 +62,7 @@ def fitness(cfg: dict, repeats: int = 1) -> float:
     两者均来自回测 Top 组合的 20 日绝对收益（与主目标"推荐后能赚钱"对齐）。
 
     P2-10：repeats>1 时重复评估取中位数——fast 回测 profit_rate 噪声 ≈±8pp
-    （fitness ±16），单次评估的选择偏差大；月度重量活可设 repeats=3 降噪（成本 ×3）。
+    （fitness ±16），单次评估的选择偏差大；月度重任务可设 repeats=3 降噪（成本 ×3）。
     """
     vals: list[float] = []
     for _ in range(repeats):
@@ -100,7 +100,7 @@ def ga_optimize_ranking(population: int = 4, generations: int = 2,
 
     P2-10 稳健化：seed 默认 None → 时间种子（每次寻优探索不同邻域，避免固定 seed
     退化为确定性扰动）；显式传 seed 保持可复现（测试/审计用）。日志记录实际 seed。
-    repeats>1：每次适应度评估取多次回测中位数降噪（月度重量活设 3，成本 ×3）。
+    repeats>1：每次适应度评估取多次回测中位数降噪（月度重任务设 3，成本 ×3）。
     """
     rng = np.random.default_rng(seed)
     logger.info("GA 寻优启动: population=%d, generations=%d, repeats=%d, seed=%s",

@@ -20,7 +20,7 @@ RANKING_CFG = "ranking_cfg"
 RECOMMEND_DATA_HEAL_FAILED = "recommend_data_heal_failed"
 
 # 进化引擎限频/游标
-LAST_MONTHLY_EVOLVE = "last_monthly_evolve"      # 月度重量活最近执行日
+LAST_MONTHLY_EVOLVE = "last_monthly_evolve"      # 月度重任务最近执行日
 LAST_GA_RUN = "last_ga_run"                      # GA 寻优最近评估日
 LAST_GA_APPLIED = "last_ga_applied"              # GA 权重应用留痕（只写不读）
 LAST_ANALYSIS_SS_ID = "last_analysis_ss_id"      # 元分析增量游标
