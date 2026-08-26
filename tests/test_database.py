@@ -261,3 +261,49 @@ class TestRecommendLogIdempotent:
                 "SELECT code FROM recommend_log WHERE recommend_date='2026-08-12'"
                 " ORDER BY rank").fetchall()
         assert [r[0] for r in rows] == ["019115", "002910"]
+
+
+class TestRankingRowsLatestSnapshotOnly:
+    """017787 事故回归：排序/反事实查询必须只取每基金最新特征快照。
+
+    fund_features 存全部历史供训练；若混入历史行，旧快照可能凭更高 momentum/combo
+    胜出——推荐基于过期特征，entry score 与监控当日重打分不一致，触发 R2d
+    推荐当天立即 BUY_MORE。
+    """
+
+    @staticmethod
+    def _seed(monkeypatch, tmp_path):
+        import app.database as db_mod
+        monkeypatch.setattr(db_mod, "DB_PATH", str(tmp_path / "test.db"))
+        from app.repo import base as base_mod
+        with base_mod.db_conn() as conn:
+            conn.execute(
+                "INSERT INTO fund_basic (code, name, type, is_buyable)"
+                " VALUES ('017787', '测试基金', '混合型', 1)"
+            )
+            # 旧快照动量更高（历史热点），新快照是当前真实状态
+            conn.execute(
+                "INSERT INTO fund_features (code, date, regime, momentum_20d,"
+                " rbsa_industry_1, rbsa_weight_1)"
+                " VALUES ('017787', '2026-08-20', 'NEUTRAL', 15.5, '煤炭开采', 60.0)"
+            )
+            conn.execute(
+                "INSERT INTO fund_features (code, date, regime, momentum_20d,"
+                " rbsa_industry_1, rbsa_weight_1)"
+                " VALUES ('017787', '2026-08-25', 'NEUTRAL', 12.7, '煤炭开采', 55.0)"
+            )
+        return base_mod
+
+    def test_get_all_ranking_rows_latest_only(self, monkeypatch, tmp_path):
+        """降级路径：每基金仅最新快照一行，不混入历史行。"""
+        base_mod = self._seed(monkeypatch, tmp_path)
+        rows = base_mod.get_all_ranking_rows()
+        assert len(rows) == 1
+        assert rows[0]["momentum_20d"] == 12.7
+
+    def test_get_sector_candidates_latest_only(self, monkeypatch, tmp_path):
+        """赛道内路径：每基金仅最新快照一行，不混入历史行。"""
+        base_mod = self._seed(monkeypatch, tmp_path)
+        rows = base_mod.get_sector_candidates(["煤炭开采"])
+        assert len(rows) == 1
+        assert rows[0]["momentum_20d"] == 12.7

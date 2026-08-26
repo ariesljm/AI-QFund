@@ -18,11 +18,22 @@ MARKET_COLS = domain.MARKET_COLS
 
 # 推荐模型前向预测窗口（交易日），训练与回测共用（领域常量单一来源）
 FORWARD_WINDOW = domain.FORWARD_DAYS
+def _latest_feature_join() -> str:
+    """每基金仅取最新特征快照的 JOIN 子句。
+
+    fund_features 存全部历史供训练；排序/反事实若混入历史行，旧快照可能凭更高
+    momentum/combo 胜出——推荐基于过期特征，且 entry score 与监控当日重打分不一致，
+    会触发 R2d 推荐当天立即 BUY_MORE（017787 事故根因）。
+    """
+    return ("JOIN (SELECT code, MAX(date) AS date FROM fund_features GROUP BY code) lat "
+            "ON lat.code = ff.code AND lat.date = ff.date")
+
+
 def get_all_ranking_rows() -> list[dict]:
-    """全市场可投基金特征（推荐降级路径用）。"""
+    """全市场可投基金最新特征快照（推荐降级路径用），每基金一行。"""
     feat_cols = ', '.join('ff.' + c for c in FEATURE_COLS)
     with db_conn() as conn:
-        rows = conn.execute(f"SELECT ff.code, fb.name, ff.regime, ff.rbsa_industry_1, ff.rbsa_weight_1, {feat_cols} FROM fund_features ff JOIN fund_basic fb ON fb.code = ff.code WHERE fb.is_buyable = 1 AND ff.rbsa_industry_1 IS NOT NULL AND ff.rbsa_industry_1 != ''").fetchall()
+        rows = conn.execute(f"SELECT ff.code, fb.name, ff.regime, ff.rbsa_industry_1, ff.rbsa_weight_1, {feat_cols} FROM fund_features ff {_latest_feature_join()} JOIN fund_basic fb ON fb.code = ff.code WHERE fb.is_buyable = 1 AND ff.rbsa_industry_1 IS NOT NULL AND ff.rbsa_industry_1 != ''").fetchall()
     names = ['code', 'name', 'regime', 'rbsa_industry_1', 'rbsa_weight_1'] + FEATURE_COLS
     return [dict(zip(names, r, strict=False)) for r in rows]
 
@@ -385,7 +396,7 @@ def get_sector_candidates(sectors: list[str]) -> list[dict]:
     placeholders = ','.join('?' * len(sectors))
     feat_cols = ', '.join('ff.' + c for c in FEATURE_COLS)
     with db_conn() as conn:
-        rows = conn.execute(f'SELECT ff.code, fb.name, ff.regime, ff.rbsa_industry_1, ff.rbsa_weight_1, ff.rbsa_industry_2, ff.rbsa_weight_2, ff.rbsa_industry_3, ff.rbsa_weight_3, {feat_cols} FROM fund_features ff JOIN fund_basic fb ON fb.code = ff.code WHERE fb.is_buyable = 1 AND (ff.rbsa_industry_1 IN ({placeholders})   OR ff.rbsa_industry_2 IN ({placeholders})   OR ff.rbsa_industry_3 IN ({placeholders}))', sectors + sectors + sectors).fetchall()
+        rows = conn.execute(f'SELECT ff.code, fb.name, ff.regime, ff.rbsa_industry_1, ff.rbsa_weight_1, ff.rbsa_industry_2, ff.rbsa_weight_2, ff.rbsa_industry_3, ff.rbsa_weight_3, {feat_cols} FROM fund_features ff {_latest_feature_join()} JOIN fund_basic fb ON fb.code = ff.code WHERE fb.is_buyable = 1 AND (ff.rbsa_industry_1 IN ({placeholders})   OR ff.rbsa_industry_2 IN ({placeholders})   OR ff.rbsa_industry_3 IN ({placeholders}))', sectors + sectors + sectors).fetchall()
     names = ['code', 'name', 'regime', 'rbsa_industry_1', 'rbsa_weight_1', 'rbsa_industry_2', 'rbsa_weight_2', 'rbsa_industry_3', 'rbsa_weight_3'] + FEATURE_COLS
     return [dict(zip(names, r, strict=False)) for r in rows]
 
