@@ -147,8 +147,9 @@ class TestNavForTrend:
         monkeypatch.setattr(mon, "_nav_since", lambda c, s: [1.0] * mon.EMA_WARMUP_NAVS)
         monkeypatch.setattr(mon, "_nav_pre_entry",
                             lambda c, d, n: called.append((c, d, n)))
-        navs = mon._nav_for_trend("A", "2026-08-01")
-        assert len(navs) == mon.EMA_WARMUP_NAVS
+        navs_trend, navs_post = mon._nav_for_trend("A", "2026-08-01")
+        assert len(navs_trend) == mon.EMA_WARMUP_NAVS
+        assert navs_trend == navs_post  # 入场后已足：趋势序列与入场后序列一致
         assert called == []
 
     def test_prepends_pre_entry_history(self, monkeypatch):
@@ -168,18 +169,20 @@ class TestNavForTrend:
             return pre_rows[-(limit):]
         monkeypatch.setattr(mon, "_nav_pre_entry", fake_pre)
 
-        navs = mon._nav_for_trend("A", "2026-07-31")
+        navs_trend, navs_post = mon._nav_for_trend("A", "2026-07-31")
         assert fetched == [mon.EMA_WARMUP_NAVS - len(post) + 1]  # 多取一条用于去重
-        assert len(navs) == mon.EMA_WARMUP_NAVS
-        assert navs[-len(post):] == post  # 入场后序列完整保留在尾部
+        assert len(navs_trend) == mon.EMA_WARMUP_NAVS
+        assert navs_trend[-len(post):] == post  # 入场后序列完整保留在尾部
+        assert navs_post == post  # 硬止损专用序列 = 纯入场后，无预热污染
 
     def test_fund_with_short_total_history_returns_all(self, monkeypatch):
         """总历史都不足预热条数 → 返回全部可得净值（R1 保持不判定，不报错）。"""
         monkeypatch.setattr(mon, "_nav_since", lambda c, s: [2.0])
         monkeypatch.setattr(mon, "_nav_pre_entry",
                             lambda c, d, n: [("2026-07-30", 1.9)])
-        navs = mon._nav_for_trend("A", "2026-07-31")
-        assert navs == [1.9, 2.0]
+        navs_trend, navs_post = mon._nav_for_trend("A", "2026-07-31")
+        assert navs_trend == [1.9, 2.0]
+        assert navs_post == [2.0]  # 入场后仅 1 条（<2 条防御由 hard stop 处理）
 
     def test_r1_armed_from_entry_day(self):
         """端到端：买入即处于 EMA60 下方 → R1 首日触发（原逻辑需等 62 个交易日）。"""

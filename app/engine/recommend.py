@@ -58,6 +58,8 @@ def _inject_market_cols(df: pd.DataFrame) -> pd.DataFrame:
         for c, v in mkt.items():
             df[c] = v
     else:
+        # 审计 P1-2/P2-4：指数缺失不能静默 0——模型会在分布外输入上打分
+        logger.error("指数数据缺失（sh000300 无行）：市场状态列填 0，模型打分可能严重失真，请检查数据基座")
         for c in repo.MARKET_COLS:
             df[c] = 0.0
     return df
@@ -188,18 +190,22 @@ def _build_candidate_record(f: dict) -> dict:
     }
 
 
-def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> list[dict]:
-    """在 LLM 选中的赛道内，用赛道相对化特征排序，前 2 赛道各取 Top 2、其余各 Top 1。"""
+def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> tuple[list[dict], str]:
+    """在 LLM 选中的赛道内，用赛道相对化特征排序，前 2 赛道各取 Top 2、其余各 Top 1。
+
+    返回 (candidates, reco_path)：path='sector' 为主路径，'degrade' 为降级路径
+    （分口径度量：质量度量按 path 分组评估两条路径的赚钱质量差异）。
+    """
     raw_sectors = ctx.recommended_sectors
     if not raw_sectors:
         logger.info("无指定赛道，降级为全市场 Top 10")
-        return rank_funds(model)
+        return rank_funds(model), "degrade"
 
     policy = domain.SectorPolicy(repo.get_available_sectors())
     sectors = policy.resolve(raw_sectors)
     if not sectors:
         logger.info("所有赛道均未匹配RBSA行业，降级为全市场 Top 10")
-        return rank_funds(model)
+        return rank_funds(model), "degrade"
     dropped = set(raw_sectors) - set(sectors)
     if dropped:
         logger.info("赛道 %s 未匹配到RBSA行业，跳过", "、".join(sorted(dropped)))
@@ -209,26 +215,36 @@ def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> list[dict]:
     rows = repo.get_sector_candidates(sectors)
     if not rows:
         logger.info("赛道内无匹配基金，降级为全市场 Top 10")
-        return rank_funds(model)
+        return rank_funds(model), "degrade"
 
     df = pd.DataFrame(rows)
+    # 单基金特征新鲜度闸门（审计 P1-1）：滞后 > MAX_FEATURE_LAG_TRADE_DAYS 的候选剔除
+    stale_before = len(df)
+    df = _drop_stale_feature_rows(df)
+    dropped = stale_before - len(df)
+    if dropped:
+        logger.warning("单基金特征新鲜度闸门：剔除 %d 只特征陈旧候选（滞后 > %d 交易日）",
+                       dropped, domain.MAX_FEATURE_LAG_TRADE_DAYS)
+    if df.empty:
+        logger.info("赛道内候选全部特征陈旧，降级为全市场 Top 10")
+        return rank_funds(model), "degrade"
     df = _filter_sector_candidates(df, sectors, risk_set)
     if df.empty:
-        return rank_funds(model)
+        return rank_funds(model), "degrade"
 
     df = _score_sector_candidates(df, model)
-    # Ticket 05：恢复入场质量门槛（移除 R1"全天候出手"）——模型预测 >0 才可进入
-    # 终选候选，与监控 ModelSignalRule 出场阈值共用 MIN_PREDICTED_ALPHA 单一来源。
-    # 实盘根因：进场不设门槛、出场设门槛的不对称让负预测基金照推（28 笔中 6 笔趋近 0）。
-    df = df[df["score"] > domain.MIN_PREDICTED_ALPHA]
+    # Ticket 05：恢复入场质量门槛（移除 R1"全天候出手"）——模型预测 > 赚钱阈值才可进入
+    # 终选候选。D 冲突修复：门槛对齐 PROFIT_THRESHOLD（扣费后赚钱），不再用 0。
+    # 监控 ModelSignalRule 出场阈值用 MIN_PREDICTED_ALPHA（转负边界），两者语义不同。
+    df = df[df["score"] > domain.MIN_ENTRY_ALPHA]
     if df.empty:
         logger.info("赛道内无正预测候选，降级为全市场 Top 10（降级路径同样受门槛约束）")
-        return rank_funds(model)
+        return rank_funds(model), "degrade"
 
     top_per_sector = _select_top_per_sector(df, sectors)
     if not top_per_sector:
-        return rank_funds(model)
-    return [_build_candidate_record(f) for f in top_per_sector]
+        return rank_funds(model), "degrade"
+    return [_build_candidate_record(f) for f in top_per_sector], "sector"
 
 
 def rank_funds(model: lgb.Booster) -> list[dict]:
@@ -236,6 +252,11 @@ def rank_funds(model: lgb.Booster) -> list[dict]:
     cfg = repo.get_ranking_cfg()
     rows = repo.get_all_ranking_rows()
     df = pd.DataFrame(rows)
+    # 单基金特征新鲜度闸门（同主路径）：陈旧特征不出现在降级推荐里
+    df = _drop_stale_feature_rows(df)
+    if df.empty:
+        logger.info("全市场候选特征陈旧/缺失，返回空（空推荐日）")
+        return []
     df = df.dropna(subset=FEATURE_COLS)
     if df.empty:
         return []
@@ -248,7 +269,8 @@ def rank_funds(model: lgb.Booster) -> list[dict]:
                      rbsa_weight_col="rbsa_weight_1")
     # Ticket 05：降级路径同样恢复入场门槛——全市场无正预测候选时返回空，
     # 由上游 record_empty_recommendation 记空推荐日（熊市不硬推负期望基金）。
-    df = df[df["score"] > domain.MIN_PREDICTED_ALPHA]
+    # D 冲突修复：门槛对齐 MIN_ENTRY_ALPHA（扣费后赚钱），与主路径同口径。
+    df = df[df["score"] > domain.MIN_ENTRY_ALPHA]
     if df.empty:
         logger.info("全市场无正预测候选，返回空（空推荐日）")
         return []
@@ -313,7 +335,6 @@ def _llm_final_pick(candidates: list[dict], ctx: MacroContext, insights: list) -
     # 替代逐候选 5×N 查询；sector 中位数按赛道缓存（同赛道共享一个值）
     holdings_mat = repo.get_holdings_summaries(codes, limit=5)
     purchase_map = repo.get_purchase_statuses(codes)
-    ret_map = repo.nav.ret_1m_many(codes)
     sector_median_cache: dict[str, float | None] = {}
 
     for c in candidates:
@@ -336,8 +357,6 @@ def _llm_final_pick(candidates: list[dict], ctx: MacroContext, insights: list) -
         fund_mom = c.get("momentum_20d", 0) or 0
         # T10 限购检测：申购状态标注（未知/正常不阻塞；限购/暂停在素材中提示）
         c["purchase_status"] = purchase_map.get(code, "unknown")
-        # 近1月涨幅（22 交易日，与前端 period_returns 展示口径一致，供 LLM reason 文案引用）
-        c["ret_1m"] = ret_map.get(code)
         if sector and latest_feature_date:
             if sector not in sector_median_cache:
                 median = repo.get_sector_momentum_median(sector, latest_feature_date)
@@ -378,6 +397,10 @@ def _validate_final_pick(parsed: Any, valid_codes: dict) -> dict | None:
     result = {str(k).strip(". "): v for k, v in parsed.items()}
     code = str(result.get("selected_code") or "")
     if code in valid_codes:
+        # 审计 P2-3：vetoed 条目同样校验——只保留候选池内代码，
+        # LLM 幻觉代码不写入 vetoed_json 污染否决审计/面板
+        vetoed = [str(v).strip() for v in (result.get("vetoed") or [])
+                  if isinstance(v, (str, int)) and str(v).strip() in valid_codes]
         return {
             "selected_code": code,
             "selected_name": result.get("selected_name", valid_codes[code]),
@@ -385,7 +408,7 @@ def _validate_final_pick(parsed: Any, valid_codes: dict) -> dict | None:
             # P2-7 决策与文案解耦：decision_logic 为内部决策依据（审计用），
             # 与展示文案 reason 分离；旧 prompt 无该字段时为空串（兼容）
             "decision_logic": result.get("decision_logic", ""),
-            "vetoed": result.get("vetoed", []),
+            "vetoed": vetoed,
         }
     return None
 
@@ -393,8 +416,9 @@ def _validate_final_pick(parsed: Any, valid_codes: dict) -> dict | None:
 # ========== 推荐入库 ==========
 
 def _save_recommendation(date_str: str, selected: dict, candidates: list[dict],
-                           vetoed: list, regime: str, feature_snapshot: str = "") -> int:
-    """入库推荐记录，返回新插入行的 id。"""
+                           vetoed: list, regime: str, feature_snapshot: str = "",
+                           reco_path: str = "sector") -> int:
+    """入库推荐记录，返回新插入行的 id。reco_path：推荐来源路径（分口径度量）。"""
     rank = next(
         (i + 1 for i, c in enumerate(candidates) if c["code"] == selected["selected_code"]), 1)
     score = next(
@@ -418,7 +442,7 @@ def _save_recommendation(date_str: str, selected: dict, candidates: list[dict],
         reason, status=domain.SIGNAL_HOLD, feature_snapshot=feature_snapshot,
         entry_nav=entry_nav, candidate_codes=[c["code"] for c in candidates],
         # T07：否决结构化落库（否决审计数据基础）
-        vetoed=vetoed,
+        vetoed=vetoed, reco_path=reco_path,
     )
     # 同日推荐成功：清掉可能的空推荐残留（同一天先判无赛道、后成功推荐的场景）
     repo.clear_empty_recommendation(date_str)
@@ -427,14 +451,33 @@ def _save_recommendation(date_str: str, selected: dict, candidates: list[dict],
     return new_id
 
 
+def _expected_feature_date() -> str | None:
+    """期望特征日期：今天交易日→昨交易日（数据任务盘前拉 T-1 净值）；否则最近交易日。
+
+    无交易日历缓存返回 None（调用方不误报/不误伤）。
+    """
+    raw = repo.get_meta(META.TRADE_DATES_CACHE)
+    if not raw:
+        return None
+    try:
+        days = set(json.loads(raw))
+    except (json.JSONDecodeError, TypeError):
+        return None
+    today = datetime.now().date().isoformat()
+    if today in days:
+        return max((d for d in days if d < today), default=None)  # 今交易，期望 T-1
+    return max((d for d in days if d <= today), default=None)  # 非交易日，期望最近交易日
+
+
 def _feature_freshness(feat_date: str | None) -> int:
     """特征日期距期望值的滞后交易日数（0=新鲜）。
 
-    基准取交易日历缓存：今天为交易日时期望特征日期=昨交易日（盘前数据任务拉的是
-    T-1 净值）；今天非交易日时期望=之前最近交易日。无缓存/解析失败返回 0（不误报）。
     滞后计数用 trading_day_lag（与净值停更打标共用单一来源）。
     """
     if not feat_date:
+        return 0
+    expected = _expected_feature_date()
+    if expected is None or feat_date >= expected:
         return 0
     raw = repo.get_meta(META.TRADE_DATES_CACHE)
     if not raw:
@@ -443,14 +486,36 @@ def _feature_freshness(feat_date: str | None) -> int:
         days = set(json.loads(raw))
     except (json.JSONDecodeError, TypeError):
         return 0
-    today = datetime.now().date().isoformat()
-    if today in days:
-        expected = max((d for d in days if d < today), default=None)  # 今交易，期望 T-1
-    else:
-        expected = max((d for d in days if d <= today), default=None)  # 非交易日，期望最近交易日
-    if expected is None or feat_date >= expected:
-        return 0
     return trading_day_lag(feat_date, expected, days=days)
+
+
+def _drop_stale_feature_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """单基金特征新鲜度闸门（审计 P1-1）：剔除特征日滞后决策日 > N 交易日的候选。
+
+    全局护栏（_feature_freshness）只拦"数据基座整体失败"；单基金因停牌/接口局部失败
+    可滞后最多 10 交易日（_STALE_NAV_LAG_DAYS）仍以旧快照入池，与实时市场列、赛道
+    中位数构成混合时点假相对值直接进排序与 LLM 终选素材——信息失真（"准确提供信息"
+    契约）。特征日缺失/无法判定时保守滤除。*不改变 df 列结构*（仅筛行）。
+    """
+    if df.empty or "feature_date" not in df.columns:
+        return df
+    expected = _expected_feature_date()
+    if expected is None:
+        return df  # 无交易日历缓存：不误伤，全局护栏兜底
+
+    def _lag(fd: object) -> int:
+        if not isinstance(fd, str) or not fd:
+            return domain.MAX_FEATURE_LAG_TRADE_DAYS + 1  # 无日期 → 视为陈旧
+        if fd >= expected:
+            return 0
+        try:
+            days = set(json.loads(repo.get_meta(META.TRADE_DATES_CACHE) or ""))
+        except (json.JSONDecodeError, TypeError):
+            return 0
+        return trading_day_lag(fd, expected, days=days)
+
+    mask = df["feature_date"].map(_lag) <= domain.MAX_FEATURE_LAG_TRADE_DAYS
+    return df[mask]
 
 
 def check_recommend_ready() -> bool:
@@ -479,6 +544,12 @@ def check_recommend_ready() -> bool:
         logger.error("行业映射为空（stock_industry_map 无记录）：持仓已就绪但行业映射未成功。"
                      "行业映射依赖持仓股票的东财 F10/push2 接口（云服务器易被反爬限流），"
                      "请手动触发「数据基座」重试，或运行 python -m app.data.foundation --industry-map")
+        return False
+    if status["feature_cnt"] == 0:
+        # 审计 P1-2：特征表为空/最近特征日无数据是数据故障，不是"今日无机会"。
+        # 门控拦截（不记空推荐日）——空推荐日只应代表市场判断。
+        logger.error("基金特征为空（fund_features 最近特征日无数据）：特征计算未完成或全部失败，"
+                     "推荐被拦截（避免数据故障被包装成空推荐日）。请检查 app.data.foundation 特征槽位")
         return False
     return False
 
@@ -539,14 +610,17 @@ def run_recommendation(retrain: bool = False) -> None:
     MAX_PICKS = 2
     target_sectors = [s for s in ctx.recommended_sectors if s != "其他"]
     if not target_sectors:
-        repo.record_empty_recommendation(date_str, ctx.sector_reasoning or "今日无合适机会")
-        logger.info("今日无合适机会，记录空推荐日")
+        # 审计 P1-2：LLM 判定无适合赛道 = 市场判断（合法空推荐日）
+        repo.record_empty_recommendation(
+            date_str, ctx.sector_reasoning or "今日无合适机会", reason_type="no_opportunity")
+        logger.info("今日无合适机会，记录空推荐日（no_opportunity）")
         return
     logger.info("=== 赛道内相对化排序 ===")
-    finalists = _rank_within_sectors(ctx, model)
+    finalists, reco_path = _rank_within_sectors(ctx, model)
     if not finalists:
         repo.record_empty_recommendation(
-            date_str, ctx.sector_reasoning or "候选基金为空（赛道无匹配基金或动量护栏过滤）")
+            date_str, ctx.sector_reasoning or "候选基金为空（赛道无匹配基金或动量护栏过滤）",
+            reason_type="no_opportunity")
         logger.info("无候选基金（无匹配赛道或动量护栏过滤），记录空推荐日")
         return
     logger.info("候选 %d 只: %s",
@@ -605,7 +679,7 @@ def run_recommendation(retrain: bool = False) -> None:
                 date_str, selected["selected_code"], selected["selected_name"],
                 0, 0.0, 0.0, llm_regime,
                 f"风控拦截: 20日动量{sel_momentum:.1f}% 低于阈值{guard_cfg.momentum_guard_pct:.0f}%",
-                status=domain.SIGNAL_REJECT,
+                status=domain.SIGNAL_REJECT, reco_path=reco_path,
             )
             logger.info("风控拦截已入库: %s", selected["selected_code"])
             continue
@@ -642,6 +716,7 @@ def run_recommendation(retrain: bool = False) -> None:
 
         saved_id = _save_recommendation(
             date_str, selected, sector_candidates, vetoed, llm_regime, feature_snapshot,
+            reco_path=reco_path,
         )
         _write_sector_selection(date_str, ctx, saved_id)
         count += 1

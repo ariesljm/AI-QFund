@@ -11,7 +11,12 @@ from app import domain
 from app.data.macro import fetch_macro_inputs
 from app.engine.sector_pool import SectorPool, build_sector_pool
 from app.llm.client import call_llm_json
-from app.llm.context import market_technical_text, news_theme_summary, pool_text
+from app.llm.context import (
+    market_technical_text,
+    news_theme_summary,
+    pool_text,
+    sector_theme_summary,
+)
 from app.llm.prompts import sector_selection_prompt, sector_selection_system_prompt
 from app.utils.log import get_logger
 
@@ -105,8 +110,8 @@ def _build_sector_prompt(date_str: str, news: dict, flow: dict,
         lessons=lessons,
         market_tech=market_technical_text(tech) if tech else None,
         news_date=news.get("news_date") or date_str,
-        # Ticket 07：近 7 日要闻回顾（趋势视角素材；当日新闻降级为确认/否决）
-        news_history=news_theme_summary(days=7) or None,
+        # #3 方向 A：政策持续性 vs 媒体情绪过热（不做热度排序）；无持续主题时降级为原要闻回顾
+        news_history=sector_theme_summary(days=7) or news_theme_summary(days=7) or None,
     )
     return prompt, [i for i, _ in insight_rows]
 

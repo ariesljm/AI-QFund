@@ -21,28 +21,45 @@ from app.engine import recommend
 
 class TestRepoCheckDataReady:
     def test_counts_holdings_and_industry(self, monkeypatch):
-        """repo.check_data_ready 返回持仓/行业映射计数（seam SQL 直测）。"""
+        """repo.check_data_ready 返回持仓/行业映射/特征计数（seam SQL 直测）。"""
         conn = sqlite3.connect(":memory:")
         conn.execute("CREATE TABLE fund_holdings (code TEXT)")
         conn.execute("CREATE TABLE stock_industry_map (stock_code TEXT)")
+        conn.execute("CREATE TABLE fund_features (code TEXT, date TEXT)")
         conn.executemany("INSERT INTO fund_holdings VALUES (?)", [("f1",), ("f2",)])
         conn.executemany("INSERT INTO stock_industry_map VALUES (?)", [("s1",)])
+        conn.executemany("INSERT INTO fund_features VALUES (?, ?)",
+                         [("f1", "2026-09-02"), ("f2", "2026-09-02")])
         monkeypatch.setattr(repo_base, "db_conn", lambda: conn)
 
         status = repo_base.check_data_ready()
-        assert status == {"holdings_cnt": 2, "industry_cnt": 1}
+        assert status == {"holdings_cnt": 2, "industry_cnt": 1, "feature_cnt": 2}
 
 
 class TestIsRecommendDataReady:
     def test_ready_true(self, monkeypatch):
-        """谓词：持仓与行业映射都就绪 → True（seam 单一来源，SQL 直测）。"""
+        """谓词：持仓/行业映射/特征都就绪 → True（seam 单一来源，SQL 直测）。"""
         conn = sqlite3.connect(":memory:")
         conn.execute("CREATE TABLE fund_holdings (code TEXT)")
         conn.execute("CREATE TABLE stock_industry_map (stock_code TEXT)")
+        conn.execute("CREATE TABLE fund_features (code TEXT, date TEXT)")
+        conn.executemany("INSERT INTO fund_holdings VALUES (?)", [("f1",), ("f2",)])
+        conn.executemany("INSERT INTO stock_industry_map VALUES (?)", [("s1",)])
+        conn.executemany("INSERT INTO fund_features VALUES (?, ?)",
+                         [("f1", "2026-09-02"), ("f2", "2026-09-02")])
+        monkeypatch.setattr(repo_base, "db_conn", lambda: conn)
+        assert repo_base.is_recommend_data_ready() is True
+
+    def test_feature_empty_blocks(self, monkeypatch):
+        """审计 P1-2：特征表无数据 → 未就绪（数据故障不能被包装成空推荐日）。"""
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE fund_holdings (code TEXT)")
+        conn.execute("CREATE TABLE stock_industry_map (stock_code TEXT)")
+        conn.execute("CREATE TABLE fund_features (code TEXT, date TEXT)")
         conn.executemany("INSERT INTO fund_holdings VALUES (?)", [("f1",), ("f2",)])
         conn.executemany("INSERT INTO stock_industry_map VALUES (?)", [("s1",)])
         monkeypatch.setattr(repo_base, "db_conn", lambda: conn)
-        assert repo_base.is_recommend_data_ready() is True
+        assert repo_base.is_recommend_data_ready() is False
 
     def test_query_error_falls_back_false(self, monkeypatch):
         """谓词：查库异常统一兜底 False（不向门控调用方抛穿）。"""
@@ -69,6 +86,14 @@ class TestCheckRecommendReady:
         monkeypatch.setattr(recommend.repo, "is_recommend_data_ready", lambda: False)
         monkeypatch.setattr(recommend.repo, "check_data_ready",
                             lambda: {"holdings_cnt": 0, "industry_cnt": 10})
+        assert recommend.check_recommend_ready() is False
+
+    def test_feature_empty_blocks(self, monkeypatch):
+        """审计 P1-2：特征为空拦截推荐（数据故障不冒充空推荐日）。"""
+        monkeypatch.setattr(recommend.repo, "is_recommend_data_ready", lambda: False)
+        monkeypatch.setattr(recommend.repo, "check_data_ready",
+                            lambda: {"holdings_cnt": 10, "industry_cnt": 10,
+                                     "feature_cnt": 0})
         assert recommend.check_recommend_ready() is False
 
     def test_both_ready_passes(self, monkeypatch):

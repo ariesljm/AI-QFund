@@ -116,6 +116,7 @@ class TestMetaAnalysisCursor:
         saved = []
         monkeypatch.setattr(evolve.repo, "get_int_cursor", lambda k: 5)
         monkeypatch.setattr(evolve.repo, "save_meta", lambda k, v: saved.append((k, v)))
+        monkeypatch.setattr(evolve, "_MIN_ANALYSIS_CASES", 1)  # 门槛不改游标语义（案例足门槛→分析）
         monkeypatch.setattr(evolve.repo, "get_settled_cases_after",
                             lambda ss_id: [self._case(7), self._case(8, "负")])
         monkeypatch.setattr(evolve, "_batch_llm_analyze",
@@ -130,10 +131,24 @@ class TestMetaAnalysisCursor:
         saved = []
         monkeypatch.setattr(evolve.repo, "get_int_cursor", lambda k: 5)
         monkeypatch.setattr(evolve.repo, "save_meta", lambda k, v: saved.append((k, v)))
+        monkeypatch.setattr(evolve, "_MIN_ANALYSIS_CASES", 1)
         monkeypatch.setattr(evolve.repo, "get_settled_cases_after",
                             lambda ss_id: [self._case(7)])
         monkeypatch.setattr(evolve, "_batch_llm_analyze", lambda *a, **k: None)
         evolve._run_meta_analysis({}, False)
+        assert not any(k == "last_analysis_ss_id" for k, _ in saved)
+
+    def test_insufficient_cases_skips_llm(self, monkeypatch):
+        """审计 P1-3：案例不足门槛（20）→ 跳过分析、不推进游标、记 outcome。"""
+        saved = []
+        monkeypatch.setattr(evolve.repo, "get_int_cursor", lambda k: 5)
+        monkeypatch.setattr(evolve.repo, "save_meta", lambda k, v: saved.append((k, v)))
+        monkeypatch.setattr(evolve.repo, "get_settled_cases_after",
+                            lambda ss_id: [self._case(7)])
+        monkeypatch.setattr(evolve, "_batch_llm_analyze",
+                            lambda *a, **k: (_ for _ in ()).throw(AssertionError("不应调用LLM")))
+        monkeypatch.setattr(evolve, "_record_analysis_outcome", lambda *a, **k: None)
+        evolve._run_meta_analysis({}, False)  # 不抛异常即通过
         assert not any(k == "last_analysis_ss_id" for k, _ in saved)
 
     def test_no_new_cases_skips_llm(self, monkeypatch):

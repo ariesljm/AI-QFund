@@ -17,19 +17,29 @@ FORWARD_DAYS = 40
 # 赚钱口径：绝对收益 > 1% 视为扣费后真赚钱（quality 度量 / GA fitness / 回测 / 结算共用）
 PROFIT_THRESHOLD = 0.01
 
+# 单基金特征新鲜度闸门（2026-09 审计 P1-1）：候选基金特征日滞后决策日超过
+# 该交易日数即剔除。全局最新特征日护栏只拦"数据基座整体失败"；单基金因停牌/
+# 接口局部失败可滞后最多 10 交易日（_STALE_NAV_LAG_DAYS）仍以旧快照入池，与实时
+# 市场列/赛道中位数构成混合时点假相对值，直接进排序与 LLM 终选素材——信息失真。
+# QDII/延迟披露自然滞后 1~2 交易日，阈值 3 覆盖正常延迟，超阈值视为陈旧。
+MAX_FEATURE_LAG_TRADE_DAYS = 3
+
 # ── 模型特征列（fund_features 表列名，单一来源） ──────────
 # repo 拼 SQL / 特征计算 / 推荐排序 / 回测均从此导入，避免列名清单多处漂移
 FEATURE_COLS = [
     "hurst_60d", "momentum_20d", "calmar", "downside_vol",
-    "capture_up", "capture_down", "bias_60d",
+    "capture_up", "capture_down",
     "drawdown_60d", "reversal_20d",
     "mom_5d", "mom_60d", "vol_20d",
 ]
 
 # ── 市场状态列（R1 绝对收益目标配套） ──────────────────────
-# 全基金共享的时变市场特征（指数 20 日动量/波动率），不进 fund_features 表；
+# 全基金共享的时变市场特征，不进 fund_features 表；
 # 训练/打分/回测时从指数数据现算注入，让模型感知 beta 分量才能预测绝对收益。
-MARKET_COLS = ["idx_mom_20d", "idx_vol_20d"]
+# bias_60d（指数偏离60日均线）是市场层面特征（顺带发现）：从基金特征移入此处，
+# 打分时实时注入，修复"训练用实时、打分用 fund_features 快照"的口径不一致；
+# importance 验证移位后仍被模型重度使用（gain 13.7%）。
+MARKET_COLS = ["idx_mom_20d", "idx_vol_20d", "bias_60d"]
 
 # ── LLM 行业名 → RBSA 行业名 映射（推荐/监控共用单一来源） ──
 # LLM 选赛道输出自由行业名（如"光伏"），RBSA 行业名为映射后名（如"电源设备"）；
@@ -137,11 +147,18 @@ SIGNAL_PRIORITY = {
 # 持仓状态集合（监控引擎与 repo 查询共用）
 HOLDING_STATES = (SIGNAL_HOLD, SIGNAL_BUY_MORE, SIGNAL_WARNING)
 
-# ── 模型预测门槛（推荐/监控共用语义） ─────────────
+# ── 模型预测门槛 ─────────────
 # 「模型看好」= 模型预测未来 FORWARD_DAYS 日绝对收益为正（口径纠正：
 # 训练标签为绝对收益 abs_ret_40d，非超额；原名曾误标'超额'）。
-# 推荐引擎以此硬条件过滤候选；监控引擎据此判断信号是否转负。
+# 监控引擎据此判断信号是否转负（score < 0 = 负期望）。
 MIN_PREDICTED_ALPHA = 0.0
+
+# 推荐入场门槛（D 冲突修复）：预测绝对收益必须 > PROFIT_THRESHOLD(1%)
+# 才算「扣费后可赚钱」，与结算/质量度量的赚钱口径一致。原实现与监控共用
+# MIN_PREDICTED_ALPHA=0，导致预测落在 0~1% 区间的基金照常入场、扣赎回费后
+# 必亏且结算判「负」——入场门槛与赚钱口径脱节。
+# 与监控「转负」边界（0）是不同语义，勿混用。
+MIN_ENTRY_ALPHA = PROFIT_THRESHOLD
 
 # ── 信号/大盘状态中文文案（Web 展示单一来源） ────────────
 # 模板与前端 JS 均从此映射取文案，避免四处硬编码漂移（历史遗留 PASS/ADD/CAUTION 兼容映射）

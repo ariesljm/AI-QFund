@@ -303,6 +303,7 @@ def get_settled_cases_after(ss_id: int, limit: int = 300) -> list[dict]:
         rows = conn.execute(
             "SELECT ss.id, ss.recommend_log_id, ss.recommended_sectors, ss.sector_reasoning, "
             "ss.regime_label, ss.outcome, ss.outcome_note, rl.buy_reason, rl.code, rl.name, "
+            "rl.recommend_date, "
             "me.signal, me.trigger_trailing, me.trigger_drift, me.trigger_sector_adv, "
             "me.logic_verdict, me.sector_risk, me.holding_risk, me.detail "
             "FROM sector_selections ss "
@@ -312,6 +313,7 @@ def get_settled_cases_after(ss_id: int, limit: int = 300) -> list[dict]:
             (ss_id, limit)).fetchall()
     cols = ["id", "recommend_log_id", "recommended_sectors", "sector_reasoning",
             "regime_label", "outcome", "outcome_note", "buy_reason", "code", "name",
+            "date",
             "signal", "trigger_trailing", "trigger_drift", "trigger_sector_adv",
             "logic_verdict", "sector_risk", "holding_risk", "detail"]
     return [dict(zip(cols, r, strict=False)) for r in rows]
@@ -334,7 +336,7 @@ def get_pending_sector_selections() -> list[tuple]:
 
     不按月过滤：进化引擎每月结算"全部待定"，幂等且防跨月遗漏
     （某月漏跑进化时，遗留的待定记录仍会在下次结算中被处理）。
-    pool_sectors（P1-5）：量化池内候选赛道 JSON，结算时逐赛道回看 20 日收益。
+    pool_sectors（P1-5）：量化池内候选赛道 JSON，结算时逐赛道回看 40 日收益。
     """
     with db_conn() as conn:
         rows = conn.execute("SELECT id, recommend_log_id, used_insight_ids, pool_sectors FROM sector_selections WHERE (outcome = '待定' OR outcome IS NULL)").fetchall()
@@ -370,9 +372,23 @@ def get_quality_metrics(limit: int=6) -> list[dict]:
     return out
 
 def get_quality_sample_rows(period_start: str, period_end: str) -> list[tuple]:
-    """区间内有效推荐样本 (code, recommend_date, score, candidate_codes)，供质量度量。"""
+    """区间内有效推荐样本 (code, recommend_date, score, candidate_codes, reco_path)，供质量度量。"""
     with db_conn() as conn:
-        rows = conn.execute('SELECT code, recommend_date, score, candidate_codes FROM recommend_log WHERE recommend_date >= ? AND recommend_date <= ? AND score IS NOT NULL AND status != ? ORDER BY recommend_date ASC, code ASC', (period_start, period_end, domain.SIGNAL_REJECT)).fetchall()
+        rows = conn.execute('SELECT code, recommend_date, score, candidate_codes, reco_path FROM recommend_log WHERE recommend_date >= ? AND recommend_date <= ? AND score IS NOT NULL AND status != ? ORDER BY recommend_date ASC, code ASC', (period_start, period_end, domain.SIGNAL_REJECT)).fetchall()
+    return list(rows)
+
+
+def get_e2e_sample_rows(period_start: str, period_end: str) -> list[tuple]:
+    """区间内推荐的端到端 P&L 样本 (code, recommend_date, entry_nav, status, exit_date, return_rate)。
+
+    供 compute_e2e_metrics 按实际退出日期算净收益（对比 40 日理论收益）。
+    """
+    with db_conn() as conn:
+        rows = conn.execute(
+            'SELECT code, recommend_date, entry_nav, status, exit_date, return_rate '
+            'FROM recommend_log WHERE recommend_date >= ? AND recommend_date <= ? '
+            'AND status != ? ORDER BY recommend_date ASC, code ASC',
+            (period_start, period_end, domain.SIGNAL_REJECT)).fetchall()
     return list(rows)
 
 def get_ranking_cfg() -> domain.RankingConfig:
@@ -409,6 +425,16 @@ def get_sector_insights(limit: int=5) -> list[tuple[int, str]]:
     with db_conn() as conn:
         rows = conn.execute("SELECT id, insight FROM evolution_insights WHERE insight_type = 'sector' AND active = 1 AND confidence > 0.3 ORDER BY created_date DESC LIMIT ?", (limit,)).fetchall()
     return [(r[0], r[1]) for r in rows]
+
+
+def get_sector_insights_dated(limit: int = 10) -> list[tuple[int, str, str]]:
+    """活跃赛道洞察含生效日（因果验证用），返回 (id, insight, created_date)。"""
+    with db_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, insight, created_date FROM evolution_insights "
+            "WHERE insight_type = 'sector' AND active = 1 AND confidence > 0.3 "
+            "ORDER BY created_date DESC LIMIT ?", (limit,)).fetchall()
+    return [(r[0], r[1], r[2]) for r in rows]
 
 def get_tracking_list() -> list[dict]:
     """追踪监控列表：每基金一行，rec_count = 被推荐引擎选中的累计运行次数。
@@ -485,11 +511,12 @@ def get_recent_monitor_signals(code: str, limit: int = 25,
     with db_conn() as conn:
         return conn.execute(sql, (code, limit)).fetchall()
 
-def insert_recommendation(date_str: str, code: str, name: str, rank: int, score: float, combo: float, regime: str, buy_reason: str, status: str='HOLD', feature_snapshot: str | None=None, entry_nav: float | None=None, candidate_codes: list | None=None, vetoed: list | None=None) -> int:
+def insert_recommendation(date_str: str, code: str, name: str, rank: int, score: float, combo: float, regime: str, buy_reason: str, status: str='HOLD', feature_snapshot: str | None=None, entry_nav: float | None=None, candidate_codes: list | None=None, vetoed: list | None=None, reco_path: str='sector') -> int:
     """写入推荐记录，返回新行 id。status 覆盖 HOLD（正常）/REJECT（风控拦截）。
 
     candidate_codes：当日该赛道候选池代码列表（Q5 裁决损耗观测：LLM 选中 vs 候选池）。
     vetoed（T07）：LLM 否决记录列表 [{code,name,reason}]——结构化落库供否决审计。
+    reco_path（D+分口径）：推荐来源路径 sector/degrade，供质量度量分口径评估。
     （同日幂等）同日多次运行推荐引擎（重试/手动重跑）时，同 (recommend_date, code)
     更新原行而非追加——id 保持稳定，避免 monitor_events/sector_selections 引用悬空，
     也杜绝同日同一基金重复推荐记录；同时刷新 created_at 为本次运行时间，
@@ -506,19 +533,19 @@ def insert_recommendation(date_str: str, code: str, name: str, rank: int, score:
             conn.execute(
                 'UPDATE recommend_log SET name=?, rank=?, score=?, combo=?, regime=?, '
                 'buy_reason=?, status=?, feature_snapshot=?, entry_nav=?, candidate_codes=?, '
-                'vetoed_json=?, '
+                'vetoed_json=?, reco_path=?, '
                 'rec_count=COALESCE(rec_count, 0) + 1, created_at=datetime(\'now\') '
                 'WHERE id=?',
                 (name, rank, score, combo, regime, buy_reason, status, feature_snapshot,
-                 entry_nav, cand_json, veto_json, row[0]))
+                 entry_nav, cand_json, veto_json, reco_path, row[0]))
             return row[0]
-        cur = conn.execute('INSERT INTO recommend_log (recommend_date, code, name, rank, score, combo, regime, buy_reason, status, feature_snapshot, entry_nav, candidate_codes, vetoed_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (date_str, code, name, rank, score, combo, regime, buy_reason, status, feature_snapshot, entry_nav, cand_json, veto_json))
+        cur = conn.execute('INSERT INTO recommend_log (recommend_date, code, name, rank, score, combo, regime, buy_reason, status, feature_snapshot, entry_nav, candidate_codes, vetoed_json, reco_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (date_str, code, name, rank, score, combo, regime, buy_reason, status, feature_snapshot, entry_nav, cand_json, veto_json, reco_path))
         return cur.lastrowid or 0
 
 def insert_sector_selection(date_str: str, log_id: int, recommended_sectors: list, risk_sectors: list, sector_reasoning: str, regime_label: str, used_insight_ids: list | None = None, pool_sectors: list | None = None) -> None:
     """写入当日赛道选择快照。used_insight_ids：选赛道时实际携带的 sector 洞察 id（Q4 反馈回路关联）。
 
-    pool_sectors（P1-5）：量化池内全部候选赛道——结算时逐赛道回看 20 日收益，
+    pool_sectors（P1-5）：量化池内全部候选赛道——结算时逐赛道回看 40 日收益，
     度量 LLM 否决/未选是否系统性错过上涨赛道（否决反事实）。
     """
     used_json = _json.dumps(used_insight_ids or [], ensure_ascii=False)
@@ -576,10 +603,18 @@ def list_active_insights() -> list[tuple]:
         rows = conn.execute('SELECT id, confidence, apply_count FROM evolution_insights WHERE active = 1').fetchall()
     return list(rows)
 
-def record_empty_recommendation(date_str: str, reasoning: str) -> None:
-    """记录一个空推荐日：宏观分析判定当天无合适机会（每天一条，可回溯历史）。"""
+def record_empty_recommendation(date_str: str, reasoning: str,
+                                reason_type: str = "no_opportunity") -> None:
+    """记录一个空推荐日（每天一条，可回溯历史）。
+
+    reason_type 分层（审计 P1-2）：no_opportunity=市场/量化判断无机会（合法决策）；
+    data_failure=数据故障导致空推（特征陈旧/缺失），便于面板区分"今日确实无机会"
+    与"系统没数据而假装无机会"。
+    """
     with db_conn() as conn:
-        conn.execute('INSERT INTO empty_recommendations (date, reasoning) VALUES (?, ?) ON CONFLICT(date) DO UPDATE SET reasoning = excluded.reasoning', (date_str, reasoning))
+        conn.execute('INSERT INTO empty_recommendations (date, reasoning, reason_type) VALUES (?, ?, ?) '
+                     'ON CONFLICT(date) DO UPDATE SET reasoning = excluded.reasoning, reason_type = excluded.reason_type',
+                     (date_str, reasoning, reason_type))
 
 def save_context(date_str: str, context_json: dict) -> None:
     """写入当日宏观上下文快照（Web 面板"AI赛道分析"展示数据源；覆盖式，非缓存）。"""
@@ -628,8 +663,11 @@ def save_macro_news(date_str: str, news: str, top_gainers: str, top_losers: str,
 def save_quality_metrics(m: dict) -> None:
     """保存一次质量度量结果（同区间幂等：重复运行覆盖）。"""
     points_json = _json.dumps(m.get('points', []), ensure_ascii=False)
+    by_path_json = _json.dumps(m.get('by_path', {}), ensure_ascii=False)
+    by_score_bucket_json = _json.dumps(m.get('by_score_bucket', {}), ensure_ascii=False)
+    e2e_points_json = _json.dumps(m.get('e2e_points', []), ensure_ascii=False)
     with db_conn() as conn:
-        conn.execute('INSERT INTO quality_metrics (computed_date, period_start, period_end, ic, excess_win_rate, mean_excess, cum_excess, profit_rate, mean_abs_ret, payoff_ratio, sample_count, decision_loss, decision_gap_best, points_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(period_start, period_end) DO UPDATE SET computed_date = excluded.computed_date, ic = excluded.ic, excess_win_rate = excluded.excess_win_rate, mean_excess = excluded.mean_excess, cum_excess = excluded.cum_excess, profit_rate = excluded.profit_rate, mean_abs_ret = excluded.mean_abs_ret, payoff_ratio = excluded.payoff_ratio, sample_count = excluded.sample_count, decision_loss = excluded.decision_loss, decision_gap_best = excluded.decision_gap_best, points_json = excluded.points_json', (m['computed_date'], m.get('period_start'), m.get('period_end'), m.get('ic'), m.get('excess_win_rate'), m.get('mean_excess'), m.get('cum_excess'), m.get('profit_rate'), m.get('mean_abs_ret'), m.get('payoff_ratio'), m.get('sample_count', 0), m.get('decision_loss'), m.get('decision_gap_best'), points_json))
+        conn.execute('INSERT INTO quality_metrics (computed_date, period_start, period_end, ic, excess_win_rate, mean_excess, cum_excess, profit_rate, mean_abs_ret, payoff_ratio, sample_count, decision_loss, decision_gap_best, points_json, by_path_json, by_score_bucket_json, e2e_profit_rate, e2e_mean_ret, e2e_payoff_ratio, timing_contribution, e2e_sample_count, e2e_points_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(period_start, period_end) DO UPDATE SET computed_date = excluded.computed_date, ic = excluded.ic, excess_win_rate = excluded.excess_win_rate, mean_excess = excluded.mean_excess, cum_excess = excluded.cum_excess, profit_rate = excluded.profit_rate, mean_abs_ret = excluded.mean_abs_ret, payoff_ratio = excluded.payoff_ratio, sample_count = excluded.sample_count, decision_loss = excluded.decision_loss, decision_gap_best = excluded.decision_gap_best, points_json = excluded.points_json, by_path_json = excluded.by_path_json, by_score_bucket_json = excluded.by_score_bucket_json, e2e_profit_rate = excluded.e2e_profit_rate, e2e_mean_ret = excluded.e2e_mean_ret, e2e_payoff_ratio = excluded.e2e_payoff_ratio, timing_contribution = excluded.timing_contribution, e2e_sample_count = excluded.e2e_sample_count, e2e_points_json = excluded.e2e_points_json', (m['computed_date'], m.get('period_start'), m.get('period_end'), m.get('ic'), m.get('excess_win_rate'), m.get('mean_excess'), m.get('cum_excess'), m.get('profit_rate'), m.get('mean_abs_ret'), m.get('payoff_ratio'), m.get('sample_count', 0), m.get('decision_loss'), m.get('decision_gap_best'), points_json, by_path_json, by_score_bucket_json, m.get('e2e_profit_rate'), m.get('e2e_mean_ret'), m.get('e2e_payoff_ratio'), m.get('timing_contribution'), m.get('e2e_sample_count', 0), e2e_points_json))
 
 def save_ranking_cfg(weights: dict) -> None:
     """写入排序权重（进化自纠偏用）。"""
@@ -646,7 +684,7 @@ def update_insight_confidence(insight_id: int, confidence: float, active: int) -
         conn.execute('UPDATE evolution_insights SET confidence = ?, active = ? WHERE id = ?', (confidence, active, insight_id))
 
 def update_sector_selection_outcome(ss_id: int, outcome: str, date: str, note: str, pool_outcomes: dict | None = None) -> None:
-    """回填赛道选择的结算结果。pool_outcomes（P1-5）：池内各赛道代表基金 20 日收益映射。"""
+    """回填赛道选择的结算结果。pool_outcomes（P1-5）：池内各赛道代表基金 40 日收益映射。"""
     with db_conn() as conn:
         if pool_outcomes is not None:
             conn.execute('UPDATE sector_selections SET outcome=?, outcome_date=?, outcome_note=?, pool_outcomes=? WHERE id=?',
@@ -691,14 +729,17 @@ def get_candidate_nav_summaries(items: list[tuple[str, str]]) -> dict[str, dict]
             f"SELECT code, entry_nav FROM recommend_log WHERE (code, recommend_date) IN ({pair_ph})",
             pairs).fetchall():
             out[code]["entry_nav"] = nav
-        # 最新监控信号（排序口径 date DESC, id DESC，与 get_latest_monitor_event 一致）
+        # 最新监控信号（排序口径 date DESC, id DESC，与 get_latest_monitor_event 一致）；
+        # 审计 P1-2：过滤 is_stale=1 数据告警——净值陈旧不是持仓风险信号，
+        # 否则用户会把"数据问题"误读为"持仓风险"（无信号时 dashboard 回退推荐状态）
         for code, sig in conn.execute(
             f"SELECT code, signal FROM (SELECT code, signal, "
             f"ROW_NUMBER() OVER (PARTITION BY code ORDER BY date DESC, id DESC) rk "
-            f"FROM monitor_events WHERE code IN ({code_ph})) WHERE rk = 1", codes).fetchall():
+            f"FROM monitor_events WHERE code IN ({code_ph}) AND is_stale = 0) "
+            f"WHERE rk = 1", codes).fetchall():
             out[code]["signal"] = sig
     return out
 
 
 
-__all__ = ["clear_recommendations", "clear_empty_recommendation", "count_recommendation_domain", "exit_position", "get_active_insights", "get_all_insights", "get_empty_recommendation", "get_entry", "get_entry_nav", "get_entry_score", "get_first_reco_date", "get_fund_detail", "get_holding_codes", "get_holding_log_id", "get_entry_feature_snapshot", "get_entry_sector_anchor", "get_latest_macro_news", "get_recent_macro_news", "get_latest_monitor_event", "get_latest_reco_id", "get_latest_recommendations", "get_settled_cases_after", "get_pending_sector_selections", "get_pool_outcomes_rows", "get_purchase_status", "get_purchase_statuses", "get_candidate_nav_summaries", "save_purchase_restriction", "get_quality_metrics", "get_quality_sample_rows", "get_ranking_cfg", "get_reco_date_of", "get_recommendation_by_id", "get_sector_insights", "get_tracking_list", "get_vetoed_audit_rows", "insert_insight", "insert_llm_audit", "insert_monitor_event", "insert_monitor_score", "get_recent_scores", "get_recent_monitor_signals", "insert_recommendation", "insert_sector_selection", "get_empty_reco_dates", "get_reco_dates", "list_active_insights", "record_empty_recommendation", "save_flow_data", "save_macro_news", "save_quality_metrics", "save_context", "save_ranking_cfg", "save_sector_snapshot", "update_highest_nav", "update_insight_confidence", "update_sector_selection_outcome", "update_status", "mark_insights_applied", "adjust_insight_confidence"]
+__all__ = ["clear_recommendations", "clear_empty_recommendation", "count_recommendation_domain", "exit_position", "get_active_insights", "get_all_insights", "get_empty_recommendation", "get_e2e_sample_rows", "get_entry", "get_entry_nav", "get_entry_score", "get_first_reco_date", "get_fund_detail", "get_holding_codes", "get_holding_log_id", "get_entry_feature_snapshot", "get_entry_sector_anchor", "get_latest_macro_news", "get_recent_macro_news", "get_latest_monitor_event", "get_latest_reco_id", "get_latest_recommendations", "get_settled_cases_after", "get_pending_sector_selections", "get_pool_outcomes_rows", "get_purchase_status", "get_purchase_statuses", "get_candidate_nav_summaries", "save_purchase_restriction", "get_quality_metrics", "get_quality_sample_rows", "get_ranking_cfg", "get_reco_date_of", "get_recommendation_by_id", "get_sector_insights", "get_sector_insights_dated", "get_tracking_list", "get_vetoed_audit_rows", "insert_insight", "insert_llm_audit", "insert_monitor_event", "insert_monitor_score", "get_recent_scores", "get_recent_monitor_signals", "insert_recommendation", "insert_sector_selection", "get_empty_reco_dates", "get_reco_dates", "list_active_insights", "record_empty_recommendation", "save_flow_data", "save_macro_news", "save_quality_metrics", "save_context", "save_ranking_cfg", "save_sector_snapshot", "update_highest_nav", "update_insight_confidence", "update_sector_selection_outcome", "update_status", "mark_insights_applied", "adjust_insight_confidence"]

@@ -6,6 +6,8 @@ import re
 import sqlite3
 import sys
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 
 from app.data.fetchers import fetch
@@ -22,6 +24,7 @@ from app.features import calculator as _features
 from app.features.calculator import EMA_WARMUP_NAVS
 from app.repo import meta_keys as META
 from app.repo.base import (
+    get_index_rows,
     get_industry_map_stats,
     get_meta,
     get_nav_time_state,
@@ -77,9 +80,9 @@ _LIST_UPDATE_INTERVAL_DAYS = 7
 def update_fund_list_weekly(force: bool = False) -> int:
     last = get_meta(META.FUND_LIST_LAST_UPDATE)
     if last and not force:
-            last_dt = datetime.strptime(last, "%Y-%m-%d")
-            age_days = (datetime.now() - last_dt).days
-            if age_days < _LIST_UPDATE_INTERVAL_DAYS:
+        last_dt = datetime.strptime(last, "%Y-%m-%d")
+        age_days = (datetime.now() - last_dt).days
+        if age_days < _LIST_UPDATE_INTERVAL_DAYS:
                 logger.info("基金列表 %d 天前更新过（<%d 天），跳过",
                             age_days, _LIST_UPDATE_INTERVAL_DAYS)
                 return -1
@@ -216,6 +219,166 @@ _STEP_FEATURES = 7       # 特征计算
 _STEP_MODEL_READY = 8    # 推荐模型就绪检查（仅日志）
 ALL_STEPS = frozenset({_STEP_FUND_LIST, _STEP_NAV, _STEP_INDEX, _STEP_HOLDINGS,
                        _STEP_RBSA_STATS, _STEP_FEATURES, _STEP_MODEL_READY})
+
+# ── 数据基座 Step 注册表（2026-09 架构深化 候选3）──
+# step 状态语义（成功才置位 / 后置打标 / 失败各自 try）此前散在 run_pipeline 各 if 块：
+# pipeline 自愈硬编码 steps=[4]、CLI --step 靠 ALL_STEPS 校验，调用者被迫内隐
+# "哪步该重跑、失败会怎样"。注册表把 执行→成功后置 显式化，run_pipeline / 自愈 /
+# CLI 消费同一份定义；on_success 只在 run 无异常后执行（失败不置位、下次自动重试）。
+
+@dataclass(frozen=True)
+class PipelineStep:
+    """数据基座单步定义：执行体 + 成功后置动作（on_success）。"""
+    id: int
+    name: str
+    run: Callable[[], None]
+    on_success: tuple[Callable[[], None], ...] = ()
+
+
+def _step_fund_list() -> None:
+    """Step 1：基金列表获取与过滤（周重建，内部按间隔幂等）。"""
+    update_fund_list_weekly()
+
+
+def _step_nav() -> None:
+    """Step 2：净值增量/首次全量下载 + 停更/短历史打标（后置）。"""
+    t = time.time()
+    if has_nav_data():
+        total_new = asyncio.run(async_update_nav_incremental(concurrency=10))
+    else:
+        total_new = asyncio.run(async_download_all_nav(concurrency=15))
+    logger.info("净值更新完成: %d 条 (%.0fms)", total_new, (time.time() - t) * 1000)
+
+
+def _mark_stale_after_nav() -> None:
+    """Step 2 后置：净值更新后立即打标停更/数据不足基金，让后续步骤自动跳过。"""
+    mark_stale_funds()
+    mark_short_history_funds()
+
+
+def _step_index() -> None:
+    """Step 3：宏观指数（沪深300/上证/ETF），三标的各自 try（单个失败不中断）。"""
+    # 增量窗口 120 条（覆盖 EMA60 预热 + 特征/回测最大回看窗口，含余量）：
+    # 本地已有数据时无需拉 13.5 年全量；历史断档由 --index-backfill 显式补拉。
+    datalen = _INDEX_INCREMENT_WINDOW if has_index_data() else _INDEX_BACKFILL_WINDOW
+    for symbol, label in [("sh000300", "沪深300"), ("sh000001", "上证指数"),
+                          ("sh510300", "沪深300ETF")]:
+        try:
+            if symbol == "sh510300":
+                data = fetch_etf_daily(datalen=datalen)
+            else:
+                data = fetch_index_daily(datalen=datalen, symbol=symbol)
+            n = save_index_daily(symbol, data)
+            logger.info("%s日线新增 %d 条", label, n)
+        except Exception as e:
+            logger.error("%s 日线获取失败: %s", label, str(e)[:120], exc_info=True)
+
+
+def _check_index_freshness(threshold: int = 3) -> None:
+    """Step 3 后置：指数新鲜度核查（审计 P1-2）——缺口静默破坏 EMA60/regime/市场状态列。
+
+    与净值不同，指数断档此前无显式告警；超阈值 error 级日志并记 meta（INDEX_FRESHNESS）。
+    无交易日历缓存不误报。
+    """
+    rows = get_index_rows("sh000300")
+    if not rows:
+        logger.error("指数数据完全缺失（index_daily 无 sh000300）——EMA60/regime/市场状态列"
+                     "全部失真，请运行 python -m app.data.foundation --index-backfill")
+        return
+    latest = rows[-1][0]
+    raw = get_meta(META.TRADE_DATES_CACHE)
+    if not raw:
+        return
+    try:
+        days = set(json.loads(raw))
+    except (json.JSONDecodeError, TypeError):
+        return
+    today = datetime.now().date().isoformat()
+    if today in days:
+        expected = max((d for d in days if d < today), default=None)
+    else:
+        expected = max((d for d in days if d <= today), default=None)
+    if expected is None or latest >= expected:
+        return
+    lag = trading_day_lag(latest, expected, days=days)
+    if lag < threshold:
+        return
+    logger.error("指数新鲜度: 本地最新 %s 滞后 %d 个交易日(>%d)——EMA60/regime/市场状态列"
+                 "可能失真；停跑超 ~6 个月的历史缺口需手动 --index-backfill", latest, lag, threshold)
+    try:
+        save_meta(META.INDEX_FRESHNESS, json.dumps(
+            {"latest": latest, "lag": lag, "threshold": threshold,
+             "at": datetime.now().strftime("%Y-%m-%d")}, ensure_ascii=False))
+    except Exception as e:
+        logger.warning("指数新鲜度 meta 记录失败: %s", str(e)[:100])
+
+
+def _step_holdings() -> None:
+    """Step 4：重仓股下载 + 行业映射（成功后置位 holdings_last_run，失败不置位）。"""
+    asyncio.run(async_download_all_holdings())
+    logger.info("更新申万行业映射（持仓→行业）...")
+    total_mapped = update_industry_map()
+    logger.info("行业映射完成: %d 条", total_mapped)
+
+
+def _mark_holdings_run() -> None:
+    """Step 4 后置：成功才置位持仓周期标记（失败不更新，下次运行自动重试）。"""
+    save_meta(META.HOLDINGS_LAST_RUN, datetime.now().strftime("%Y-%m-%d"))
+
+
+def _step_rbsa_stats() -> None:
+    """Step 6：RBSA 行业暴露统计（仅日志）。"""
+    mapped, holdings_funds = get_industry_map_stats()
+    logger.info("stock_industry_map: %d 条, fund_holdings 覆盖: %d 只基金",
+                mapped, holdings_funds)
+
+
+def _step_features() -> None:
+    """Step 7：特征计算。"""
+    _features.calc_all_features()
+
+
+def _step_model_ready() -> None:
+    """Step 8：推荐模型就绪检查（重训判定收敛进模型 seam，管线不自行判断）。"""
+    from app.model import get_or_train
+    model = get_or_train()
+    if model is None:
+        logger.error("无可用模型，推荐引擎跳过")
+    else:
+        logger.info("模型已就绪")
+
+
+STEP_REGISTRY: dict[int, PipelineStep] = {
+    _STEP_FUND_LIST: PipelineStep(_STEP_FUND_LIST, "基金列表获取与过滤", _step_fund_list),
+    _STEP_NAV: PipelineStep(_STEP_NAV, "净值更新与停更打标", _step_nav,
+                            on_success=(_mark_stale_after_nav,)),
+    _STEP_INDEX: PipelineStep(_STEP_INDEX, "宏观指数获取", _step_index,
+                              on_success=(_check_index_freshness,)),
+    _STEP_HOLDINGS: PipelineStep(_STEP_HOLDINGS, "重仓股与行业映射", _step_holdings,
+                                 on_success=(_mark_holdings_run,)),
+    _STEP_RBSA_STATS: PipelineStep(_STEP_RBSA_STATS, "RBSA 行业暴露统计", _step_rbsa_stats),
+    _STEP_FEATURES: PipelineStep(_STEP_FEATURES, "特征计算", _step_features),
+    _STEP_MODEL_READY: PipelineStep(_STEP_MODEL_READY, "模型就绪检查", _step_model_ready),
+}
+
+
+def run_pipeline(steps: list[int] | None = None) -> None:
+    """数据基座主入口：按注册表编排 step（架构深化 候选3）。
+
+    step 定义/失败语义/成功置位收敛到 STEP_REGISTRY；本函数只负责按序执行
+    + on_success（run 无异常才执行）。自愈（pipeline.py）与 CLI（--step）
+    消费同一注册表，调用者不再内隐"哪步该重跑、失败会怎样"。
+    """
+    selected = sorted(ALL_STEPS) if steps is None else steps
+    for sid in sorted(set(selected) & set(STEP_REGISTRY)):
+        step = STEP_REGISTRY[sid]
+        logger.info("=== Step %d: %s ===", step.id, step.name)
+        t = time.time()
+        step.run()
+        for post in step.on_success:
+            post()
+        logger.info("Step%d %s完成 (%.0fms)", step.id, step.name, (time.time() - t) * 1000)
+    logger.info("数据基座流程完成")
 _HOLDINGS_INTERVAL_DAYS = 7
 """无持仓披露冷却（天）：ETF联接/商品基金等在 fundf10 本就无重仓股披露，
 拉到空属常态而非故障。季报频率下月度重试足够——满 3 个周期后进 30 天冷却，
@@ -242,93 +405,6 @@ def daily_steps() -> list[int]:
     if elapsed > _HOLDINGS_INTERVAL_DAYS:
         return [1, 2, 3, _STEP_HOLDINGS, _STEP_FEATURES]
     return [1, 2, 3, _STEP_FEATURES]
-
-
-def run_pipeline(steps: list[int] | None = None) -> None:
-    all_steps = ALL_STEPS
-    steps = steps or sorted(all_steps)
-
-    with db_conn():
-
-        if _STEP_FUND_LIST in steps:
-            logger.info("=== Step 1: 基金列表获取与过滤 ===")
-            t1 = time.time()
-            update_fund_list_weekly()
-            logger.info("Step1 基金列表完成 (%.0fms)", (time.time() - t1) * 1000)
-
-        if _STEP_NAV in steps:
-            has_nav = has_nav_data()
-            if has_nav:
-                logger.info("=== Step 2: 净值增量更新（并发增量）===")
-                t2 = time.time()
-                total_new = asyncio.run(async_update_nav_incremental(concurrency=10))
-            else:
-                logger.info("=== Step 2: 净值首次全量下载（pingzhongdata 高并发）===")
-                t2 = time.time()
-                total_new = asyncio.run(async_download_all_nav(concurrency=15))
-            logger.info("Step2 净值更新完成: %d 条 (%.0fms)",
-                        total_new, (time.time() - t2) * 1000)
-            # 净值更新后立即打标停更/数据不足基金：让后续持仓/特征/推荐步骤自动跳过（查询均带 is_buyable=1）
-            mark_stale_funds()
-            mark_short_history_funds()
-
-        if _STEP_INDEX in steps:
-            logger.info("=== Step 3: 宏观指数获取 ===")
-            # 增量窗口 120 条（覆盖 EMA60 预热 + 特征/回测最大回看窗口，含余量）：
-            # 本地已有数据时无需拉 13.5 年全量；save_index_daily 的缺口补齐只在
-            # 接口窗口内生效，历史断档由 --index-backfill 显式补拉。
-            datalen = _INDEX_INCREMENT_WINDOW if has_index_data() else _INDEX_BACKFILL_WINDOW
-            try:
-                index_data = fetch_index_daily(datalen=datalen)
-                n = save_index_daily("sh000300", index_data)
-                logger.info("沪深300日线新增 %d 条", n)
-            except Exception as e:
-                logger.error("沪深300 日线获取失败: %s", str(e)[:120], exc_info=True)
-            try:
-                sse_data = fetch_index_daily(datalen=datalen, symbol="sh000001")
-                n_sse = save_index_daily("sh000001", sse_data)
-                logger.info("上证指数日线新增 %d 条", n_sse)
-            except Exception as e:
-                logger.error("上证指数 日线获取失败: %s", str(e)[:120], exc_info=True)
-            try:
-                etf_data = fetch_etf_daily(datalen=datalen)
-                n_etf = save_index_daily("sh510300", etf_data)
-                logger.info("沪深300ETF(510300)日线新增 %d 条", n_etf)
-            except Exception as e:
-                logger.error("沪深300ETF 日线获取失败: %s", str(e)[:120], exc_info=True)
-
-        if _STEP_HOLDINGS in steps:
-            logger.info("=== Step 4: 重仓股数据获取 ===")
-            asyncio.run(async_download_all_holdings())
-            logger.info("更新申万行业映射（持仓→行业）...")
-            total_mapped = update_industry_map()
-            logger.info("行业映射完成: %d 条", total_mapped)
-            # Step 4 成功后才置位持仓周期标记：失败不更新，下次运行自动重试
-            # （此前在 pipeline 提前置位，失败也被记作"今天已跑"）
-            save_meta(META.HOLDINGS_LAST_RUN, datetime.now().strftime("%Y-%m-%d"))
-
-        if _STEP_RBSA_STATS in steps:
-            logger.info("=== Step 6: RBSA 行业暴露 ===")
-            mapped, holdings_funds = get_industry_map_stats()
-            logger.info("stock_industry_map: %d 条, fund_holdings 覆盖: %d 只基金",
-                        mapped, holdings_funds)
-
-        if _STEP_FEATURES in steps:
-            logger.info("=== Step 7: 特征计算 ===")
-            _features.calc_all_features()
-
-        if _STEP_MODEL_READY in steps:
-            logger.info("=== Step 8: 推荐引擎 ===")
-            # 重训判定 / 路径 / 训练全部收敛进模型 seam（app/model.py），管线不自行判断
-            from app.model import get_or_train
-            model = get_or_train()
-            if model is None:
-                logger.error("无可用模型，推荐引擎跳过")
-            else:
-                logger.info("模型已就绪")
-
-    logger.info("数据基座流程完成")
-
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--step":

@@ -26,11 +26,11 @@ _FORWARD_WINDOW = repo.FORWARD_WINDOW
 # 训练标签版本：重构后统一为 40 日绝对收益（reco-hardening T01）。
 # 模型 meta 记录训练时的标签版本；加载路径校验不一致 → 强制重训，
 # 防止新逻辑（入场门槛/排序/监控退出）跑在旧标签模型输出上。
-LABEL_VERSION = "abs_ret_40d"
+LABEL_VERSION = "abs_ret_40d_v2"  # v2：bias_60d 移入市场状态列（差值特征已按 importance 证据撤回）触发重训
 
 # 重训间隔（天）：每周一次。
-# 验证依据（2026-08 实测）：标签是未来 20 个交易日收益，今天训练时最新可用样本
-# 已在 20 个交易日前；面板采样步长 20 天，相邻两天训练集差异仅 ~0.3%。每天重训
+# 验证依据（2026-08 实测）：标签是未来 40（FORWARD_DAYS）个交易日收益，今天训练时最新可用样本
+# 已在 40 个交易日前；面板采样步长 20 天，相邻两次采样训练集差异仅 ~0.3%。每天重训
 # 近乎空转，且头部基金预测分接近时模型微调会翻转 Top 排序（K=1 重训 Top-10 重合
 # 仅 ~40%），改为每周重训：既持续纳入新样本，又不给推荐排序引入不必要的日间抖动。
 _RETRAIN_INTERVAL_DAYS = 7
@@ -244,6 +244,8 @@ def latest_market_state() -> dict:
             vols = np.array([r[2] for r in idx_rows], dtype=float)
             _mkt_state_cache = market_state_features(closes, vols)
         else:
+            # 审计 P2-4：指数缺失显式告警（不静默 0）——模型在分布外输入打分
+            logger.warning("指数数据缺失（sh000300 无行）：市场状态列填 0，模型打分失真风险")
             _mkt_state_cache = {c: 0.0 for c in MARKET_COLS}
         _mkt_state_cache_date = today
     return _mkt_state_cache

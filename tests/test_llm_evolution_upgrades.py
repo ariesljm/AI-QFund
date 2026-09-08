@@ -113,6 +113,7 @@ class TestInsightTrialPeriod:
         monkeypatch.setattr(evolve, "_collect_cases",
                             lambda ss_id: ([], [], [{"id": 1, "outcome": "负"}]))
         monkeypatch.setattr(evolve, "_decision_loss_streak", lambda: 0)
+        monkeypatch.setattr(evolve, "_MIN_ANALYSIS_CASES", 1)  # 门槛不干扰去重语义测试
         monkeypatch.setattr(evolve, "_batch_llm_analyze",
                             lambda *a, **k: [
                                 {"insight": "回避赛道重合时不得推荐相关基金", "type": "sector"},

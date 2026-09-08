@@ -7,7 +7,7 @@
 保持 llm 层无 engine 依赖。
 """
 
-from app import repo
+from app import domain, repo
 
 
 def build_holdings_text(code: str, limit: int = 5) -> str:
@@ -114,3 +114,89 @@ def news_theme_summary(days: int = 7) -> str:
             first = first[:80] + "…"
         lines.append(f"({d}) {first}")
     return "\n".join(lines)
+
+
+# ── 新闻主题聚合（#3 方向 A：政策持续性 vs 媒体情绪过热，不做热度排序） ──
+
+# 政策驱动词（正面：产业逻辑强化，对应"刚启动"的潜在线索）
+_POLICY_KEYWORDS = (
+    "政策", "规划", "补贴", "扶持", "出台", "条例", "方案", "纲要",
+    "部署", "试点", "批复", "加码", "专项行动", "指导意见", "落地",
+)
+
+# 媒体情绪词（风险：关注度过热，对应"追高"；仅作否决参考，不作选择依据）
+_SENTIMENT_KEYWORDS = (
+    "涨停", "大涨", "飙升", "暴涨", "热炒", "火爆", "疯涨", "抢筹",
+    "新高", "连板",
+)
+
+
+def build_sector_vocab() -> dict[str, str]:
+    """赛道词典：{别名或行业名 → 规范 RBSA 行业名}（新闻主题匹配单一来源）。
+
+    包含 domain.SECTOR_ALIASES（LLM 自由名 → RBSA 名）与 RBSA 可用行业名
+    （自映射），让新闻文本里的"光伏""芯片"与"电源设备""半导体"命中同一规范名。
+    """
+    vocab = dict(domain.SECTOR_ALIASES)
+    for s in repo.get_available_sectors():
+        vocab.setdefault(s, s)
+    return vocab
+
+
+def extract_sector_mentions(text: str, vocab: dict[str, str]) -> set[str]:
+    """扫描文本命中赛道（纯词典子串匹配，无 LLM/无 NLP 库），返回规范赛道名集合。"""
+    hits: set[str] = set()
+    for alias, canonical in vocab.items():
+        if alias and alias in text:
+            hits.add(canonical)
+    return hits
+
+
+def sector_theme_summary(days: int = 7, min_days: int = 2) -> str:
+    """近 N 日新闻主题聚合（方向 A）：政策持续性 vs 媒体情绪过热，不做热度排序。
+
+    逐条快讯扫描赛道命中，按政策词/情绪词分类：
+    - 政策词命中且持续 ≥min_days 天 → 政策持续主题（潜在启动线索，正面）；
+    - 情绪词命中且持续 ≥min_days 天 → 媒体过热提示（追高风险，仅作否决参考）。
+    政策词优先于情绪词（政策是根因、涨是结果）；两者都不命中为中性提及，忽略。
+    无持续主题返回空串（调用方降级 news_theme_summary）。
+    """
+    vocab = build_sector_vocab()
+    rows = repo.get_recent_macro_news(days)
+    themes: dict[str, dict] = {}
+    for date, text in rows:
+        for line in text.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            for canonical in extract_sector_mentions(line, vocab):
+                t = themes.setdefault(canonical, {
+                    "policy_days": set(), "sentiment_days": set(),
+                    "policy_count": 0, "sentiment_count": 0,
+                })
+                if any(kw in line for kw in _POLICY_KEYWORDS):
+                    t["policy_days"].add(date)
+                    t["policy_count"] += 1
+                elif any(kw in line for kw in _SENTIMENT_KEYWORDS):
+                    t["sentiment_days"].add(date)
+                    t["sentiment_count"] += 1
+
+    policy_lines, risk_lines = [], []
+    for canonical, t in sorted(themes.items()):
+        if len(t["policy_days"]) >= min_days:
+            policy_lines.append(
+                f"- {canonical}：近{days}日 {len(t['policy_days'])} 天有政策/产业事件"
+                f"（累计 {t['policy_count']} 条，潜在启动线索）")
+        if len(t["sentiment_days"]) >= min_days:
+            risk_lines.append(
+                f"- {canonical}：近{days}日 {len(t['sentiment_days'])} 天媒体情绪高关注"
+                f"（累计 {t['sentiment_count']} 条，警惕追高）")
+
+    parts = []
+    if policy_lines:
+        parts.append("【政策持续主题】（政策/产业事件持续出台 = 潜在启动线索）\n"
+                     + "\n".join(policy_lines))
+    if risk_lines:
+        parts.append("【媒体过热提示】（关注度持续升温 = 追高风险，仅作否决参考，不作选择依据）\n"
+                     + "\n".join(risk_lines))
+    return "\n\n".join(parts)

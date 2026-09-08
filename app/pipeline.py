@@ -1,7 +1,7 @@
 """管线编排模块：数据基座槽位 → 推荐/监控槽位（互不阻断）→ 进化（每日结算度量 + 月度重任务）。
 
 监控与推荐解耦：推荐失败（LLM 失败/模型缺失）不再中断监控盯盘，持仓信号链保持连续；
-进化每天附加（内部按间隔控制元分析/GA/衰减等重任务），保证推荐满 20 日窗口即被结算度量。
+进化每天附加（内部按间隔控制元分析/GA/衰减等重任务），保证推荐满 40 日窗口即被结算度量。
 """
 
 import time
@@ -10,7 +10,7 @@ from collections.abc import Callable
 from datetime import datetime
 
 import app.repo as repo
-from app.data.foundation import daily_steps, update_industry_map
+from app.data.foundation import _STEP_HOLDINGS, daily_steps, update_industry_map
 from app.data.foundation import run_pipeline as run_data_foundation
 from app.engine.monitor import run_monitor
 from app.engine.recommend import run_recommendation
@@ -53,7 +53,7 @@ def _evolve_phase(today: datetime) -> list[tuple[str, Callable[[], None]]]:
     """进化引擎 phase：每日附加（延迟 import 避免循环依赖）。
 
     内部按 28 天间隔控制重任务（元分析/GA/衰减），每日仅执行幂等的结算与质量度量——
-    修复时间窗错位：推荐满 20 日窗口（约 21 条净值）后次日即被结算，不再等月 1 号巧合满窗。
+    修复时间窗错位：推荐满 40 日窗口（约 41 条净值）后次日即被结算，不再等月 1 号巧合满窗。
     """
     from app.engine.evolve import run_evolve
     return [("进化引擎", lambda: run_evolve())]
@@ -107,9 +107,9 @@ def _ensure_recommend_data_ready() -> bool:
         # 需区分持仓空/行业映射空以决定自愈动作；计数读取失败视为无法自愈
         status = repo.check_data_ready()
         if status["holdings_cnt"] == 0:
-            logger.warning("推荐门控自愈：持仓为空，触发数据基座 Step 4（持仓+行业映射，"
-                           "首次自举可能耗时较长）")
-            run_data_foundation(steps=[4])
+            logger.warning("推荐门控自愈：持仓为空，触发数据基座 Step %d（持仓+行业映射，"
+                           "首次自举可能耗时较长）", _STEP_HOLDINGS)
+            run_data_foundation(steps=[_STEP_HOLDINGS])
         else:
             logger.warning("推荐门控自愈：行业映射为空（持仓已就绪），增量补拉行业映射")
             update_industry_map()

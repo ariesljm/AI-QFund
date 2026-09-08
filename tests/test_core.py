@@ -272,7 +272,7 @@ class TestComputeFundFeatures:
         feat = compute_fund_features(navs, idx_closes, idx_vols)
         assert feat is not None
         for key in ("hurst_60d", "momentum_20d", "calmar", "downside_vol",
-                    "capture_up", "capture_down", "bias_60d"):
+                    "capture_up", "capture_down"):
             assert key in feat
             assert np.isfinite(feat[key])
         assert feat["momentum_20d"] > 0  # 单调上涨序列动量应为正
@@ -485,7 +485,7 @@ class TestRankWithinSectors:
             "rbsa_industry_3": "", "rbsa_weight_3": 0.0,
             "hurst_60d": 0.6, "momentum_20d": mom, "calmar": 2.0,
             "downside_vol": 1.0, "capture_up": 1.0, "capture_down": 1.0,
-            "bias_60d": 0.0, "drawdown_60d": -5.0, "reversal_20d": 1.0,
+            "drawdown_60d": -5.0, "reversal_20d": 1.0,
             "mom_5d": mom, "mom_60d": mom, "vol_20d": 10.0,
         }
 
@@ -507,7 +507,7 @@ class TestRankWithinSectors:
             "calmar_weight": 0.1, "hurst_weight": 0.1, "momentum_guard_pct": -15.0,
         })
         ctx = MacroContext(recommended_sectors=sectors, risk_sectors=[], date="2026-08-02")
-        finalists = recommend_mod._rank_within_sectors(ctx, _FakeRankModel())
+        finalists, _path = recommend_mod._rank_within_sectors(ctx, _FakeRankModel())
         got = {f["sector"] for f in finalists}
         assert "半导体" in got, f"半导体被挤出候选: {got}"
         assert "电源设备" in got, f"电源设备被挤出候选: {got}"
@@ -540,7 +540,7 @@ class TestRankWithinSectors:
                 return -abs(X["momentum_20d"].to_numpy()) - 0.1  # 全部预测为负
 
         ctx = MacroContext(recommended_sectors=sectors, risk_sectors=[], date="2026-08-02")
-        finalists = recommend_mod._rank_within_sectors(ctx, _NegModel())
+        finalists, _path = recommend_mod._rank_within_sectors(ctx, _NegModel())
         # Ticket 05：负预测被硬过滤（赛道内与降级路径一致），返回空 → 上游记空推荐日
         assert finalists == []
 
@@ -565,7 +565,7 @@ class TestRankWithinSectors:
             "calmar_weight": 0.1, "hurst_weight": 0.1, "momentum_guard_pct": -15.0,
         })
         ctx = MacroContext(recommended_sectors=sectors, risk_sectors=["半导体"], date="2026-08-02")
-        finalists = recommend_mod._rank_within_sectors(ctx, _FakeRankModel())
+        finalists, _path = recommend_mod._rank_within_sectors(ctx, _FakeRankModel())
         codes = {f["code"] for f in finalists}
         assert "MIX_A" not in codes, f"第一行业在回避赛道的基金应整体剔除: {codes}"
         assert "PD_A" in codes
@@ -589,7 +589,7 @@ class TestRankWithinSectors:
             "calmar_weight": 0.1, "hurst_weight": 0.1, "momentum_guard_pct": -15.0,
         })
         ctx = MacroContext(recommended_sectors=sectors, risk_sectors=[], date="2026-08-02")
-        finalists = recommend_mod._rank_within_sectors(ctx, _FakeRankModel())
+        finalists, _path = recommend_mod._rank_within_sectors(ctx, _FakeRankModel())
         codes = {f["code"] for f in finalists}
         assert "F1C" not in codes, f"同基金 C 类应被去重: {codes}"
         assert "F1A" in codes and "F2" in codes
@@ -612,7 +612,7 @@ class TestRankWithinSectors:
             "calmar_weight": 0.1, "hurst_weight": 0.1, "momentum_guard_pct": -15.0,
         })
         ctx = MacroContext(recommended_sectors=sectors, risk_sectors=[], date="2026-08-02")
-        finalists = recommend_mod._rank_within_sectors(ctx, _FakeRankModel())
+        finalists, _path = recommend_mod._rank_within_sectors(ctx, _FakeRankModel())
         codes = {f["code"] for f in finalists}
         assert "MIX" not in codes, f"暴露<10% 的分散基金应被纯度门槛剔除: {codes}"
         assert "PURE" in codes

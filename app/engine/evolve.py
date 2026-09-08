@@ -14,11 +14,12 @@ import numpy as np
 
 import app.repo as repo
 from app import domain
+from app.engine.insights import causal_check as _causal_check
 from app.engine.insights import decay_insights as _decay_insights
 from app.engine.insights import insight_conflicts as _insight_conflicts
 from app.engine.insights import save_insight as _save_insight
 from app.engine.insights import save_self_fix as _save_self_fix
-from app.engine.quality import compute_quality_metrics
+from app.engine.quality import compute_e2e_metrics, compute_quality_metrics
 from app.llm.client import LLMError, call_llm_json
 from app.llm.prompts import evolution_analysis_prompt
 from app.repo import meta_keys as META
@@ -90,6 +91,10 @@ _INSIGHT_REWARD_DELTA = 0.10
 
 # Q6：元分析案例超上限时按三类比例抽样（防 token 超限、保证每类都有代表）
 _MAX_ANALYSIS_CASES = 40
+# 审计 P1-3（2026-09）：元分析最低案例门槛——止损 EXIT 先结算导致积累期样本
+# 严重偏负（生产实证：首批 10 条全来自止损退出 1胜9负），案例不足时暂缓分析，
+# 防偏斜结论被固化进 prompt。积累期提示对 early_exit 与 full_window 分开看。
+_MIN_ANALYSIS_CASES = 20
 
 
 def plan_param_adjustment(metrics: dict) -> str | None:
@@ -283,6 +288,10 @@ def _collect_cases(last_ss_id: int = 0) -> tuple[list[dict], list[dict], list[di
             "buy_reason": (r.get("buy_reason") or "")[:200],
             "regime": r.get("regime_label") or "",
             "signal": r.get("signal") or "",
+            # 审计 P1-3：标注结算方式——early_exit=监控止损提前平仓（退出时收益），
+            # full_window=满 40 日窗口结算。止损退出先结算导致积累期样本严重偏负，
+            # LLM 元分析需据此分诊而非当成随机样本。
+            "exit_mode": "early_exit" if r.get("signal") == domain.SIGNAL_EXIT else "full_window",
             "signal_triggers": {
                 "trailing": r.get("trigger_trailing") or 0,
                 "drift": r.get("trigger_drift") or 0,
@@ -443,16 +452,61 @@ def _last_analysis_ss_id() -> int:
     return repo.get_int_cursor(META.LAST_ANALYSIS_SS_ID)
 
 
+def _record_analysis_outcome(status: str, reason: str = "", cases: int = 0,
+                             added: int = 0) -> None:
+    """元分析健康度埋点（审计 P1-1）：ok/failed/no_cases 落 meta，连续失败≥3 → error。
+
+    修复"闭环空转不可见"：此前 LLM 软失败只留 warning 日志、游标不动、insights 0 条，
+    维护者无从得知"教训回流从未生效过一次"（生产实证：llm_audit 中 evolve 调用 0 条）。
+    每次月度重任务的元分析都记录 outcome（含失败原因/案例数），连续失败累计达阈值
+    提升为 error 级告警，Web 面板可读取展示"进化是否在真实学习"。
+    """
+    fail_streak = 0
+    if status == "failed":
+        # 连续失败计数：仅 LLM/异常失败算失败；ok 复位、no_cases 为正常状态不累计
+        try:
+            prev_raw = repo.get_meta(META.LAST_ANALYSIS_OUTCOME)
+            if prev_raw:
+                prev = json.loads(prev_raw)
+                fail_streak = (prev.get("fail_streak", 0) + 1
+                               if prev.get("status") == "failed" else 1)
+            else:
+                fail_streak = 1
+        except (json.JSONDecodeError, TypeError):
+            fail_streak = 1
+    outcome = {"status": status, "reason": reason[:200], "cases": cases,
+               "added": added, "fail_streak": fail_streak,
+               "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+    try:
+        repo.save_meta(META.LAST_ANALYSIS_OUTCOME, json.dumps(outcome, ensure_ascii=False))
+    except Exception as e:
+        logger.warning("元分析健康度埋点失败: %s", str(e)[:120])
+    if fail_streak >= 3:
+        logger.error("进化元分析连续 %d 次失败（%s）——教训回流可能长期未生效，请检查 LLM 服务/结算数据",
+                     fail_streak, reason or "未知原因")
+
+
 def _run_meta_analysis(metrics: dict | None, degraded: bool) -> None:
     """批量 LLM 元分析（增量游标）：收集 id > last_analysis_ss_id 的已结算案例。
 
     LLM 有产出（含全部与旧洞察冲突的情况）才推进游标；失败保持游标不动，下次重试。
+    每次执行记录健康度 outcome（审计 P1-1）。
     """
     try:
         last_id = _last_analysis_ss_id()
         successes, failures, neutrals = _collect_cases(last_id)
-        if not successes and not failures and not neutrals:
+        cases = len(successes) + len(failures) + len(neutrals)
+        if cases == 0:
             logger.info("无新结算案例，跳过元分析")
+            _record_analysis_outcome("no_cases", "无新结算案例")
+            return
+        if cases < _MIN_ANALYSIS_CASES:
+            # 审计 P1-3：止损 EXIT 先结算导致积累期样本严重偏负（生产实证 1胜9负），
+            # 案例不足时暂缓元分析，防偏斜结论被固化进 prompt
+            logger.info("元分析案例不足 %d（当前 %d），跳过：止损退出先结算会让积累期样本偏斜",
+                        _MIN_ANALYSIS_CASES, cases)
+            _record_analysis_outcome("insufficient_cases",
+                                     f"案例 {cases} < 门槛 {_MIN_ANALYSIS_CASES}", cases=cases)
             return
         loss_streak = _decision_loss_streak()
         insights = _batch_llm_analyze(
@@ -461,7 +515,8 @@ def _run_meta_analysis(metrics: dict | None, degraded: bool) -> None:
             loss_streak=loss_streak,
         )
         if insights is None:
-            logger.warning("LLM 元分析失败，保持游标待重试")
+            logger.warning("LLM 元分析失败，保持游标待重试（%d 条案例）", cases)
+            _record_analysis_outcome("failed", "LLM 不可用或解析失败", cases=cases)
             return
         added = 0
         # P0-2 批次内去重：同一次元分析常产出多条近似洞察（如"回避赛道重合→EXIT"的
@@ -479,11 +534,13 @@ def _run_meta_analysis(metrics: dict | None, degraded: bool) -> None:
             logger.info("批次内去重: %d 条近似洞察合并为 %d 条", len(insights), len(kept))
         logger.info("批量元分析: %d条成功/%d条失败/%d条中性 → 新增 %d 条洞察",
                     len(successes), len(failures), len(neutrals), added)
+        _record_analysis_outcome("ok", cases=cases, added=added)
         # 分析成功（LLM 有产出）才推进游标：已结算案例下次不再重复分析
         max_id = max(c["id"] for c in successes + failures + neutrals)
         repo.save_meta(META.LAST_ANALYSIS_SS_ID, str(max_id))
     except Exception as e:
         logger.warning("元分析失败: %s", str(e)[:120], exc_info=True)
+        _record_analysis_outcome("failed", str(e)[:120])
 
 
 def _month_bounds(month: str) -> tuple[str, str]:
@@ -529,6 +586,9 @@ def run_evolve(month: str | None = None) -> None:
             start, end = _month_bounds(month)
             metrics = compute_quality_metrics(start, end)
             metrics["computed_date"] = datetime.now().strftime("%Y-%m-%d")
+            # #2 端到端 P&L：按实际退出日期扣赎回费后的净收益，对比 40 日理论收益
+            # （timing_contribution = 监控择时的真实贡献，与选基质量分账）
+            metrics.update(compute_e2e_metrics(start, end))
             if metrics.get("sample_count", 0) == 0:
                 # 空样本不入库：避免污染 quality_metrics（无推荐月留空行且永不被覆盖）
                 logger.info("推荐质量度量无样本，跳过入库: 区间 %s~%s", start, end)
@@ -568,6 +628,13 @@ def run_evolve(month: str | None = None) -> None:
 
             # 3c. 批量 LLM 元分析（增量游标；质量下行时新洞察以非活跃态入库待审）
             _run_meta_analysis(metrics, degraded)
+
+            # 3c2. 洞察因果验证（#4）：生效后 vs 生效前同类案例胜率比对，仅报告不自动改置信度
+            try:
+                for fix in _causal_check():
+                    _save_self_fix(fix)
+            except Exception as e:
+                logger.warning("洞察因果验证失败: %s", str(e)[:120], exc_info=True)
 
             # 3d. 置信度衰减
             _decay_insights()

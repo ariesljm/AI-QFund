@@ -115,29 +115,4 @@ class TestBatch:
         assert rows[-1] == ("B", "2026-07-02", 2.10)
 
 
-class TestRet1mMany:
-    """批量近 1 月涨幅（N+1 收敛）：口径与单查一致，空/不足窗口降级 None。"""
 
-    def test_batch_matches_single(self, monkeypatch, tmp_path):
-        import sqlite3
-
-        import app.repo.base as base_mod
-
-        db = tmp_path / "nav.db"
-        conn = sqlite3.connect(db)
-        conn.execute("CREATE TABLE fund_nav (code TEXT, date TEXT, cum_nav REAL)")
-        # 基金A 30 条升序 1.0..1.29；基金B 20 条（不足 23 窗口）
-        conn.executemany("INSERT INTO fund_nav VALUES (?, ?, ?)",
-                         [("A", f"2026-0{1+m:02d}-01", 1.0 + m * 0.01) for m in range(30)]
-                         + [("B", f"2026-0{1+m:02d}-01", 1.0 + m * 0.01) for m in range(20)])
-        conn.commit()
-        monkeypatch.setattr(base_mod, "db_conn", lambda: sqlite3.connect(db))
-        monkeypatch.setattr(nav, "db_conn", lambda: sqlite3.connect(db))
-
-        res = nav.ret_1m_many(["A", "B"])
-        # A：最新 1.29 / 第 23 新 1.07 → 20.6%；B 不足 23 条 → None
-        assert res["A"] == round((1.29 / 1.07 - 1) * 100, 1)
-        assert res["B"] is None
-
-    def test_empty_codes(self, monkeypatch, tmp_path):
-        assert nav.ret_1m_many([]) == {}

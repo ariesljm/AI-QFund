@@ -56,6 +56,25 @@ class TestHardStopRule:
         assert HardStopRule().check(_ctx([])) is None
         assert HardStopRule().check(_ctx([1.0])) is None
 
+    def test_preheat_high_water_mark_does_not_pollute_peak(self):
+        """P0（2026-09 审计定案）：入场前预热段历史高点不得污染硬止损峰值。
+
+        025415 生产实证：入场后零回撤（3.678→3.7066 全在涨），但预热段高点 4.486
+        混入旧实现把回撤算成 17.37% ≥ 15% 误输出 EXIT。navs_post 只含入场后
+        序列时峰值=入场后最高，零回撤不触发。
+        """
+        pre_hot = [3.45, 3.57, 3.79, 3.86, 4.486, 3.57, 3.65]  # 入场前历史（含高点 4.486）
+        post = [3.678, 3.7066]  # 入场后：持续上涨，零回撤
+        ctx = DefenseContext(code="025415", navs=pre_hot + post, navs_post=post)
+        r = HardStopRule().check(ctx)
+        assert r is None  # 旧实现：回撤 (4.486-3.7066)/4.486 = 17.37% ≥ 15% 误触发
+
+    def test_navs_post_falls_back_to_navs_when_not_assembled(self):
+        """直构测试不传 navs_post → 回退 navs（此时 navs 即入场后语义），行为不变。"""
+        navs = [1.0] * 20 + [0.93]
+        r = HardStopRule().check(_ctx(navs))
+        assert r is not None and r.signal == "EXIT"
+
     def test_exit_outranks_warning_from_other_rules(self):
         """回撤 EXIT 与模型信号 WARNING 并存时，链最终输出 EXIT。"""
         navs = [1.0] * 20 + [0.93]  # 回撤 7% → 硬止损 EXIT

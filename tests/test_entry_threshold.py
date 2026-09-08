@@ -2,10 +2,11 @@
 
 回归根因：R1"全天候出手"关闭了 MIN_PREDICTED_ALPHA=0 硬门槛，
 熊市里预测为负/趋近 0 的基金照推（实证 28 笔中 6 笔 score≤0.01、1 笔为负）。
-契约：
-- 赛道内候选按模型预测 >0 硬过滤，负预测不进终选池；
+契约（D 冲突修复后）：
+- 赛道内候选按模型预测 > MIN_ENTRY_ALPHA(1%，扣费后赚钱) 硬过滤，
+  预测 0~1% 区间不入场（扣赎回费后必亏）；
 - 过滤后为空 → 不绕过门槛（返回空，由上游空推荐日兜底）；
-- 降级路径（全市场 Top10）同样过滤，全负 → 返回空。
+- 降级路径（全市场 Top10）同样过滤，全负/全低 → 返回空。
 """
 
 import sys
@@ -71,16 +72,24 @@ class TestSectorCandidatesPositiveOnly:
         rows = [_feat_row("F1", "基金一", "半导体"), _feat_row("F2", "基金二", "半导体")]
         _patch_repo(monkeypatch, rows)
         model = FakeModel([-0.03, 0.05])  # F1 负、F2 正
-        out = recommend._rank_within_sectors(_ctx(), model)
+        out, _path = recommend._rank_within_sectors(_ctx(), model)
         codes = [c["code"] for c in out]
         assert codes == ["F2"]
+
+    def test_below_profit_threshold_filtered_out(self, monkeypatch):
+        """D 冲突修复：预测落在 0~1% 区间（如 0.005）扣费后必亏 → 不入场。"""
+        rows = [_feat_row("F1", "基金一", "半导体"), _feat_row("F2", "基金二", "半导体")]
+        _patch_repo(monkeypatch, rows)
+        model = FakeModel([0.005, 0.02])  # F1 在 0~1% 区间、F2 超赚钱阈值
+        out, _path = recommend._rank_within_sectors(_ctx(), model)
+        assert [c["code"] for c in out] == ["F2"]
 
     def test_all_negative_returns_empty(self, monkeypatch):
         """赛道内全负预测 → 返回空（不降级绕过门槛；上游走空推荐日）。"""
         rows = [_feat_row("F1", "基金一", "半导体"), _feat_row("F2", "基金二", "半导体")]
         _patch_repo(monkeypatch, rows)
         model = FakeModel([-0.02, -0.01])
-        out = recommend._rank_within_sectors(_ctx(), model)
+        out, _path = recommend._rank_within_sectors(_ctx(), model)
         assert out == []
 
 
@@ -102,9 +111,9 @@ class TestDegradePathPositiveOnly:
         assert [c["code"] for c in out] == ["F4"]
 
     def test_positive_candidates_bypass_no_threshold(self, monkeypatch):
-        """回归：正常正预测候选不受影响（门槛不误伤）。"""
+        """回归：正常正预测候选不受影响（门槛不误伤 >1% 的候选）。"""
         rows = [_feat_row("F1", "基金一", "半导体", score_offset=None)]
         _patch_repo(monkeypatch, rows)
         model = FakeModel([0.06])
-        out = recommend._rank_within_sectors(_ctx(), model)
+        out, _path = recommend._rank_within_sectors(_ctx(), model)
         assert [c["code"] for c in out] == ["F1"]

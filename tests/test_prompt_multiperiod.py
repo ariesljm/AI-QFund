@@ -75,7 +75,7 @@ class TestFinalPickPrompt:
         """终选不再以近 1 月涨幅为推荐依据（素材数值与旧指令均移除）。"""
         p = final_pick_prompt([{"code": "F1", "name": "n1", "sector": "半导体",
                                 "calmar": 1.0, "hurst_60d": 0.6, "combo": 0.7,
-                                "momentum_20d": 5.0, "ret_1m": 3.0,
+                                "momentum_20d": 5.0,
                                 "sector_median_mom": 1.0, "mom_gap": 4.0,
                                 "holdings": [], "report_date": "2026-06-30",
                                 "holdings_months": 2}],
@@ -88,7 +88,7 @@ class TestFinalPickPrompt:
         """终选素材含相对赛道超额（α）口径说明。"""
         p = final_pick_prompt([{"code": "F1", "name": "n1", "sector": "半导体",
                                 "calmar": 1.0, "hurst_60d": 0.6, "combo": 0.7,
-                                "momentum_20d": 5.0, "ret_1m": 3.0,
+                                "momentum_20d": 5.0,
                                 "sector_median_mom": 1.0, "mom_gap": 4.0,
                                 "holdings": [], "report_date": "2026-06-30",
                                 "holdings_months": 2}],

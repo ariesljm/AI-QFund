@@ -55,7 +55,6 @@ CREATE TABLE IF NOT EXISTS fund_features (
     downside_vol REAL,
     capture_up REAL,
     capture_down REAL,
-    bias_60d REAL,
     drawdown_60d REAL,
     reversal_20d REAL,
     mom_5d REAL,
@@ -91,6 +90,8 @@ CREATE TABLE IF NOT EXISTS recommend_log (
     candidate_codes TEXT,
     rec_count INTEGER DEFAULT 1,
     vetoed_json TEXT,
+    -- 推荐来源路径：sector=赛道内选基（主路径），degrade=全市场 Top10 降级路径
+    reco_path TEXT DEFAULT 'sector',
     created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -218,7 +219,18 @@ CREATE TABLE IF NOT EXISTS quality_metrics (
     sample_count INTEGER,
     decision_loss REAL,
     decision_gap_best REAL,
-    points_json TEXT
+    points_json TEXT,
+    -- 分口径度量（按 reco_path 分组）：{"sector": {...}, "degrade": {...}}
+    by_path_json TEXT,
+    -- 端到端 P&L（#2）：按实际退出日期扣赎回费后的净收益，对比 40 日理论收益
+    e2e_profit_rate REAL,
+    e2e_mean_ret REAL,
+    e2e_payoff_ratio REAL,
+    timing_contribution REAL,
+    e2e_sample_count INTEGER,
+    e2e_points_json TEXT,
+    -- 分桶赚钱率（模型校准观测 #1）：按预测分分桶的赚钱率/样本数，验证 L1 回归与胜率口径对齐
+    by_score_bucket_json TEXT
 );
 
 -- 同一统计区间只保留一次度量（重复运行 run_evolve 幂等）
@@ -230,6 +242,8 @@ CREATE TABLE IF NOT EXISTS empty_recommendations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     date TEXT NOT NULL UNIQUE,
     reasoning TEXT,
+    -- 审计 P1-2（2026-09）：空推荐语义分层，区分"市场判断无机会"与"数据故障导致空推"
+    reason_type TEXT DEFAULT 'no_opportunity',
     created_at TEXT DEFAULT (datetime('now'))
 );
 

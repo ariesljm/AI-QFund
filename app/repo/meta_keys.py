@@ -25,10 +25,12 @@ LAST_MONTHLY_EVOLVE = "last_monthly_evolve"      # 月度重任务最近执行�
 LAST_GA_RUN = "last_ga_run"                      # GA 寻优最近评估日
 LAST_GA_APPLIED = "last_ga_applied"              # GA 权重应用留痕（只写不读）
 LAST_ANALYSIS_SS_ID = "last_analysis_ss_id"      # 元分析增量游标
+LAST_ANALYSIS_OUTCOME = "last_analysis_outcome"  # 元分析健康度（审计 P1-1：空转可见性）
 
 # 交易日历缓存 / 运行状态
 TRADE_DATES_CACHE = "trade_dates_cache"
 UPTIME_START = "uptime_start"
+INDEX_FRESHNESS = "index_freshness"  # 指数新鲜度告警留痕（审计 P1-2：指数断档无显式告警）
 
 # 调度器去重（动态键前缀，槽位值 runner 内定义）
 SCHED_LAST_RUN_PREFIX = "sched_last_run:"

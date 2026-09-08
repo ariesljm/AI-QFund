@@ -195,22 +195,30 @@ def ema60_trigger_index(navs: list[float] | np.ndarray, confirm_days: int = _EMA
     return None
 
 
-def ema60_exit(navs: list[float], confirm_days: int = _EMA_CONFIRM_DAYS) -> tuple[bool, str]:
+def ema60_exit(navs: list[float], confirm_days: int = _EMA_CONFIRM_DAYS,
+               entry_idx: int | None = None) -> tuple[bool, str]:
     """EMA60 趋势退出（R1，单一来源）：NAV 连续 confirm_days 日 < EMA60 → 触发。
 
     生产监控防线 R1 与回测退出模拟共用此判定（替代 2×ATR 追踪止损，后者回测证明负贡献）。
-    navs: 入场日及之后每日净值（升序，含入场日）；前 60 日为 EMA 预热期不判定。
-    回测验证参数（勿改）：span=60, confirm=2 交易日。
+    navs：升序净值序列。纯入场后场景（回测）从入场日起计，前 span 日 EMA 预热不判定；
+    生产监控传入含入场前历史预热序列（navs_trend，审计 2026-09 对齐契约）——
+    预热段使 EMA 基线即时可用、R1 买入首日即生效，触发判据仍从序列第 span 条起。
+    entry_idx：入场在序列中的位置（生产监控传 len(navs_trend)-len(navs_post)，回测不传）——
+    仅约束 reason 文案"自高点回撤"的高点取自入场后段，避免预热段历史高点夸大数字；
+    触发判定不受影响。回测验证参数（勿改）：span=60, confirm=2 交易日。
     """
     idx = ema60_trigger_index(navs, confirm_days)
     if idx is None:
         return False, ""
     arr: np.ndarray = np.asarray(navs, dtype=float)
-    peak = float(np.max(arr[:idx + 1]))
-    drawdown = (peak - arr[idx]) / peak
+    seg = arr[entry_idx:idx + 1] if entry_idx is not None else arr[:idx + 1]
+    if len(seg) == 0:
+        seg = arr[:idx + 1]
+    peak = float(np.max(seg))
+    drawdown = (peak - arr[idx]) / peak if peak else 0.0
     return True, (
         f"EMA60趋势退出: NAV连续{confirm_days}日<EMA60"
-        f"（自高点回撤{drawdown:.2%}）"
+        f"（自入场后高点回撤{drawdown:.2%}）"
     )
 
 
@@ -252,6 +260,12 @@ def market_state_features(idx_close: np.ndarray, idx_vol: np.ndarray) -> dict:
         feat["idx_vol_20d"] = float(np.std(rets) * np.sqrt(252) * 100) if len(rets) > 0 else 0.0
     else:
         feat["idx_vol_20d"] = 0.0
+    # bias_60d（顺带发现）：指数偏离60日均线，市场层面状态（从基金特征移入 MARKET_COLS）
+    if len(idx_close) >= 60:
+        idx_ma60 = np.mean(idx_close[-60:])
+        feat["bias_60d"] = float((idx_close[-1] - idx_ma60) / idx_ma60 * 100)
+    else:
+        feat["bias_60d"] = 0.0
     return feat
 
 
@@ -347,7 +361,9 @@ def compute_fund_features(navs: np.ndarray, idx_closes: np.ndarray,
 
     if len(returns) >= 20:
         neg = returns[-20:][returns[-20:] < 0]
-        feat["downside_vol"] = float(np.std(neg) * np.sqrt(252)) if len(neg) > 0 else 0.0
+        # 审计 P2-1：与 vol_20d 同口径（百分数）——此前为小数，与 vol_20d 差 100 倍
+        # 误导调试/展示；树模型对单调变换自适应，无功能影响
+        feat["downside_vol"] = float(np.std(neg) * np.sqrt(252) * 100) if len(neg) > 0 else 0.0
     else:
         feat["downside_vol"] = 0.0
 
@@ -362,11 +378,7 @@ def compute_fund_features(navs: np.ndarray, idx_closes: np.ndarray,
     else:
         feat["capture_up"] = feat["capture_down"] = 1.0
 
-    if len(idx_closes) >= 60:
-        idx_ma60 = np.mean(idx_closes[-60:])
-        feat["bias_60d"] = float((idx_closes[-1] - idx_ma60) / idx_ma60 * 100)
-    else:
-        feat["bias_60d"] = 0.0
+    # bias_60d（指数偏离60日均线）已移入 market_state_features（市场层面特征，顺带发现）
     return feat
 
 
@@ -499,15 +511,13 @@ def calc_features(code: str,
     features.update(feat)
     # 数据质量校验：检测 NaN/Inf/极端值
     for key in ("hurst_60d", "momentum_20d", "calmar", "downside_vol",
-                 "capture_up", "capture_down", "bias_60d"):
+                 "capture_up", "capture_down"):
         v = features.get(key)
         if v is None or (isinstance(v, float) and (np.isnan(v) or np.isinf(v))):
             logger.warning("基金 %s 特征 %s 异常 (%s)，置为 0.0", code, key, v)
             features[key] = 0.0
     if abs(features.get("momentum_20d", 0)) > 30:
         logger.warning("基金 %s 20日动量异常: %.2f%%", code, features["momentum_20d"])
-    if abs(features.get("bias_60d", 0)) > 25:
-        logger.warning("基金 %s 60日偏离度异常: %.2f%%", code, features["bias_60d"])
 
     return features
 

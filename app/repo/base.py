@@ -33,8 +33,8 @@ def get_all_ranking_rows() -> list[dict]:
     """全市场可投基金最新特征快照（推荐降级路径用），每基金一行。"""
     feat_cols = ', '.join('ff.' + c for c in FEATURE_COLS)
     with db_conn() as conn:
-        rows = conn.execute(f"SELECT ff.code, fb.name, ff.regime, ff.rbsa_industry_1, ff.rbsa_weight_1, {feat_cols} FROM fund_features ff {_latest_feature_join()} JOIN fund_basic fb ON fb.code = ff.code WHERE fb.is_buyable = 1 AND ff.rbsa_industry_1 IS NOT NULL AND ff.rbsa_industry_1 != ''").fetchall()
-    names = ['code', 'name', 'regime', 'rbsa_industry_1', 'rbsa_weight_1'] + FEATURE_COLS
+        rows = conn.execute(f"SELECT ff.code, fb.name, ff.regime, ff.rbsa_industry_1, ff.rbsa_weight_1, lat.date AS feature_date, {feat_cols} FROM fund_features ff {_latest_feature_join()} JOIN fund_basic fb ON fb.code = ff.code WHERE fb.is_buyable = 1 AND ff.rbsa_industry_1 IS NOT NULL AND ff.rbsa_industry_1 != ''").fetchall()
+    names = ['code', 'name', 'regime', 'rbsa_industry_1', 'rbsa_weight_1', 'feature_date'] + FEATURE_COLS
     return [dict(zip(names, r, strict=False)) for r in rows]
 
 def get_available_sectors() -> list[str]:
@@ -273,10 +273,10 @@ def get_latest_feature_date_before(date_str: str) -> str | None:
 
 def get_latest_features(code: str) -> dict | None:
     with db_conn() as conn:
-        row = conn.execute('SELECT hurst_60d, momentum_20d, calmar, downside_vol, capture_up, capture_down, bias_60d, drawdown_60d, reversal_20d, mom_5d, mom_60d, vol_20d, rbsa_industry_1, rbsa_weight_1, rbsa_industry_2, rbsa_weight_2, rbsa_industry_3, rbsa_weight_3, date FROM fund_features WHERE code = ? ORDER BY date DESC LIMIT 1', (code,)).fetchone()
+        row = conn.execute('SELECT hurst_60d, momentum_20d, calmar, downside_vol, capture_up, capture_down, drawdown_60d, reversal_20d, mom_5d, mom_60d, vol_20d, rbsa_industry_1, rbsa_weight_1, rbsa_industry_2, rbsa_weight_2, rbsa_industry_3, rbsa_weight_3, date FROM fund_features WHERE code = ? ORDER BY date DESC LIMIT 1', (code,)).fetchone()
     if not row:
         return None
-    return {'hurst_60d': row[0], 'momentum_20d': row[1], 'calmar': row[2], 'downside_vol': row[3], 'capture_up': row[4], 'capture_down': row[5], 'bias_60d': row[6], 'drawdown_60d': row[7], 'reversal_20d': row[8], 'mom_5d': row[9], 'mom_60d': row[10], 'vol_20d': row[11], 'rbsa_industry_1': row[12], 'rbsa_weight_1': row[13] or 0, 'rbsa_industry_2': row[14], 'rbsa_weight_2': row[15] or 0, 'rbsa_industry_3': row[16], 'rbsa_weight_3': row[17] or 0, 'date': row[18]}
+    return {'hurst_60d': row[0], 'momentum_20d': row[1], 'calmar': row[2], 'downside_vol': row[3], 'capture_up': row[4], 'capture_down': row[5], 'drawdown_60d': row[6], 'reversal_20d': row[7], 'mom_5d': row[8], 'mom_60d': row[9], 'vol_20d': row[10], 'rbsa_industry_1': row[11], 'rbsa_weight_1': row[12] or 0, 'rbsa_industry_2': row[13], 'rbsa_weight_2': row[14] or 0, 'rbsa_industry_3': row[15], 'rbsa_weight_3': row[16] or 0, 'date': row[17]}
 
 def get_latest_holdings_date(code: str) -> str | None:
     """基金最新季报披露日期。"""
@@ -536,8 +536,8 @@ def get_sector_candidates(sectors: list[str]) -> list[dict]:
     placeholders = ','.join('?' * len(sectors))
     feat_cols = ', '.join('ff.' + c for c in FEATURE_COLS)
     with db_conn() as conn:
-        rows = conn.execute(f'SELECT ff.code, fb.name, ff.regime, ff.rbsa_industry_1, ff.rbsa_weight_1, ff.rbsa_industry_2, ff.rbsa_weight_2, ff.rbsa_industry_3, ff.rbsa_weight_3, {feat_cols} FROM fund_features ff {_latest_feature_join()} JOIN fund_basic fb ON fb.code = ff.code WHERE fb.is_buyable = 1 AND (ff.rbsa_industry_1 IN ({placeholders})   OR ff.rbsa_industry_2 IN ({placeholders})   OR ff.rbsa_industry_3 IN ({placeholders}))', sectors + sectors + sectors).fetchall()
-    names = ['code', 'name', 'regime', 'rbsa_industry_1', 'rbsa_weight_1', 'rbsa_industry_2', 'rbsa_weight_2', 'rbsa_industry_3', 'rbsa_weight_3'] + FEATURE_COLS
+        rows = conn.execute(f'SELECT ff.code, fb.name, ff.regime, ff.rbsa_industry_1, ff.rbsa_weight_1, ff.rbsa_industry_2, ff.rbsa_weight_2, ff.rbsa_industry_3, ff.rbsa_weight_3, lat.date AS feature_date, {feat_cols} FROM fund_features ff {_latest_feature_join()} JOIN fund_basic fb ON fb.code = ff.code WHERE fb.is_buyable = 1 AND (ff.rbsa_industry_1 IN ({placeholders})   OR ff.rbsa_industry_2 IN ({placeholders})   OR ff.rbsa_industry_3 IN ({placeholders}))', sectors + sectors + sectors).fetchall()
+    names = ['code', 'name', 'regime', 'rbsa_industry_1', 'rbsa_weight_1', 'rbsa_industry_2', 'rbsa_weight_2', 'rbsa_industry_3', 'rbsa_weight_3', 'feature_date'] + FEATURE_COLS
     return [dict(zip(names, r, strict=False)) for r in rows]
 
 def get_sector_heatmap(limit: int=6) -> list[dict]:
@@ -568,28 +568,35 @@ def sample_fund_codes_before(date: str, min_bars: int, limit: int) -> list[str]:
 
 
 def check_data_ready() -> dict[str, int]:
-    """推荐前置数据就绪状态（持仓/行业映射计数）。
+    """推荐前置数据就绪状态（持仓/行业映射/特征计数）。
 
     门控（check_holdings_ready）的单一数据来源：引擎/管线不再内嵌裸 SQL 计数，
-    查询细节在此下沉到 seam（架构深化候选 2）。
+    查询细节在此下沉到 seam（架构深化候选 2）。feature_cnt 为最近特征日有数据的
+    基金数——审计 P1-2：特征全缺时不能冒充"空推荐日"。
     """
     with db_conn() as conn:
         holdings_cnt = conn.execute("SELECT COUNT(*) FROM fund_holdings").fetchone()[0]
         industry_cnt = conn.execute("SELECT COUNT(*) FROM stock_industry_map").fetchone()[0]
-    return {"holdings_cnt": holdings_cnt, "industry_cnt": industry_cnt}
+        feature_cnt = conn.execute(
+            "SELECT COUNT(*) FROM fund_features "
+            "WHERE date = (SELECT MAX(date) FROM fund_features)").fetchone()[0]
+    return {"holdings_cnt": holdings_cnt, "industry_cnt": industry_cnt,
+            "feature_cnt": feature_cnt}
 
 
 def is_recommend_data_ready() -> bool:
     """推荐数据就绪谓词：异常统一兜底返回 False。
 
-    架构深化：就绪判定语义（持仓>0 且行业映射>0）单一来源；
-    DB 瞬时异常不向门控调用方抛穿（避免中断后续槽位），由消费方选择日志细节。
+    判定语义（单一来源）：持仓>0 且行业映射>0 且特征存在>0；
+    审计 P1-2：特征表为空/最近特征日无数据时视为未就绪（数据故障不应被
+    静默包装成"空推荐日"）；DB 瞬时异常不向门控调用方抛穿（避免中断后续槽位）。
     """
     try:
         status = check_data_ready()
     except Exception:
         return False
-    return status["holdings_cnt"] > 0 and status["industry_cnt"] > 0
+    return (status["holdings_cnt"] > 0 and status["industry_cnt"] > 0
+            and status["feature_cnt"] > 0)
 
 
 def get_latest_rbsa_sector_map() -> dict[str, str]:

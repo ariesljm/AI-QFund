@@ -16,6 +16,7 @@
 
 from dataclasses import dataclass
 from datetime import datetime
+import time
 from typing import Any
 
 import numpy as np
@@ -106,6 +107,7 @@ class DefenseContext:
 
     def __init__(self, code: str, buy_reason: str = "", sector: str = "",
                  navs: list[float] | None = None,
+                 navs_post: list[float] | None = None,
                  cur_feat: dict | None = None,
                  entry_rbsa: tuple | None = None, anchor: tuple | None = None,
                  entry_score: float | None = None,
@@ -121,6 +123,12 @@ class DefenseContext:
         self.buy_reason = buy_reason
         self.sector = sector
         self.navs = navs or []
+        # P0（审计定案，2026-09）：R5 硬止损专用入场后序列——峰值与 7 日豁免
+        # 只应基于入场后净值，否则 _nav_for_trend 的入场前预热段会把历史高点
+        # 混入峰值，零回撤持仓被误判回撤超阈值输出 EXIT（违反"准确提供信息"）。
+        # 预热的趋势序列走 navs（R1/R2d 需要预热基线）；直构测试场景不传
+        # navs_post 时回退 navs（此时 navs 即入场后语义）。
+        self.navs_post = navs_post if navs_post is not None else (navs or [])
         # 预装配快照：防线判定只读这些字段，不再直读 DB
         self.cur_feat = cur_feat or {}          # 最新特征（含 rbsa_industry_1/weight_1、momentum_20d 等）
         self.entry_rbsa = entry_rbsa            # (买入时第一行业, 权重)，_entry_rbsa 三级回退结果
@@ -184,7 +192,9 @@ class EmaTrendRule(DefenseRule):
     short_circuit = True
 
     def check(self, ctx: DefenseContext) -> DefenseResult | None:
-        exit_triggered, reason = ema60_exit(ctx.navs)
+        # 预热序列场景：reason 高点限定入场后段（审计 P1-1），免预热历史高点夸大回撤文案
+        entry_idx = len(ctx.navs) - len(ctx.navs_post)
+        exit_triggered, reason = ema60_exit(ctx.navs, entry_idx=entry_idx)
         return DefenseResult(signal=domain.SIGNAL_EXIT, reason=reason, trailing=True) if exit_triggered else None
 
 
@@ -319,9 +329,12 @@ class HardStopRule(DefenseRule):
                                      vol_window=_HARD_STOP_VOL_WINDOW)
 
     def check(self, ctx: DefenseContext) -> DefenseResult | None:
-        if len(ctx.navs) <= _HARD_STOP_EXEMPT_NAVS:
+        # P0（2026-09 审计定案）：硬止损只消费 ctx.navs_post（入场后序列），
+        # 峰值与豁免均不受入场前预热污染——装配层保证真实路径传入 prep/post 拆分。
+        navs = ctx.navs_post
+        if len(navs) <= _HARD_STOP_EXEMPT_NAVS:
             return None
-        valid = [n for n in ctx.navs if n and n > 0]
+        valid = [n for n in navs if n and n > 0]
         if len(valid) < 2:
             return None
         peak = max(valid)
@@ -486,23 +499,25 @@ def _nav_pre_entry(code: str, until_date: str, limit: int) -> list[tuple]:
     return nav.series(code, until=until_date, limit=limit)
 
 
-def _nav_for_trend(code: str, reco_date: str) -> list[float]:
-    """趋势判定序列：入场后净值 + 入场前历史预热补齐至 EMA_WARMUP_NAVS 条。
+def _nav_for_trend(code: str, reco_date: str) -> tuple[list[float], list[float]]:
+    """趋势判定序列 + 入场后序列。返回 (navs_trend, navs_post)：
 
-    R1/R2d 的 ema60_exit 需 span60+confirm2=62 条净值；纯入场后序列让每个仓位
-    都有约 3 个月趋势防线空窗，而本系统典型持仓周期仅 20 个交易日量级
-    （FORWARD_DAYS/WARNING 升级窗口），R1 实际形同虚设。用入场前历史预热 EMA，
-    防线买入首日即生效。代价：买入时已处于 EMA60 下方 → 入场 2 日内即 EXIT
-    （风控优先，可接受）。候选池门槛保证基金至少有 EMA_WARMUP_NAVS 条净值。
+    - navs_trend：入场后净值 + 入场前历史预热补齐至 EMA_WARMUP_NAVS 条（R1/R2d 用）。
+      预热消除"纯入场后序列导致约 3 个月趋势防线空窗"（典型持仓周期仅 20 交易日量级）；
+      代价：买入时已处于 EMA60 下方 → 入场 2 日内即 EXIT（风控优先，可接受）。
+      候选池门槛保证基金至少有 EMA_WARMUP_NAVS 条净值。
+    - navs_post：仅入场后净值（R5 硬止损用）。P0（2026-09 审计定案）：硬止损的峰值与
+      7 日豁免必须只基于入场后序列，否则预热段历史高点会污染峰值，零回撤持仓被误判
+      回撤超阈值输出 EXIT——违反"不代客交易但准确提供信息"契约。
     """
     post = _nav_since(code, reco_date)
     missing = EMA_WARMUP_NAVS - len(post)
     if missing <= 0:
-        return post
+        return post, post
     # 边界行可能与入场日重叠（series 的 until 含 reco_date 当日），多取一条后按日期去重
     pre = [(d, v) for d, v in _nav_pre_entry(code, reco_date, missing + 1)
            if d < reco_date][-missing:]
-    return [v for _, v in pre] + post
+    return [v for _, v in pre] + post, post
 
 
 # ── 净值新鲜度护栏 ──
@@ -743,10 +758,20 @@ def _run_r4_batch(ctxs: list[DefenseContext]) -> None:
         if ctx.r4_no_new_data:
             return None
         try:
-            return _check_logic_enhanced(ctx)
+            result = _check_logic_enhanced(ctx)
         except Exception as e:
             # 防御兜底：R4 任何未预期异常不拖死批量（记录跳过）
             logger.warning("R4 并发调用异常，跳过该防线: %s | %s", ctx.code, str(e)[:120])
+            return None
+        if result is not None:
+            return result
+        # 审计 P1-4：LLM 抖动时重试一次（限速场景自适应退避，不拖长批处理）——
+        # 技术失败/解析失败都表现为 None，重试一次显著提高 R4 证伪覆盖率
+        try:
+            time.sleep(0.5)
+            return _check_logic_enhanced(ctx)
+        except Exception as e:
+            logger.warning("R4 重试仍失败，跳过该防线: %s | %s", ctx.code, str(e)[:120])
             return None
 
     with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -777,7 +802,7 @@ def _build_defense_context(row: dict, date_str: str, trade_dates: list[str],
         logger.warning("  %s（数据告警，不改持仓状态，不计入信号升级）", stale_reason)
         return None
 
-    navs = _nav_for_trend(code_str, reco_date)
+    navs, navs_post = _nav_for_trend(code_str, reco_date)
     # 一次性装配基金快照：防线 check 只消费 ctx（真纯函数），不再各自直读 DB
     cur_feat = get_latest_features(code_str)
     entry_snapshot = get_entry_feature_snapshot(code_str)
@@ -806,7 +831,7 @@ def _build_defense_context(row: dict, date_str: str, trade_dates: list[str],
 
     return DefenseContext(
         code=code_str, buy_reason=buy_reason or "", sector=sector or "",
-        navs=navs, cur_feat=cur_feat, entry_rbsa=entry_rbsa, anchor=anchor,
+        navs=navs, navs_post=navs_post, cur_feat=cur_feat, entry_rbsa=entry_rbsa, anchor=anchor,
         entry_score=entry_score, scores_series=scores_series,
         entry_snapshot=entry_snapshot, sector_median=sector_median,
         holdings_text=build_holdings_text(code_str, 10),

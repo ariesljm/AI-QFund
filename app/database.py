@@ -78,7 +78,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
     if "recommend_log" in tables:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(recommend_log)").fetchall()}
-        for col, typ in [("return_rate", "REAL"), ("feature_snapshot", "TEXT"), ("entry_nav", "REAL"), ("candidate_codes", "TEXT"), ("rec_count", "INTEGER DEFAULT 1"), ("vetoed_json", "TEXT")]:
+        for col, typ in [("return_rate", "REAL"), ("feature_snapshot", "TEXT"), ("entry_nav", "REAL"), ("candidate_codes", "TEXT"), ("rec_count", "INTEGER DEFAULT 1"), ("vetoed_json", "TEXT"), ("reco_path", "TEXT DEFAULT 'sector'")]:
             if col not in cols:
                 conn.execute(f"ALTER TABLE recommend_log ADD COLUMN {col} {typ}")
                 conn.commit()
@@ -115,6 +115,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # P3-11 洞察结构化：可判定前置条件
         if "condition" not in ei_cols:
             conn.execute("ALTER TABLE evolution_insights ADD COLUMN condition TEXT")
+            conn.commit()
+
+    if "empty_recommendations" in tables:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(empty_recommendations)").fetchall()}
+        if "reason_type" not in cols:
+            # 审计 P1-2：空推荐语义分层（no_opportunity=市场判断 / data_failure=数据故障）
+            conn.execute("ALTER TABLE empty_recommendations ADD COLUMN reason_type TEXT DEFAULT 'no_opportunity'")
             conn.commit()
 
     if "macro_news" in tables:
@@ -173,6 +180,21 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # P1-4 回滚后扩展：LLM 选中 vs 候选池最优的收益差（与裁决损耗同一套月度样本）
         if "decision_gap_best" not in qm_cols:
             conn.execute("ALTER TABLE quality_metrics ADD COLUMN decision_gap_best REAL")
+            conn.commit()
+        # 分口径度量（按 reco_path 分组）
+        if "by_path_json" not in qm_cols:
+            conn.execute("ALTER TABLE quality_metrics ADD COLUMN by_path_json TEXT")
+            conn.commit()
+        # 端到端 P&L（#2）：按实际退出日期扣赎回费后的净收益与择时贡献
+        for col, typ in (("e2e_profit_rate", "REAL"), ("e2e_mean_ret", "REAL"),
+                         ("e2e_payoff_ratio", "REAL"), ("timing_contribution", "REAL"),
+                         ("e2e_sample_count", "INTEGER"), ("e2e_points_json", "TEXT")):
+            if col not in qm_cols:
+                conn.execute(f"ALTER TABLE quality_metrics ADD COLUMN {col} {typ}")
+                conn.commit()
+        # 分桶赚钱率（模型校准观测 #1）：按预测分分桶的赚钱率/样本数（JSON）
+        if "by_score_bucket_json" not in qm_cols:
+            conn.execute("ALTER TABLE quality_metrics ADD COLUMN by_score_bucket_json TEXT")
             conn.commit()
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_quality_metrics_period "

@@ -57,7 +57,7 @@ class TestInsertRecommendationVetoed:
                      "recommend_date TEXT, code TEXT, name TEXT, rank INTEGER, score REAL, "
                      "combo REAL, regime TEXT, buy_reason TEXT, status TEXT, "
                      "feature_snapshot TEXT, entry_nav REAL, candidate_codes TEXT, "
-                     "vetoed_json TEXT)")
+                     "vetoed_json TEXT, reco_path TEXT DEFAULT 'sector')")
         conn.commit()
 
         monkeypatch.setattr(dec, "db_conn", lambda: sqlite3.connect(db))
@@ -81,7 +81,7 @@ class TestInsertRecommendationVetoed:
                      "recommend_date TEXT, code TEXT, name TEXT, rank INTEGER, score REAL, "
                      "combo REAL, regime TEXT, buy_reason TEXT, status TEXT, "
                      "feature_snapshot TEXT, entry_nav REAL, candidate_codes TEXT, "
-                     "vetoed_json TEXT)")
+                     "vetoed_json TEXT, reco_path TEXT DEFAULT 'sector')")
         conn.commit()
         monkeypatch.setattr(dec, "db_conn", lambda: sqlite3.connect(db))
         dec.insert_recommendation("2026-09-05", "F1", "基金1", 1, 0.05, 0.6, "BEAR", "理由")

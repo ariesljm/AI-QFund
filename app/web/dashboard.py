@@ -16,6 +16,7 @@ from app.engine.valuation import (
     portfolio_series,
     sharpe_ratio,
 )
+from app.model import latest_market_state
 from app.web.charts import make_dual_svg, smooth_svg_path
 from app.web.charts import quality_curve_svg as chart_quality_curve
 
@@ -72,7 +73,8 @@ def fund_profile_block(code: str) -> tuple[dict | None, list[dict]]:
             "downside_vol": round(feat["downside_vol"] or 0, 2) if feat["downside_vol"] is not None else None,
             "capture_up": round(feat["capture_up"] or 0, 1) if feat["capture_up"] is not None else None,
             "capture_down": round(feat["capture_down"] or 0, 1) if feat["capture_down"] is not None else None,
-            "bias": round(feat["bias_60d"] or 0, 2) if feat["bias_60d"] is not None else None,
+            # bias_60d 已移入市场状态列（指数偏离60日均线，模型优化顺带发现）
+            "bias": round(latest_market_state().get("bias_60d") or 0, 2),
             "top_industry": feat["rbsa_industry_1"] or "",
             "top_industry_weight": round(feat["rbsa_weight_1"] or 0, 1),
         }
