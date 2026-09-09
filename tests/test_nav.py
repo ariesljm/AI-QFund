@@ -20,6 +20,48 @@ from app.data.ingest import run_batched_fetch
 from app.data.store import cooldown_targets, list_failures
 
 # ============================================================
+# _split_tasks — 增量任务三路拆分（差1天批量/差多天lsjz/无本地全量）
+# ============================================================
+
+class TestSplitTasks:
+    def test_one_day_lag_goes_batch(self):
+        """本地最新 == 全局最新（只差最新 1 天）→ 批量路径。"""
+        tasks = [("000001", "2026-09-07"), ("110011", "2026-09-07")]
+        batch, lag, full = nav._split_tasks(tasks, "2026-09-07")
+        assert batch == ["000001", "110011"]
+        assert lag == [] and full == []
+
+    def test_multi_day_lag_goes_lsjz(self):
+        """本地最新 < 全局最新（差 2+ 天，QDII/停更）→ lsjz 逐只补全。"""
+        tasks = [("000001", "2026-09-05"), ("110011", "2026-09-06")]
+        batch, lag, full = nav._split_tasks(tasks, "2026-09-07")
+        assert batch == []
+        assert lag == tasks
+        assert full == []
+
+    def test_no_local_goes_full(self):
+        """本地无数据（lm 空串）→ pingzhongdata 全量。"""
+        tasks = [("028944", "")]
+        batch, lag, full = nav._split_tasks(tasks, "2026-09-07")
+        assert batch == [] and lag == []
+        assert full == tasks
+
+    def test_mixed_split(self):
+        tasks = [("a", "2026-09-07"), ("b", "2026-09-05"), ("c", "")]
+        batch, lag, full = nav._split_tasks(tasks, "2026-09-07")
+        assert batch == ["a"]
+        assert lag == [("b", "2026-09-05")]
+        assert full == [("c", "")]
+
+    def test_empty_global_latest_no_batch(self):
+        """global_latest 为 None（库空）时不误判 full 基金进批量。"""
+        tasks = [("a", "")]
+        batch, lag, full = nav._split_tasks(tasks, None)
+        assert batch == [] and lag == []
+        assert full == tasks
+
+
+# ============================================================
 # _plan_nav_tasks — 增量任务规划（对齐到接口最新日期）
 # ============================================================
 

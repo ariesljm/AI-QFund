@@ -1,5 +1,6 @@
 """净值数据抓取：全量下载 & 增量更新。"""
 
+import asyncio
 import json
 import re
 import time
@@ -9,7 +10,7 @@ import httpx
 
 from app.data.fetchers import fetch, fetch_async
 from app.data.ingest import filter_cooldown_targets, run_batched_fetch
-from app.data.store import NAV_RETENTION_DAYS, save_nav_batch
+from app.data.store import NAV_RETENTION_DAYS, mark_recovered_batch, save_nav_batch
 from app.database import db_conn
 from app.utils.log import get_logger
 
@@ -185,6 +186,20 @@ def _plan_nav_tasks(
     return tasks_meta, incr_cnt, full_cnt
 
 
+def _split_tasks(tasks_meta: list[tuple[str, str]], global_latest: str | None
+                 ) -> tuple[list[str], list[tuple[str, str]], list[tuple[str, str]]]:
+    """三路拆分增量任务（纯函数便于测试）：
+
+    - batch：本地最新 == 全局最新（只差最新 1 天）→ fundmobapi 批量
+    - lag：本地最新 < 全局最新（差 2+ 天，QDII/停更）→ lsjz 逐只补全
+    - full：本地无数据 → pingzhongdata 全量兜底
+    """
+    batch_codes = [code for code, lm in tasks_meta if lm == global_latest]
+    lag_tasks = [(code, lm) for code, lm in tasks_meta if lm and lm < global_latest]
+    full_tasks = [(code, lm) for code, lm in tasks_meta if not lm]
+    return batch_codes, lag_tasks, full_tasks
+
+
 def _count_stale_lagging(tasks_meta: list[tuple[str, str]], target: str | None) -> int:
     """统计增量任务中长期停更的基金数（滞后 >= 2 天，纯函数便于测试）。
 
@@ -234,6 +249,75 @@ def _backfill_one(code: str) -> None:
     if navs:
         with db_conn() as conn_:
             save_nav_batch(conn_, code, navs)
+
+
+# ── 批量净值增量（fundmobapi 移动端接口，30 只/请求，2026-09 提速） ──
+# lsjz 逐只拉取受单 IP ~3 QPS 限速，全市场 1.2 万只每日增量需 70+ 分钟；
+# fundmobapi 一次返回最多 30 只的累计净值（口径与 lsjz LJJZ 一致），同样
+# ~3 QPS 但吞吐 30 倍，把“差 1 天”的主流增量从逐只降到批量。
+# 滞后基金（QDII/停更，差 2+ 天）仍走 lsjz 补全，本接口只覆盖最新单日。
+_FUNDMOBAPI_BATCH = 30
+_FUNDMOBAPI_URL = "https://fundmobapi.eastmoney.com/FundMNewApi/FundMNFInfo"
+
+
+def _fundmobapi_url(codes: list[str]) -> str:
+    return (
+        f"{_FUNDMOBAPI_URL}?plat=Android&appType=ttjj&product=EFund"
+        f"&Version=1&deviceid=1&Fcodes={','.join(codes)}"
+    )
+
+
+async def _fundmobapi_fetch_group(session, codes: list[str], headers: dict,
+                                  timeout: float = 15) -> list[dict]:
+    """批量拉取一组基金的最新累计净值（fundmobapi，<=30 只/请求）。
+
+    返回 [{"code", "date", "cum_nav"}]；接口未返回的基金（停更/无净值/漏返）
+    由调用方回退到 lsjz 逐只补全，不在此处判失败。
+    """
+    resp = await fetch_async(session, _fundmobapi_url(codes), timeout=timeout, headers=headers)
+    data = json.loads(resp.text)
+    out: list[dict] = []
+    for d in data.get("Datas") or []:
+        try:
+            out.append({"code": d["FCODE"], "date": d["PDATE"], "cum_nav": float(d["ACCNAV"])})
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+async def _fundmobapi_incremental(session, codes: list[str], headers: dict) -> tuple[list, list[str]]:
+    """fundmobapi 批量增量：30 只/请求，semaphore 限流，失败重试。
+
+    返回 (results, missing)：
+    - results: [(code, [navs], False)] 成功项（navs 仅最新单日）
+    - missing: 批量拉取失败或接口未返回的基金代码（回退 lsjz 逐只补全）
+    """
+    results: list[tuple[str, list[dict], bool]] = []
+    missing: list[str] = []
+    sem = asyncio.Semaphore(3)  # 服务端 ~3 QPS，并发 3 已到上限
+    groups = [codes[i:i + _FUNDMOBAPI_BATCH] for i in range(0, len(codes), _FUNDMOBAPI_BATCH)]
+
+    async def _one(group: list[str]) -> None:
+        async with sem:
+            for attempt in range(3):
+                try:
+                    navs = await _fundmobapi_fetch_group(session, group, headers)
+                    returned = {n["code"] for n in navs}
+                    for n in navs:
+                        results.append((n["code"],
+                                        [{"date": n["date"], "cum_nav": n["cum_nav"]}], False))
+                    for c in group:
+                        if c not in returned:
+                            missing.append(c)
+                    return
+                except Exception:
+                    if attempt == 2:
+                        missing.extend(group)
+                        return
+                    await asyncio.sleep(0.6)
+
+    await asyncio.gather(*(_one(g) for g in groups))
+    return results, missing
 
 
 async def async_update_nav_incremental(concurrency: int = 5) -> int:
@@ -293,17 +377,53 @@ async def async_update_nav_incremental(concurrency: int = 5) -> int:
         if not tasks_meta:
             return 0
 
-        outcome = await run_batched_fetch(
-            session, fetch_type="nav_incr", label="增量净值",
-            targets=tasks_meta, batch_size=100,
-            fetch_one=_fetch_lsjz, handle_batch=_save_nav_batch, backfill_one=_backfill_one,
-            no_update_note="接口确认无新数据", primary_note="增量净值拉取失败",
-        )
+        # ── 三路拆分（2026-09 提速）：差 1 天批量 / 差多天 lsjz / 无本地 pingzhongdata ──
+        # 占绝大多数的“差 1 天”基金走 fundmobapi 批量（30 只/请求），把全市场
+        # 增量从 ~12690 次 lsjz 请求（~71 分钟）降到 ~423 次批量（~3 分钟）。
+        # 滞后基金（QDII/停更，差 2+ 天）与无本地基金仍走原路径。
+        batch_codes, lag_tasks, full_tasks = _split_tasks(tasks_meta, global_latest)
 
-        total_new = outcome["new_count"]
-        ok_cnt = len(tasks_meta) - len(outcome["failed"])
+        total_new = 0
+        success: set[str] = set()
+        no_update: list[str] = []
+        failed: list[str] = []
+
+        if batch_codes:
+            t0 = time.monotonic()
+            logger.info("净值批量增量（fundmobapi 30只/请求）: %d 只（差 1 天）", len(batch_codes))
+            batch_results, batch_missing = await _fundmobapi_incremental(session, batch_codes, headers)
+            with db_conn() as conn_:
+                for code, navs, _f in batch_results:
+                    n = save_nav_batch(conn_, code, navs)
+                    if n:
+                        total_new += n
+                        success.add(code)
+                    else:
+                        no_update.append(code)
+            if success:
+                mark_recovered_batch("nav_incr", sorted(success))
+            # 批量未返回/失败的基金回退 lsjz 逐只补全（不在此处判失败/冷却）
+            if batch_missing:
+                lag_tasks.extend((c, local_max.get(c, "")) for c in batch_missing)
+                logger.info("净值批量缺失 %d 只，回退 lsjz 逐只补全", len(batch_missing))
+            logger.info("净值批量增量完成: 成功 %d 只, 无新数据 %d 只, 缺失 %d 只, 耗时 %.1f 秒",
+                        len(success), len(no_update), len(batch_missing), time.monotonic() - t0)
+
+        if lag_tasks or full_tasks:
+            outcome = await run_batched_fetch(
+                session, fetch_type="nav_incr", label="增量净值",
+                targets=lag_tasks + full_tasks, batch_size=100,
+                fetch_one=_fetch_lsjz, handle_batch=_save_nav_batch, backfill_one=_backfill_one,
+                no_update_note="接口确认无新数据", primary_note="增量净值拉取失败",
+            )
+            total_new += outcome["new_count"]
+            success |= outcome["success"]
+            no_update.extend(outcome["no_update"])
+            failed.extend(outcome["failed"])
+
+        ok_cnt = len(tasks_meta) - len(failed)
         logger.info("净值增量更新完成: 新增 %d 条, 成功 %d 只, 无新数据 %d 只, 失败 %d 只",
-                    total_new, len(outcome["success"]), len(outcome["no_update"]), len(outcome["failed"]))
+                    total_new, len(success), len(no_update), len(failed))
         if total_new == 0 and ok_cnt > 100:
             # 探测接口最新净值日期：若比本地最新还新却没写入，才是真异常；
             # 周末/停更基金导致的 0 条属正常，不应告警。
