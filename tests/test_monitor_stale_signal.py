@@ -6,11 +6,12 @@
 
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import app.database as db_mod
-from app.database import db_conn
 import app.repo as repo
+from app.database import db_conn
 
 
 class TestStaleEventIsolation:

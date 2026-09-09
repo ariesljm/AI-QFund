@@ -1,14 +1,15 @@
 """GA 遗传寻优 + 进化自纠偏 + 监控企稳豁免 测试。"""
 
 import sys
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
 
-from app.engine import evolve, ga
 import app.repo as repo
+from app.engine import evolve, ga
 
 
 class TestReviewRankingAll:
@@ -31,7 +32,7 @@ class TestReviewRankingAll:
         calmar = mom.copy()  # 强正相关
         monkeypatch.setattr(evolve.repo, "get_buyable_feature_stats",
                             lambda: [(f"F{i:04d}", m, h, c)
-                                     for i, (m, h, c) in enumerate(zip(mom, hurst, calmar))])
+                                     for i, (m, h, c) in enumerate(zip(mom, hurst, calmar, strict=True))])
         monkeypatch.setattr(evolve.repo, "get_index_momentum", lambda: 0.0)
         written = []
         monkeypatch.setattr(evolve, "_apply_ranking_weights",
@@ -50,7 +51,7 @@ class TestReviewRankingAll:
         calmar = mom.copy()
         monkeypatch.setattr(evolve.repo, "get_buyable_feature_stats",
                             lambda: [(f"F{i:04d}", m, h, c)
-                                     for i, (m, h, c) in enumerate(zip(mom, hurst, calmar))])
+                                     for i, (m, h, c) in enumerate(zip(mom, hurst, calmar, strict=True))])
         monkeypatch.setattr(evolve.repo, "get_index_momentum", lambda: 50.0)
         written = []
         monkeypatch.setattr(evolve, "_apply_ranking_weights",
@@ -83,7 +84,7 @@ class TestSectorAdvantageReversal:
         return {"momentum_20d": mom, "reversal_20d": reversal, "date": "2026-08-03"}
 
     def _rule_result(self, mom, reversal, median):
-        from app.engine.monitor import SectorAdvantageRule, DefenseContext
+        from app.engine.monitor import DefenseContext, SectorAdvantageRule
         ctx = DefenseContext(
             code="F001", sector="半导体",
             cur_feat=self._feat(mom, reversal), sector_median=median,
@@ -207,10 +208,9 @@ class TestGaFrequencyLimit:
     """GA 频率限制：meta last_ga_run 距上次 < 7 天跳过，评估即记录。"""
 
     def test_skip_within_interval(self, monkeypatch):
-        from datetime import timedelta
+
         from app.engine import evolve
 
-        recent = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         monkeypatch.setattr(evolve.repo, "get_interval_days", lambda k: 1)
         saved = []
         monkeypatch.setattr(evolve.repo, "save_meta", lambda k, v: saved.append((k, v)))
@@ -224,6 +224,7 @@ class TestGaFrequencyLimit:
 
     def test_runs_and_records_after_interval(self, monkeypatch):
         from datetime import timedelta
+
         from app.engine import evolve
 
         old = (datetime.now() - timedelta(days=8)).strftime("%Y-%m-%d")
@@ -244,6 +245,7 @@ class TestGaFrequencyLimit:
 
     def test_no_apply_within_threshold(self, monkeypatch):
         from datetime import timedelta
+
         from app.engine import evolve
 
         old = (datetime.now() - timedelta(days=8)).strftime("%Y-%m-%d")

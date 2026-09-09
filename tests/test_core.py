@@ -10,18 +10,18 @@
 
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import pytest
 import numpy as np
 import pandas as pd
-
+import pytest
 
 # ============================================================
 # sector_api — is_industry_code
 # ============================================================
-
 from app.features.sector import is_industry_code
+
 
 class TestIndustryCode:
     def test_valid_sws_code(self):
@@ -67,6 +67,7 @@ class TestIndustryCode:
 
 from app.data.macro import _is_concept_name
 
+
 class TestConceptName:
     def test_known_concept_codes(self):
         """32 个精确 BK 概念代码"""
@@ -95,6 +96,7 @@ class TestConceptName:
 # ============================================================
 
 from app.features.calculator import calc_hurst
+
 
 class TestHurst:
     def test_random_walk_in_range(self):
@@ -128,6 +130,7 @@ class TestHurst:
 
 from app import domain as _domain
 
+
 class TestResolveSectorName:
     def test_exact_match(self):
         assert _domain.resolve_sector_name("食品", ["食品", "饮料", "医药"]) == "食品"
@@ -158,6 +161,7 @@ class TestResolveSectorName:
 # ============================================================
 
 from app.llm.prompts import sector_selection_prompt, sector_selection_system_prompt
+
 
 class TestPrompts:
     def test_basic_prompt_structure(self):
@@ -248,10 +252,16 @@ class TestPrompts:
 # features — compute_fund_features（C3 公式单一来源）
 # ============================================================
 
-from app.features.calculator import compute_fund_features, combo_score, regime_combo_weights, score_frame
 import app.repo as repo
-from app.llm.macro_agent import MacroContext
 from app.engine import recommend as recommend_mod
+from app.engine.macro_agent import MacroContext
+from app.features.calculator import (
+    combo_score,
+    compute_fund_features,
+    regime_combo_weights,
+    score_frame,
+)
+
 
 class TestComputeFundFeatures:
     def test_returns_seven_features(self):
@@ -329,10 +339,12 @@ class TestScoreFrame:
 
     def _df(self):
         rows = []
-        for code, mom in (("A", 5.0), ("B", 3.0)):
+        for code, mom5 in (("A", 5.0), ("B", 3.0)):
             r = {c: 1.0 for c in repo.FEATURE_COLS}
             r["code"] = code
-            r["momentum_20d"] = mom
+            # Ticket 06：相对强弱基准由 20 日动量改为 5 日动量（40 日窗口验证）
+            r["mom_5d"] = mom5
+            r["momentum_20d"] = 2.0
             r["calmar"] = 2.0
             r["hurst_60d"] = 0.6
             r["regime"] = "BULL"
@@ -344,7 +356,7 @@ class TestScoreFrame:
         assert {"score", "score_norm", "rel_strength", "combo"} <= set(out.columns)
         a = out[out["code"] == "A"]["combo"].iloc[0]
         b = out[out["code"] == "B"]["combo"].iloc[0]
-        assert a > b  # rel_strength 更大者 combo 更高
+        assert a > b  # mom_5d 更大者 rel_strength 更高 → combo 更高（Ticket 06）
 
     def test_without_model_uses_05(self):
         out = score_frame(self._df(), None, self._cfg(), idx_mom=0.0)
@@ -361,8 +373,8 @@ class TestScoreFrame:
 # monitor — 防线链数据驱动（C2）与遮蔽 bug 回归
 # ============================================================
 
-import inspect
 from app.engine import monitor as monitor_mod
+
 
 class TestDefenseChain:
     def test_short_circuit_exit_stops_chain(self):
@@ -504,8 +516,11 @@ class TestRankWithinSectors:
         top2_covered = {f["code"] for f in finalists if f["sector"] in ("半导体", "电源设备")}
         assert len(top2_covered) >= 4, f"前 2 赛道候选不足 2 只/赛道: {top2_covered}"
 
-    def test_negative_score_candidates_included(self, monkeypatch):
-        """阶段2 全天候出手：预测收益为负的基金不再硬过滤（风险由监控防线兜底）。"""
+    def test_negative_score_candidates_filtered_out(self, monkeypatch):
+        """Ticket 05 恢复入场质量门槛：预测为负的基金不再进入候选（空推荐日兜底）。
+
+        回归根因：R1"全天候出手"曾让负预测基金照推（28 笔中 6 笔趋近 0、1 笔为负）。
+        """
         sectors = ["半导体"]
         data = [
             self._row("SC_A", "半导体", 3.0),
@@ -526,9 +541,8 @@ class TestRankWithinSectors:
 
         ctx = MacroContext(recommended_sectors=sectors, risk_sectors=[], date="2026-08-02")
         finalists = recommend_mod._rank_within_sectors(ctx, _NegModel())
-        # 全天候：负预测不再清空候选池，按 combo 排序仍产出候选
-        assert finalists, f"负预测也应产出候选（全天候出手）: {finalists}"
-        assert all(f["score"] < 0 for f in finalists)
+        # Ticket 05：负预测被硬过滤（赛道内与降级路径一致），返回空 → 上游记空推荐日
+        assert finalists == []
 
     def test_first_industry_in_risk_sectors_excluded(self, monkeypatch):
         """修复：第一行业命中回避赛道 → 整体剔除（即使次行业在推荐赛道）。
@@ -653,20 +667,22 @@ class TestSectorCandidatesDedupe:
 
 
 # ============================================================
-# LLM 最终定论解析 + 持仓上下文构建（候选4 胶水收敛后的测试缺口）
+# LLM 最终定论校验 core（候选 3 收敛：生产走 call_llm_json validator，
+# 字符串→解析由 parse_llm_json 负责；此处直测 validator core）
 # ============================================================
 
-from app.engine.recommend import _parse_llm_result
+from app.engine.recommend import _validate_final_pick
+from app.llm.client import parse_llm_json
 from app.llm.context import build_holdings_text
 
 
-class TestParseLlmResult:
-    """推荐终定 LLM 返回解析：selected_code 必须在候选池内才算有效。"""
+class TestValidateFinalPick:
+    """推荐终定 validator core：selected_code 必须在候选池内才算有效。"""
 
     def test_valid_selection(self):
-        parsed = _parse_llm_result(
-            '{"selected_code": "000001", "selected_name": "基金A", '
-            '"reason": "理由", "decision_logic": "动量强", "vetoed": ["000002"]}',
+        parsed = _validate_final_pick(
+            parse_llm_json('{"selected_code": "000001", "selected_name": "基金A", '
+                           '"reason": "理由", "decision_logic": "动量强", "vetoed": ["000002"]}'),
             {"000001": "基金A", "000002": "基金B"},
         )
         assert parsed == {
@@ -676,9 +692,9 @@ class TestParseLlmResult:
 
     def test_valid_selection_without_decision_logic(self):
         """旧 prompt 无 decision_logic 字段时兼容为空串（P2-7 向后兼容）。"""
-        parsed = _parse_llm_result(
-            '{"selected_code": "000001", "selected_name": "基金A", '
-            '"reason": "理由", "vetoed": ["000002"]}',
+        parsed = _validate_final_pick(
+            parse_llm_json('{"selected_code": "000001", "selected_name": "基金A", '
+                           '"reason": "理由", "vetoed": ["000002"]}'),
             {"000001": "基金A", "000002": "基金B"},
         )
         assert parsed == {
@@ -688,20 +704,17 @@ class TestParseLlmResult:
 
     def test_invalid_code_returns_none(self):
         """LLM 返回池外 code → 无效（防止幻觉选错基金）。"""
-        parsed = _parse_llm_result(
-            '{"selected_code": "999999", "selected_name": "幻觉基金"}',
+        parsed = _validate_final_pick(
+            {"selected_code": "999999", "selected_name": "幻觉基金"},
             {"000001": "基金A"},
         )
         assert parsed is None
 
     def test_invalid_json_returns_none(self):
-        assert _parse_llm_result("not json", {"000001": "基金A"}) is None
+        assert _validate_final_pick(parse_llm_json("not json"), {"000001": "基金A"}) is None
 
     def test_non_dict_returns_none(self):
-        assert _parse_llm_result("[1, 2, 3]", {"000001": "基金A"}) is None
-
-    def test_missing_selected_code_returns_none(self):
-        assert _parse_llm_result('{"reason": "无推荐"}', {"000001": "基金A"}) is None
+        assert _validate_final_pick("[1, 2, 3]", {"000001": "基金A"}) is None
 
 
 class TestBuildHoldingsText:

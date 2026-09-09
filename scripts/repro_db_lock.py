@@ -6,9 +6,8 @@
 import sqlite3
 import threading
 import time
-from pathlib import Path
 
-from app.database import db_conn, DB_PATH
+from app.database import DB_PATH, db_conn
 from app.repo.decision import get_latest_reco_id
 
 ERRORS: list[str] = []
@@ -32,7 +31,7 @@ def holder() -> None:
 
 def worker(tid: int) -> None:
     try:
-        for i in range(3):
+        for _i in range(3):
             get_latest_reco_id()  # 触发 _migrate 的 UPDATE + commit（写）
             with db_conn() as conn:
                 conn.execute("SELECT COUNT(*) FROM meta").fetchone()

@@ -9,7 +9,9 @@ from typing import Any
 
 # ── 推荐周期 ─────────────────────────────────────────────
 # 一次推荐对应的预测/结算/质量度量共用的前向窗口（交易日）
-FORWARD_DAYS = 20
+# 用户定论持有周期 1-3 个月 → 取中值 40 交易日（约 2 个月）；
+# 多窗口验证（2026-09）：40 日窗口下赛道内排序最有效、5 日动量延续性最强。
+FORWARD_DAYS = 40
 
 # ── 收益判定阈值（单一来源） ──────────────────────────────
 # 赚钱口径：绝对收益 > 1% 视为扣费后真赚钱（quality 度量 / GA fitness / 回测 / 结算共用）
@@ -135,8 +137,9 @@ SIGNAL_PRIORITY = {
 # 持仓状态集合（监控引擎与 repo 查询共用）
 HOLDING_STATES = (SIGNAL_HOLD, SIGNAL_BUY_MORE, SIGNAL_WARNING)
 
-# ── 模型预测 alpha 门槛（推荐/监控共用语义） ─────────
-# 「模型看好」= 模型预测未来 FORWARD_DAYS 日超额收益为正。
+# ── 模型预测门槛（推荐/监控共用语义） ─────────────
+# 「模型看好」= 模型预测未来 FORWARD_DAYS 日绝对收益为正（口径纠正：
+# 训练标签为绝对收益 abs_ret_40d，非超额；原名曾误标'超额'）。
 # 推荐引擎以此硬条件过滤候选；监控引擎据此判断信号是否转负。
 MIN_PREDICTED_ALPHA = 0.0
 
@@ -164,6 +167,32 @@ def regime_from_close_ema60(close: float | None, ema60: float | None) -> str:
     if close is None or ema60 is None or ema60 <= 0:
         return REGIME_NEUTRAL
     return REGIME_BULL if close > ema60 else REGIME_BEAR
+
+
+def regime_from_multi_timeframe(close: float | None, ema60: float | None,
+                                ema_long: float | None) -> str:
+    """多周期共振牛熊判定（T06，2026-09-05）。
+
+    短周期 EMA60 + 长周期 EMA250（年线）双确认才判牛/熊：
+    - 收盘 > 短均线 且 > 长均线 → BULL（长短共振向上）
+    - 收盘 < 短均线 且 < 长均线 → BEAR（长短共振向下）
+    - 方向矛盾/数据不足 → NEUTRAL（震荡或过渡期，不做 regime 方向性降权）
+
+    动机：单点 EMA60 判定在震荡市频繁穿线（regime 抖动 → 牛/熊降权交替开关），
+    且研究发现同一信号牛熊方向相反（5 日动量熊市延续、牛市反转）——
+    regime 判错即信号用反；多周期共振让方向确认更稳。
+    """
+    if close is None or ema60 is None or ema_long is None:
+        return REGIME_NEUTRAL
+    if ema60 <= 0 or ema_long <= 0:
+        return REGIME_NEUTRAL
+    above_short = close > ema60
+    above_long = close > ema_long
+    if above_short and above_long:
+        return REGIME_BULL
+    if not above_short and not above_long:
+        return REGIME_BEAR
+    return REGIME_NEUTRAL
 
 
 # 大盘状态中文文案（Web 模板/前端展示单一来源）

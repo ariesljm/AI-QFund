@@ -28,12 +28,17 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-from app import domain
-from app import repo
+from app import domain, repo
 from app.engine.quality import profit_stats  # 赚钱口径单一来源（回测汇总与质量度量共用）
-from app.features.calculator import (compute_fund_features, score_frame,
-                                      market_state_features, sim_ema60_exit)
+from app.features.calculator import (
+    compute_fund_features,
+    market_state_features,
+    score_frame,
+    sim_ema60_exit,
+)
 from app.model import prepare_training_data, train  # 训练采样/训练单一来源（与线上同口径）
+from backtest._regime import ema250_of as _ema250_of
+from backtest._regime import regime_at_date as _regime_at_date
 
 logger = logging.getLogger("backtest_walkforward")
 
@@ -128,15 +133,15 @@ def _score_at(bst: lgb.Booster, bt_date: pd.Timestamp, idx_close: pd.Series,
 
 
 def _regime_at(idx_close: pd.Series, bt_date: pd.Timestamp) -> str:
-    """回测日 regime：收盘 vs 当日 EMA60（读指数表 ema60 列，与线上口径一致）。"""
-    rows = repo.get_index_series("sh000300", ("date", "close", "ema60"),
-                                 since=bt_date.strftime("%Y-%m-%d"))
-    if not rows or rows[0][0] != bt_date.strftime("%Y-%m-%d"):
-        return domain.REGIME_NEUTRAL
-    _, close, ema60 = rows[0]
-    if ema60 is None:
-        return domain.REGIME_NEUTRAL
-    return domain.regime_from_close_ema60(float(close), float(ema60))
+    """回测日 regime：多周期共振（EMA60+EMA250，⑥ 统一 seam，与生产一致）。
+
+    原实现只读 DB 当日 ema60 单周期判定（未随生产多周期化，GA 在错误 regime 学权重）；
+    现从 walkforward 已持有的 idx_close 序列现算 ema60/ema250，经 _regime 统一 seam。
+    """
+    idx_df = pd.DataFrame({"close": idx_close})
+    idx_df["ema60"] = idx_close.ewm(span=60, adjust=False).mean()
+    idx_df["ema250"] = _ema250_of(idx_close)
+    return _regime_at_date(idx_df, bt_date)
 
 
 # ========== 3. 规则门（可回测的绝对门 + 防追高护栏） ==========
@@ -200,9 +205,12 @@ def _sector_point(df: pd.DataFrame, bt_date: pd.Timestamp, rng_seed: int,
         top1 = sdf.iloc[0]
         top2 = sdf.iloc[1] if len(sdf) >= 2 else None
         rnd = sdf.iloc[rng.integers(0, len(sdf))]
-        top1_abs.append(top1["abs_ret"]); rand_abs.append(rnd["abs_ret"])
-        top1_alpha.append(top1["alpha"]); rand_alpha.append(rnd["alpha"])
-        top1_win.append(top1["abs_ret"] > 0); rand_win.append(rnd["abs_ret"] > 0)
+        top1_abs.append(top1["abs_ret"])
+        rand_abs.append(rnd["abs_ret"])
+        top1_alpha.append(top1["alpha"])
+        rand_alpha.append(rnd["alpha"])
+        top1_win.append(top1["abs_ret"] > 0)
+        rand_win.append(rnd["abs_ret"] > 0)
         if top2 is not None:
             top2_abs.append(top2["abs_ret"])
             top2_alpha.append(top2["alpha"])

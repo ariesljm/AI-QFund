@@ -5,7 +5,7 @@
   R3b   风格漂移：买入时RBSA第一行业权重 - 当前 > 15% 或行业切换
   R3a   赛道锚点：当前 RBSA 行业 vs 推荐时 LLM 赛道判断（sector_selections 持久化值）
   R5    赛道优势：基金动量落后赛道中位数 → WARNING
-  R2c   模型信号：预测 20 日绝对收益转负 → WARNING（阶段二升级为序列 EXIT）
+  R2c   模型信号：预测 40 日绝对收益转负 → WARNING（阶段二升级为序列 EXIT）
 复核层:
   R4    逻辑证伪：LLM 综合判断赛道方向+持仓匹配是否破裂（仅复核，不能推翻规则）
 
@@ -62,6 +62,18 @@ _UPSIDE_RATE_LIMIT_SIGNALS = 10  # R2d 加仓候选限频：近期已发 BUY_MOR
 _R4_VALID_VERDICTS = {"维持", "断裂"}
 _R4_VALID_HINTS = {domain.SIGNAL_HOLD, domain.SIGNAL_BUY_MORE, domain.SIGNAL_WARNING}
 _HOLD_STATES = domain.HOLDING_STATES
+
+# ── 回撤硬止损（R5）常量（单一来源） ──────────────
+# 回撤口径与回测 sim_hard_stop 一致：自持仓期最高净值回撤，而非单日跌幅。
+# T04（2026-09-05 回测）：固定 8% 在低波震荡中过度触发（胜率 41.7%→25%），
+# 改为波动自适应阈值 clamp(1.5×近20日波动, 6%, 15%)——高波动容忍、低波动收紧。
+# 定位：这是离场风险信号（风控底线），不是盈亏计算；信号链只输出
+# 持有/警惕/加仓/离场 四类信号给用户，盈亏由 evolve 结算层负责。
+_HARD_STOP_VOL_MULT = 1.5      # 波动倍数
+_HARD_STOP_FLOOR_PCT = 0.06    # 阈值下限（崩盘保护底线）
+_HARD_STOP_CAP_PCT = 0.15      # 阈值上限（高波动不过度容忍）
+_HARD_STOP_VOL_WINDOW = 20     # 波动估计窗口（净值条数）
+_HARD_STOP_EXEMPT_NAVS = 7       # 入场 7 自然日内豁免（≤7 条净值保守不触发，避开惩罚赎回费）
 
 
 def _first_industry(feat: dict) -> str:
@@ -125,13 +137,25 @@ class DefenseContext:
         self.r4_no_new_data = r4_no_new_data
         # P0-1：R4 逻辑证伪本轮是否因 LLM 不可用/解析失败而跳过（规则层信号不受影响）
         self.r4_skipped = False
-        # P2-9：R4 预计算结果（run_monitor 并发装配阶段写入），链执行阶段直接消费，不再重复调用 LLM
+        # P2-9：R4 预计算（并发装配阶段 attach_r4_result 写入，链执行阶段消费）——
+        # 后装配结果字段，与快照字段（构造定案）区分，见 attach_r4_result 守卫
         self.r4_logic: dict | None = None
-        # P2-9：是否已预计算（区分"未预计算（需现场调用）"与"预计算失败（r4_logic=None）"）
         self.r4_precomputed: bool = False
         # R2d 加仓候选限频数据源：近期监控信号 (date, signal) 序列（run_monitor 装配；
         # None=未装配，规则跳过限频检查——单规则测试/旧构造不受影响）
         self.recent_signals = recent_signals
+
+    def attach_r4_result(self, logic: dict | None) -> None:
+        """后装配 R4 预计算结果（P2-9 并发批量：构造后、链执行前一次性写入）。
+
+        与快照字段（__init__ 定案、只读消费）区分：本方法显式声明"后装配结果"，
+        且只允许写入一次——重复调用抛错，守卫"快照不变"承诺与 R4 时序不变量。
+        """
+        if self.r4_precomputed:
+            raise RuntimeError(f"R4 已预计算，重复 attach（code={self.code}）")
+        self.r4_logic = logic
+        self.r4_precomputed = True
+        self.r4_skipped = logic is None
 
 
 class DefenseRule:
@@ -271,6 +295,48 @@ class SectorAdvantageRule(DefenseRule):
         return None
 
 
+class HardStopRule(DefenseRule):
+    """R5：回撤硬止损——净值距持仓期最高点回撤 ≥ 波动自适应阈值 无条件 EXIT。
+
+    T04（2026-09-05 回测定案）：固定 8% 在低波震荡中过度触发（砍掉反弹、
+    胜率 41.7%→25%）；改波动自适应阈值 = clamp(1.5×近 20 日波动, 6%, 15%)，
+    高波动赛道容忍更大回撤、低波动赛道更早保护，与回测 sim_vol_adaptive_stop 同口径。
+    先于慢速 EMA60 与模型信号确认生效，急跌场景不吃满亏损（实盘曾完整吃下 -12.5%）。
+    入场后 7 自然日内豁免（净值 ≤7 条时保守不触发，覆盖惩罚性赎回费区间）。
+    回撤口径与回测一致（自持仓最高净值回撤，非单日跌幅）。
+    """
+
+    severity = 45
+    short_circuit = False
+
+    @staticmethod
+    def _threshold(navs: list[float]) -> float:
+        """波动自适应止损阈值（与 calculator.vol_adaptive_stop_pct 同公式）。"""
+        from app.features.calculator import vol_adaptive_stop_pct
+        return vol_adaptive_stop_pct(navs, mult=_HARD_STOP_VOL_MULT,
+                                     floor_pct=_HARD_STOP_FLOOR_PCT,
+                                     cap_pct=_HARD_STOP_CAP_PCT,
+                                     vol_window=_HARD_STOP_VOL_WINDOW)
+
+    def check(self, ctx: DefenseContext) -> DefenseResult | None:
+        if len(ctx.navs) <= _HARD_STOP_EXEMPT_NAVS:
+            return None
+        valid = [n for n in ctx.navs if n and n > 0]
+        if len(valid) < 2:
+            return None
+        peak = max(valid)
+        drawdown = (peak - valid[-1]) / peak
+        # 波动用截至前一日净值（当日崩盘不自抬当日阈值——信号及时性）
+        thr = self._threshold(valid[:-1])
+        if drawdown >= thr:
+            return DefenseResult(
+                signal=domain.SIGNAL_EXIT,
+                reason=(f"回撤硬止损: 净值距持仓高点回撤{drawdown:.2%} "
+                        f"≥ 波动自适应阈值{thr:.1%}"),
+            )
+        return None
+
+
 class ModelUpsideRule(DefenseRule):
     """R2d：模型上行加仓候选——量化层唯一的正向信号。
 
@@ -305,7 +371,7 @@ class ModelUpsideRule(DefenseRule):
 
 
 class ModelSignalRule(DefenseRule):
-    """R2c：模型信号序列退出（阶段二）——预测 20 日绝对收益转负确认后 EXIT。
+    """R2c：模型信号序列退出（阶段二）——预测 40 日绝对收益转负确认后 EXIT。
 
     与推荐闭环：推荐时硬条件 score>0；监控每日用模型重打分并落库 monitor_scores。
     确认期（monitor_scores 序列，跨日状态）:
@@ -464,7 +530,7 @@ def _check_nav_freshness(code: str, trade_dates: list[str]) -> tuple[bool, str]:
 # ── 模型信号防线 ──
 
 def _current_model_score(feat: dict | None) -> float | None:
-    """用当前模型对基金最新特征打分，返回预测 20 日绝对收益；无特征/无模型返回 None。
+    """用当前模型对基金最新特征打分，返回预测 40 日绝对收益；无特征/无模型返回 None。
 
     特征由装配层传入（run_monitor 已取 get_latest_features），避免重复查询；
     市场状态列由调用方显式注入（最新指数状态），score 保持纯函数。
@@ -620,6 +686,7 @@ def _apply_defense_chain(ctx: DefenseContext,
             SectorAdvantageRule(),
             ModelUpsideRule(),
             ModelSignalRule(),
+            HardStopRule(),
             LogicVerificationRule(),
         ]
     rules = sorted(rules, key=lambda r: r.severity)
@@ -659,7 +726,7 @@ def _apply_defense_chain(ctx: DefenseContext,
 
 
 def _run_r4_batch(ctxs: list[DefenseContext]) -> None:
-    """P2-9：并发执行全部持仓的 R4 逻辑证伪（LLM 调用），结果写回 ctx.r4_logic。
+    """P2-9：并发执行全部持仓的 R4 逻辑证伪（LLM 调用），结果经 attach_r4_result 写回。
 
     规则层（R1/R2c/R3 等）与 R4 无关且不依赖 LLM，先并发预取 R4 结果，
     链执行阶段不再逐持仓串行等待 LLM——持仓增多时监控槽位不被 LLM 延迟线性拖长。
@@ -685,9 +752,7 @@ def _run_r4_batch(ctxs: list[DefenseContext]) -> None:
     with ThreadPoolExecutor(max_workers=workers) as ex:
         results = list(ex.map(_verify, pending))
     for ctx, logic in zip(pending, results, strict=False):
-        ctx.r4_logic = logic
-        ctx.r4_precomputed = True
-        ctx.r4_skipped = logic is None
+        ctx.attach_r4_result(logic)
 
 
 def _build_defense_context(row: dict, date_str: str, trade_dates: list[str],

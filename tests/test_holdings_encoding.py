@@ -5,10 +5,9 @@
 """
 
 import asyncio
-import pytest
 
-import app.data.foundation as foundation
-from app.data.foundation import _async_fetch_holdings_one
+from app.data import holdings as foundation
+from app.data.holdings import _async_fetch_holdings_one
 
 # 东财持仓页 HTML 片段（真实结构：报告期 + 表格行）
 _HTML_UTF8 = (

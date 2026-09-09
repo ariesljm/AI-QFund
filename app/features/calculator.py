@@ -77,6 +77,85 @@ def sim_hard_stop(daily_navs: list[float], stop_pct: float = 0.10,
     return daily_navs[settle_idx] / entry - 1.0
 
 
+def vol_adaptive_stop_pct(daily_navs: list[float], mult: float = 1.5,
+                          floor_pct: float = 0.06, cap_pct: float = 0.15,
+                          vol_window: int = 20) -> float:
+    """波动率自适应止损阈值（reco-hardening T04）。
+
+    阈值 = clamp(mult × 近 vol_window 日收益波动率(σ×√20), floor_pct, cap_pct)。
+    高波动赛道（AI/半导体）8% 固定阈值一两周即触发，低波动赛道又太松；
+    自适应让止损随标的实际波动缩放。数据不足 vol_window 时用可用天数。
+    """
+    valid = [n for n in daily_navs if n and n > 0]
+    if len(valid) < 2:
+        return floor_pct
+    rets = [valid[i] / valid[i - 1] - 1.0 for i in range(1, len(valid))]
+    window = min(vol_window, len(rets))
+    if window < 2:
+        return floor_pct
+    recent = rets[-window:]
+    import statistics
+    vol = statistics.pstdev(recent) * (20.0 ** 0.5)  # 日波动 → 月波动近似
+    thr = max(floor_pct, min(mult * vol, cap_pct))
+    return thr
+
+
+def sim_vol_adaptive_stop(daily_navs: list[float], mult: float = 1.5,
+                          floor_pct: float = 0.06, cap_pct: float = 0.15,
+                          max_days: int = 20) -> float | None:
+    """模拟波动自适应止损（T04）：阈值随净值波动缩放，其余同 sim_hard_stop。
+
+    返回结算收益；数据不足返回 None。
+    """
+    if len(daily_navs) < 2:
+        return None
+    entry = daily_navs[0]
+    if entry is None or entry <= 0:
+        return None
+    highest = entry
+    for i in range(1, min(len(daily_navs), max_days + 1)):
+        nav = daily_navs[i]
+        if nav is None or nav <= 0:
+            break
+        if nav > highest:
+            highest = nav
+        # 阈值用截至前一日的净值算波动（T04 信号及时性：当日崩盘不自抬当日阈值）
+        thr = vol_adaptive_stop_pct(daily_navs[:i], mult, floor_pct, cap_pct)
+        if (highest - nav) / highest > thr:
+            return nav / entry - 1.0
+    settle_idx = min(len(daily_navs) - 1, max_days)
+    return daily_navs[settle_idx] / entry - 1.0
+
+
+def sim_take_profit(daily_navs: list[float], profit_threshold: float = 0.15,
+                    pullback_pct: float = 0.12, max_days: int = 40) -> float | None:
+    """盈利保护止盈（reco-hardening T08）：盈利 ≥ profit_threshold 后，
+    从盈利期最高点回撤 ≥ pullback_pct 即结算——让利润奔跑，同时锁住已实现收益。
+
+    未达盈利阈值前按持有到期结算（不提前止损；与硬止损并存时由调用方组合）。
+    """
+    if len(daily_navs) < 2:
+        return None
+    entry = daily_navs[0]
+    if entry is None or entry <= 0:
+        return None
+    armed = False
+    peak_after_arm = entry
+    for i in range(1, min(len(daily_navs), max_days + 1)):
+        nav = daily_navs[i]
+        if nav is None or nav <= 0:
+            break
+        if not armed and nav / entry - 1.0 >= profit_threshold:
+            armed = True
+        if armed:
+            if nav > peak_after_arm:
+                peak_after_arm = nav
+            if (peak_after_arm - nav) / peak_after_arm >= pullback_pct:
+                return nav / entry - 1.0
+    settle_idx = min(len(daily_navs) - 1, max_days)
+    return daily_navs[settle_idx] / entry - 1.0
+
+
 _EMA_SPAN = 60
 _EMA_CONFIRM_DAYS = 2
 EMA_WARMUP_NAVS = _EMA_SPAN + _EMA_CONFIRM_DAYS
@@ -141,7 +220,7 @@ def sim_ema60_exit(daily_navs: list[float], confirm_days: int = _EMA_CONFIRM_DAY
 
     与生产防线 R1 同判定（ema60_trigger_index），使回测退出语义 == 生产退出语义；
     触发后视为卖出持现金，收益 = 触发日净值 / 入场净值 - 1。
-    注意：EMA 需 span+confirm 日预热，max_days 须大于预热期才可能触发（主回测 20 日
+    注意：EMA 需 span+confirm 日预热，max_days 须大于预热期才可能触发（主回测 40 日
     窗口内生产 R1 本就不触发——这如实反映生产行为）。数据不足返回 None。
     """
     if len(daily_navs) < 2:
@@ -310,7 +389,15 @@ def combo_score(score_norm: float, rel_strength: float, calmar: float, hurst: fl
 
 
 def regime_combo_weights(regime: str, cfg: dict | domain.RankingConfig) -> dict:
-    """根据大盘状态调整因子权重：BULL 偏动量+赫斯特，BEAR 偏卡玛。"""
+    """根据大盘状态调整因子权重：BULL 偏动量+赫斯特，BEAR 偏卡玛。
+
+    系数来历（标定报告 40 日面板研究，2026-09）：
+    - BULL ×1.3：牛市 7080 行胜率 52%，20 日动量延续（48.2%→54.3%）与
+      excess_20d 延续（57.4%）——强势不追高但留动量；cal ×0.5：牛市回撤小，卡玛区分度低。
+    - BEAR cal ×1.5 / rs ×0.7：熊市 24089 行低波动防守胜率 60.1% vs 29.8%，
+      卡玛（回撤）类因子在熊市区分度最高。
+    注意：数值为单次研究定标，未经 40 日结算复验——收紧/回退随 ① 权重控制面收编再评估，勿单独调。
+    """
     w_model = cfg["model_weight"]
     w_rs = cfg["rel_strength_weight"]
     w_cal = cfg["calmar_weight"]
@@ -358,7 +445,9 @@ def score_frame(df: pd.DataFrame, model, cfg: dict | domain.RankingConfig, idx_m
         df["score_norm"] = (df["score"] - s_min) / s_range
     else:
         df["score_norm"] = 0.5
-    df["rel_strength"] = df["momentum_20d"] - idx_mom
+    df["rel_strength"] = df["mom_5d"] - idx_mom
+    # Ticket 06：相对强弱基准由 20 日动量改为 5 日动量（多窗口验证：40 日持有
+    # 视野下 5 日动量延续性最强（hot +3.08%/胜率 63%），20 日动量已无区分度）
     calmar_clipped = df["calmar"].clip(-5, 5)
     if "regime" in df.columns and len(df) > 0 and pd.notna(df["regime"].iloc[0]):
         regime = df["regime"].iloc[0]

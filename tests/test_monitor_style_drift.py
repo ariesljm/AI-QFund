@@ -8,7 +8,7 @@ DefenseContext 预装配快照——测试直接构造 ctx 数据，无需 mock 
 """
 
 from app.engine import monitor as monitor_mod
-from app.engine.monitor import (StyleDriftRule, SectorAnchorRule, DefenseContext)
+from app.engine.monitor import DefenseContext, SectorAnchorRule, StyleDriftRule
 
 
 def _ctx(code: str = "001428", cur_feat=None, entry_rbsa=None,

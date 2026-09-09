@@ -1,8 +1,8 @@
 """交易日历测试：新浪全年日历 → 缓存 → 判断 → 失败降级。"""
 
 import sys
-from pathlib import Path
 from datetime import date
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 

@@ -5,16 +5,17 @@
 
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import json
 
 import pytest
 
-from app.llm import macro_agent
-from app.engine.sector_pool import SectorPool, SectorSignal
 import app.database as db_mod
 from app import repo
+from app.engine import macro_agent
+from app.engine.sector_pool import SectorPool, SectorSignal
 
 
 class TestSuggestQuantEmptyDecision:

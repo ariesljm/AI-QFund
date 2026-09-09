@@ -13,9 +13,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import httpx
-import pytest
 
-from app.data import foundation
+from app.data import industry_map as foundation
 
 
 def _mk_conn() -> sqlite3.Connection:

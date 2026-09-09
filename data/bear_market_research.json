@@ -1,0 +1,123 @@
+{
+ "n_bear_rows": 24089,
+ "bear_win_rate_pct": 41.6,
+ "signal_breakdown": {
+  "mom_5d": {
+   "lo_win_pct": 18.0,
+   "hi_win_pct": 50.2,
+   "lo_avg_pct": -7.09,
+   "hi_avg_pct": 0.88,
+   "n": 24089
+  },
+  "mom_20d": {
+   "lo_win_pct": 45.5,
+   "hi_win_pct": 33.4,
+   "lo_avg_pct": -0.29,
+   "hi_avg_pct": -3.99,
+   "n": 24089
+  },
+  "mom_60d": {
+   "lo_win_pct": 53.9,
+   "hi_win_pct": 19.6,
+   "lo_avg_pct": 1.01,
+   "hi_avg_pct": -6.52,
+   "n": 24089
+  },
+  "vol_20d": {
+   "lo_win_pct": 60.1,
+   "hi_win_pct": 29.8,
+   "lo_avg_pct": 1.09,
+   "hi_avg_pct": -4.94,
+   "n": 24089
+  },
+  "dd_120d": {
+   "lo_win_pct": 45.6,
+   "hi_win_pct": 43.0,
+   "lo_avg_pct": -0.61,
+   "hi_avg_pct": -0.51,
+   "n": 24089
+  },
+  "excess_20d": {
+   "lo_win_pct": 45.8,
+   "hi_win_pct": 35.6,
+   "lo_avg_pct": -0.46,
+   "hi_avg_pct": -3.64,
+   "n": 24089
+  },
+  "mom_accel": {
+   "lo_win_pct": 17.3,
+   "hi_win_pct": 47.7,
+   "lo_avg_pct": -7.18,
+   "hi_avg_pct": 0.71,
+   "n": 24089
+  }
+ },
+ "sector_profile": {
+  "top_sectors": {
+   "半导体": 1413,
+   "银行": 1116,
+   "通信设备": 492,
+   "电源设备": 487,
+   "饮料": 448,
+   "非银行金融": 410,
+   "化学制药": 406,
+   "煤炭": 306
+  },
+  "bear_win_rate": 41.6,
+  "n_bear_rows": 24089
+ },
+ "bull_diagnosis": {
+  "n_bull_rows": 7080,
+  "bull_win_rate_pct": 52.0,
+  "signal_breakdown": {
+   "mom_5d": {
+    "lo_win_pct": 51.1,
+    "hi_win_pct": 38.1,
+    "lo_avg_pct": 0.96,
+    "hi_avg_pct": -0.86
+   },
+   "mom_20d": {
+    "lo_win_pct": 48.2,
+    "hi_win_pct": 54.3,
+    "lo_avg_pct": -0.19,
+    "hi_avg_pct": 1.63
+   },
+   "mom_60d": {
+    "lo_win_pct": 51.3,
+    "hi_win_pct": 49.1,
+    "lo_avg_pct": -0.54,
+    "hi_avg_pct": 1.47
+   },
+   "vol_20d": {
+    "lo_win_pct": 61.9,
+    "hi_win_pct": 46.7,
+    "lo_avg_pct": 0.44,
+    "hi_avg_pct": 0.67
+   },
+   "dd_120d": {
+    "lo_win_pct": 50.0,
+    "hi_win_pct": 53.4,
+    "lo_avg_pct": 0.97,
+    "hi_avg_pct": 0.06
+   },
+   "excess_20d": {
+    "lo_win_pct": 48.5,
+    "hi_win_pct": 57.4,
+    "lo_avg_pct": -0.4,
+    "hi_avg_pct": 1.69
+   },
+   "mom_accel": {
+    "lo_win_pct": 52.0,
+    "hi_win_pct": 41.9,
+    "lo_avg_pct": 1.24,
+    "hi_avg_pct": -0.47
+   }
+  },
+  "chase_combo": {
+   "n": 2356,
+   "win_pct": 46.3,
+   "avg_pct": 0.02
+  }
+ },
+ "note": "fwd_20d 为 20 日口径（方向性研究）；40 日口径待面板重建复验"
+}

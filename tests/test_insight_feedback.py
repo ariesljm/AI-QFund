@@ -11,11 +11,12 @@
 import json
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.engine import evolve
-import app.repo as repo
 import app.database as db_mod
+import app.repo as repo
+from app.engine import evolve
 
 
 def _init_db(monkeypatch, tmp_path):

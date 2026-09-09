@@ -140,13 +140,13 @@ async function fetchFundDetail(code) {
             navChartHtml = '<p class="text-on-surface-variant text-[13px]">暂无净值走势数据</p>';
         }
 
-        // 推荐当日预测超额（与首页「预测超额（1月）」同源：recommend_log.score = 模型预测的未来 20 日收益分）
+        // 推荐当日预测收益（与首页「预测40日收益」同源：recommend_log.score = 模型预测的未来 40 日绝对收益分）
         var predAlphaHtml = '';
         if (f.score !== null && f.score !== undefined && f.score !== '') {
             var pa = parseFloat(f.score) * 100;
             var paCls = pa >= 0 ? 'text-up' : 'text-down';
             predAlphaHtml = '<div class="border-b border-outline pb-3">' +
-                '<h4 class="font-label-caps text-[13px] uppercase tracking-widest font-bold mb-2 t-border-accent border-b pb-1">推荐当日预测超额</h4>' +
+                '<h4 class="font-label-caps text-[13px] uppercase tracking-widest font-bold mb-2 t-border-accent border-b pb-1">推荐当日预测40日收益</h4>' +
                 '<div class="flex items-baseline gap-2">' +
                 '<span class="text-[24px] font-data-md font-bold leading-none ' + paCls + '">' + (pa >= 0 ? '+' : '') + pa.toFixed(1) + '%</span>' +
                 '<span class="text-[11px] text-on-surface-variant font-bold">(1月)</span>' +

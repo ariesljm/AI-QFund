@@ -5,6 +5,7 @@
 
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from datetime import date
@@ -12,8 +13,8 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
-from app import model as model_mod
 import app.database as db_mod
+from app import model as model_mod
 from app import repo
 
 

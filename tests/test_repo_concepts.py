@@ -7,12 +7,12 @@ Q1 store 写归（save_fund_features/trim_fund_features 已迁入 data/store）�
 
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.database import db_conn, DB_PATH
-from app.repo import base as repo
-import app.repo as repo_pkg
 from app.data import store
+from app.database import db_conn
+from app.repo import base as repo
 
 
 def _seed() -> None:
@@ -109,3 +109,39 @@ class TestStoreFeatureWrite:
         assert repo.get_meta("test_key_xy") == "v"
         import app.repo.decision as dec
         assert not hasattr(dec, "meta_set")  # decision 不再持有 meta 直连
+
+
+class TestHoldingsSummaries:
+    """候选批量持仓素材（候选 8 N+1 收敛）：最新报告期 + top-N + 空降级。"""
+
+    def test_batch_latest_report_topn(self, monkeypatch, tmp_path):
+        import sqlite3
+
+        import app.repo.base as base_mod
+
+        db = tmp_path / "hold.db"
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE fund_holdings (code TEXT, report_date TEXT, "
+                     "stock_code TEXT, stock_name TEXT, weight REAL)")
+        conn.execute("CREATE TABLE stock_industry_map (stock_code TEXT PRIMARY KEY, industry_name TEXT)")
+        conn.executemany("INSERT INTO fund_holdings VALUES (?, ?, ?, ?, ?)", [
+            ("F1", "2026-06-30", "S1", "股1", 30.0),
+            ("F1", "2026-06-30", "S2", "股2", 20.0),
+            ("F1", "2026-06-30", "S3", "股3", 10.0),
+            ("F1", "2026-03-31", "S9", "旧股", 99.0),  # 历史报告期不应出现
+            ("F2", "2026-06-30", "S4", "股4", 5.0),
+        ])
+        conn.execute("INSERT INTO stock_industry_map VALUES ('S1', '白酒')")
+        conn.commit()
+        monkeypatch.setattr(base_mod, "db_conn", lambda: sqlite3.connect(db))
+        monkeypatch.setattr(repo, "db_conn", lambda: sqlite3.connect(db))
+
+        res = repo.get_holdings_summaries(["F1", "F2", "F3"], limit=2)
+        # F1：最新报告期 2026-06-30，top-2 权重降序（历史期 99% 旧股被排除）
+        assert res["F1"]["report_date"] == "2026-06-30"
+        assert [h["stock_code"] for h in res["F1"]["holdings"]] == ["S1", "S2"]
+        assert res["F1"]["holdings"][0]["industry"] == "白酒"
+        # F2：只有 1 条持仓；F3 无记录 → 空
+        assert len(res["F2"]["holdings"]) == 1
+        assert res["F3"] == {"holdings": [], "report_date": None}
+        assert repo.get_holdings_summaries([]) == {}

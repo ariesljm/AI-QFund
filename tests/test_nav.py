@@ -6,18 +6,18 @@
 
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 import app.database as db_mod
 from app.data import nav
 from app.data.ingest import run_batched_fetch
-from app.data.store import list_failures, cooldown_targets
-
+from app.data.store import cooldown_targets, list_failures
 
 # ============================================================
 # _plan_nav_tasks — 增量任务规划（对齐到接口最新日期）
@@ -90,9 +90,9 @@ class TestPlanNavTasks:
 def _lsjz_text(day: str) -> str:
     """构造单条 lsjz 响应文本（jQuery 包裹）。"""
     return (
-        'jQuery({"Data":{"LSJZList":[{"FSRQ":"%s","LJJZ":"1.5"}],'
+        'jQuery({"Data":{"LSJZList":[{"FSRQ":"' + day + '","LJJZ":"1.5"}],'
         '"TotalCount":1},"ErrCode":0,"Success":true,"Message":""});'
-    ) % day
+    )
 
 
 class _FakeResp:
@@ -131,7 +131,7 @@ class TestProbeLsjzLatest:
         async def fake_fetch(session, url, timeout=15, headers=None):
             code = url.split("fundCode=")[1].split("&")[0]
             if code == "000001":
-                raise asyncio.TimeoutError("boom")
+                raise TimeoutError("boom")
             return _FakeResp(_lsjz_text("2026-07-31"))
 
         monkeypatch.setattr(nav, "fetch_async", fake_fetch)
@@ -142,7 +142,7 @@ class TestProbeLsjzLatest:
         """全部基金探测失败 → 返回 None（上层降级）。"""
 
         async def fake_fetch(session, url, timeout=15, headers=None):
-            raise asyncio.TimeoutError("boom")
+            raise TimeoutError("boom")
 
         monkeypatch.setattr(nav, "fetch_async", fake_fetch)
         latest = asyncio.run(nav._probe_lsjz_latest(session=None, headers={}))
@@ -169,7 +169,7 @@ class TestCooldownByStage:
 
     @staticmethod
     def _days_ago(days: int) -> str:
-        return (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        return (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
 
     def test_no_update_uses_longer_cooldown(self, iso_db):
         """2 天前失败：no_update 目标（7 天冷却）仍在冷却，primary 目标（1 天）已过期。"""

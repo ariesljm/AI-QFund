@@ -1,0 +1,333 @@
+<html lang="zh-CN"><head><meta charset="utf-8"/><meta content="width=device-width, initial-scale=1.0" name="viewport"/><style>@layer base{html,body{margin:0;padding:0;}body{overscroll-behavior:none;}main>:first-child{margin-top:0!important;}main>:last-child{margin-bottom:0!important;}}::-webkit-scrollbar{display:none;}</style><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet"/><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&amp;family=Hanken+Grotesk:wght@600;700&amp;family=JetBrains+Mono:wght@500&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/><script src="https://cdn.tailwindcss.com"></script><script id="tailwind-config">tailwind.config={theme:{extend:{"colors":{"on-surface-variant":"#43474f","secondary-fixed":"#d8e2ff","inverse-primary":"#a7c8ff","on-error":"#ffffff","on-tertiary-container":"#d8885c","outline":"#737780","on-tertiary":"#ffffff","outline-variant":"#c3c6d1","primary":"#001e40","on-background":"#191c1e","error-container":"#ffdad6","on-secondary-container":"#fefcff","on-primary":"#ffffff","danger-losses":"#E74C3C","inverse-on-surface":"#eff1f3","on-tertiary-fixed":"#341100","surface":"#f7f9fb","on-secondary-fixed-variant":"#004493","on-error-container":"#93000a","tertiary":"#381300","surface-container-high":"#e6e8ea","tertiary-fixed":"#ffdbca","surface-bright":"#f7f9fb","inverse-surface":"#2d3133","on-primary-fixed":"#001b3c","text-muted":"#64748B","on-primary-container":"#799dd6","surface-variant":"#e0e3e5","primary-fixed":"#d5e3ff","tertiary-container":"#592300","warning-amber":"#F39C12","surface-container-lowest":"#ffffff","secondary-container":"#0070eb","surface-tint":"#3a5f94","tertiary-fixed-dim":"#ffb690","secondary-fixed-dim":"#adc6ff","surface-container-low":"#f2f4f6","primary-container":"#003366","on-tertiary-fixed-variant":"#723610","error":"#ba1a1a","surface-dim":"#d8dadc","on-secondary-fixed":"#001a41","on-secondary":"#ffffff","success-gains":"#2ECC71","secondary":"#0058bc","on-surface":"#191c1e","surface-container-highest":"#e0e3e5","surface-container":"#eceef0","primary-fixed-dim":"#a7c8ff","on-primary-fixed-variant":"#1f477b","surface-border":"#E2E8F0"},"borderRadius":{"DEFAULT":"0.125rem","lg":"0.25rem","xl":"0.5rem","full":"0.75rem"},"spacing":{"stack-md":"16px","stack-lg":"24px","stack-sm":"8px","gutter":"16px","container-padding":"20px","unit":"4px","margin-page":"24px"},"fontFamily":{"data-tabular":["JetBrains Mono"],"body-md":["Inter"],"headline-sm":["Hanken Grotesk"],"headline-md":["Hanken Grotesk"],"body-sm":["Inter"],"body-lg":["Inter"],"display-lg":["Hanken Grotesk"],"label-caps":["Inter"]},"fontSize":{"data-tabular":["14px",{"lineHeight":"20px","letterSpacing":"-0.01em","fontWeight":"500"}],"body-md":["14px",{"lineHeight":"20px","fontWeight":"400"}],"headline-sm":["18px",{"lineHeight":"24px","fontWeight":"600"}],"headline-md":["24px",{"lineHeight":"32px","fontWeight":"600"}],"body-sm":["12px",{"lineHeight":"16px","fontWeight":"400"}],"body-lg":["16px",{"lineHeight":"24px","fontWeight":"400"}],"display-lg":["32px",{"lineHeight":"40px","letterSpacing":"-0.02em","fontWeight":"700"}],"label-caps":["11px",{"lineHeight":"16px","letterSpacing":"0.05em","fontWeight":"700"}]}}}}</script></head><body class="bg-background font-body-md text-on-surface flex flex-col min-h-screen"><header class="fixed top-0 w-full z-50 bg-surface-container-lowest/95 backdrop-blur-md shadow-[0_1px_8px_rgba(0,0,0,0.04)] h-14 border-b border-surface-border"><div class="max-w-[1440px] mx-auto h-full flex items-center justify-between px-margin-page"><div class="flex items-center gap-8"><div class="flex items-center gap-3"><img alt="Logo" class="w-8 h-8 rounded-full object-cover" src="https://www.gstatic.com/labs-code/stitch/stitch-placeholder-300x300.svg"/><span class="font-headline-sm text-headline-sm text-primary tracking-tight">AI 量化投研终端</span></div><nav class="flex items-center gap-6 h-full" data-active-classes="text-secondary border-b-2 border-secondary h-full flex items-center font-bold"><a class="font-body-md text-body-md text-on-surface-variant hover:text-secondary transition-colors h-full flex items-center" data-path="today-research" href="#">今日投研</a><a class="font-body-md text-body-md text-on-surface-variant hover:text-secondary transition-colors h-full flex items-center" data-path="quality-evaluation" href="#">推荐质量</a><a class="font-body-md text-body-md text-on-surface-variant hover:text-secondary transition-colors h-full flex items-center" data-path="system-logs" href="#">系统日志</a></nav></div><div class="flex items-center gap-6"><div class="hidden lg:flex items-center gap-4 py-1 px-3 bg-surface-container rounded-lg"><div class="flex flex-col"><span class="font-label-caps text-label-caps text-on-surface-variant">沪深300</span><span class="font-data-tabular text-data-tabular text-success-gains">3,924.12 +1.24%</span></div><div class="w-px h-6 bg-outline-variant"></div><div class="flex flex-col"><span class="font-label-caps text-label-caps text-on-surface-variant">上证指数</span><span class="font-data-tabular text-data-tabular text-danger-losses">3,241.05 -0.45%</span></div></div><div class="flex items-center gap-3 pl-4 border-l border-outline-variant"><div class="flex flex-col items-end"><span class="font-label-caps text-label-caps text-primary uppercase">Senior Analyst</span><span class="font-body-sm text-body-sm text-on-surface-variant">Terminal 01</span></div><img alt="Profile" class="w-8 h-8 rounded-full object-cover ring-2 ring-surface-border" src="https://www.gstatic.com/labs-code/stitch/stitch-placeholder-300x300.svg"/></div></div></div></header><main class="flex-1 pt-14"><div class="flex flex-col w-full gap-stack-lg animate-[fade-in_0.5s_ease-out]">
+<!-- Header Section: AI Track Report -->
+<section class="bg-surface-container-lowest rounded-xl border border-surface-border p-stack-lg shadow-sm relative overflow-hidden group">
+<!-- Decorative background element -->
+<div class="absolute -right-20 -top-20 w-64 h-64 bg-primary/5 rounded-full blur-3xl group-hover:bg-primary/10 transition-colors duration-700"></div>
+<div class="flex flex-col md:flex-row justify-between items-start gap-stack-lg relative z-10">
+<div class="flex-1">
+<div class="flex items-center gap-3 mb-stack-sm">
+<span class="material-symbols-outlined text-secondary" style="font-variation-settings: 'FILL' 1;">psychology</span>
+<h1 class="font-headline-md text-headline-md text-primary">AI 赛道报告</h1>
+<span class="font-data-tabular text-data-tabular text-on-surface-variant bg-surface-container px-2 py-1 rounded">2026-08-13</span>
+</div>
+<div class="font-body-lg text-body-lg text-on-surface-variant leading-relaxed">
+<p>大盘沪深300收盘价位于EMA60下方，近6日震荡偏弱，整体处于熊市格局，操作上宜谨慎、控制仓位。量化候选池由趋势与过热规避信号筛出，但新闻面显示央行继续实施适度宽松货币政策，并首次月中开展隔夜逆回购，流动性预期改善；同时高盛、瑞银、野村等外资机构集体看好中国科技资产中长期价值，半导体、通信设备、电子设备制造等科技硬件方向受益于算力采购增加、AI产业趋势以及反倾销税落地（通信设备中的光纤方向）等催化，且基金覆盖度较高，具备相对优势。医疗器械与医疗服务虽5日强势，但已触发追高降权，短期波动加大，建议等待更好的介入时机。零售、贸易、合成纤维及树脂等方向缺乏基本面与资金面共振，予以回避。</p>
+</div>
+</div>
+<!-- Bull/Bear Indicator -->
+<div class="flex flex-col items-center justify-center p-stack-md bg-error-container/20 rounded-lg border border-error-container min-w-[160px]">
+<span class="material-symbols-outlined text-danger-losses text-4xl mb-1">trending_down</span>
+<span class="font-headline-sm text-headline-sm text-danger-losses">震荡偏弱</span>
+<span class="font-label-caps text-label-caps text-on-surface-variant mt-2">建议控制仓位</span>
+</div>
+</div>
+</section>
+<!-- Main Content Grid -->
+<div class="grid grid-cols-1 xl:grid-cols-12 gap-stack-lg items-start">
+<!-- Left Column (Major) -->
+<div class="xl:col-span-8 flex flex-col gap-stack-lg">
+<!-- Today's Top Picks -->
+<section class="flex flex-col gap-stack-md">
+<div class="flex items-center justify-between border-b border-surface-border pb-2">
+<h2 class="font-headline-sm text-headline-sm text-primary flex items-center gap-2">
+<span class="material-symbols-outlined text-secondary">workspace_premium</span>
+            今日精选
+          </h2>
+<span class="font-label-caps text-label-caps text-outline">V.2026-08-13</span>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-2 gap-stack-md">
+<!-- Fund Card 1 -->
+<div class="bg-surface-container-lowest rounded-xl border border-surface-border shadow-sm hover:shadow-md transition-shadow p-stack-md flex flex-col h-full relative">
+<div class="absolute top-0 right-0 p-3 opacity-10">
+<span class="material-symbols-outlined text-6xl">query_stats</span>
+</div>
+<div class="flex justify-between items-start mb-4">
+<div>
+<span class="font-data-tabular text-data-tabular text-secondary bg-secondary/10 px-2 py-0.5 rounded text-sm mb-2 inline-block">027189</span>
+<h3 class="font-headline-sm text-headline-sm text-on-surface leading-tight">新华数字经济混合发起A</h3>
+<span class="font-body-sm text-body-sm text-on-surface-variant">混合型 · 2026-08-13</span>
+</div>
+<div class="text-right flex flex-col">
+<span class="font-label-caps text-label-caps text-on-surface-variant">预测超额（1月）</span>
+<span class="font-display-lg text-display-lg text-success-gains leading-none mt-1">+2.3%</span>
+</div>
+</div>
+<div class="grid grid-cols-4 gap-2 mb-4 p-3 bg-surface rounded-lg">
+<div class="flex flex-col items-center">
+<span class="font-label-caps text-label-caps text-outline">近1周</span>
+<span class="font-data-tabular text-data-tabular text-success-gains mt-1">+8.05%</span>
+</div>
+<div class="flex flex-col items-center">
+<span class="font-label-caps text-label-caps text-outline">近1月</span>
+<span class="font-data-tabular text-data-tabular text-success-gains mt-1">+2.06%</span>
+</div>
+<div class="flex flex-col items-center">
+<span class="font-label-caps text-label-caps text-outline">近3月</span>
+<span class="font-data-tabular text-data-tabular text-danger-losses mt-1">-18.65%</span>
+</div>
+<div class="flex flex-col items-center">
+<span class="font-label-caps text-label-caps text-outline">近6月</span>
+<span class="font-data-tabular text-data-tabular text-danger-losses mt-1">-13.85%</span>
+</div>
+</div>
+<div class="font-body-sm text-body-sm text-on-surface-variant bg-surface/50 p-3 rounded border-l-2 border-secondary mb-4 flex-grow">
+              这只基金主要投光通信和设备制造，重仓股包括光迅科技、烽火通信，还有芯片和电子零件公司。这些正好是最近政策支持、外资看好的方向，算力采购增加、AI产业发展，加上光纤反倾销税落地，对相关公司是实实在在的利好。基金近期涨得比同类好，说明它踩对了节奏。另一只基金虽然表现也不错，但里面还掺了被明确回避的化纤类股票，不够纯正，所以更看好这只。
+            </div>
+<div>
+<div class="font-label-caps text-label-caps text-on-surface mb-2 border-b border-surface-border pb-1">前十大持仓</div>
+<div class="flex flex-wrap gap-2">
+<span class="bg-surface-container-high px-2 py-1 rounded text-xs text-on-surface-variant flex gap-1">光迅科技 <span class="font-data-tabular text-on-surface font-medium">7.9%</span></span>
+<span class="bg-surface-container-high px-2 py-1 rounded text-xs text-on-surface-variant flex gap-1">烽火通信 <span class="font-data-tabular text-on-surface font-medium">6.4%</span></span>
+<span class="bg-surface-container-high px-2 py-1 rounded text-xs text-on-surface-variant flex gap-1">普源精电 <span class="font-data-tabular text-on-surface font-medium">5.9%</span></span>
+<span class="bg-surface-container-high px-2 py-1 rounded text-xs text-on-surface-variant flex gap-1">国芯科技 <span class="font-data-tabular text-on-surface font-medium">5.7%</span></span>
+<span class="bg-surface-container-high px-2 py-1 rounded text-xs text-on-surface-variant flex gap-1">信维通信 <span class="font-data-tabular text-on-surface font-medium">5.2%</span></span>
+<span class="text-xs text-outline self-center">...等</span>
+</div>
+</div>
+</div>
+<!-- Fund Card 2 -->
+<div class="bg-surface-container-lowest rounded-xl border border-surface-border shadow-sm hover:shadow-md transition-shadow p-stack-md flex flex-col h-full relative">
+<div class="absolute top-0 right-0 p-3 opacity-10">
+<span class="material-symbols-outlined text-6xl">memory</span>
+</div>
+<div class="flex justify-between items-start mb-4">
+<div>
+<span class="font-data-tabular text-data-tabular text-secondary bg-secondary/10 px-2 py-0.5 rounded text-sm mb-2 inline-block">001154</span>
+<h3 class="font-headline-sm text-headline-sm text-on-surface leading-tight">华银平安中国主题灵活</h3>
+<span class="font-body-sm text-body-sm text-on-surface-variant">混合型 · 2026-08-13</span>
+</div>
+<div class="text-right flex flex-col">
+<span class="font-label-caps text-label-caps text-on-surface-variant">预测超额（1月）</span>
+<span class="font-display-lg text-display-lg text-success-gains leading-none mt-1">+2.1%</span>
+</div>
+</div>
+<div class="grid grid-cols-4 gap-2 mb-4 p-3 bg-surface rounded-lg">
+<div class="flex flex-col items-center">
+<span class="font-label-caps text-label-caps text-outline">近1周</span>
+<span class="font-data-tabular text-data-tabular text-success-gains mt-1">+7.41%</span>
+</div>
+<div class="flex flex-col items-center">
+<span class="font-label-caps text-label-caps text-outline">近1月</span>
+<span class="font-data-tabular text-data-tabular text-success-gains mt-1">+8.18%</span>
+</div>
+<div class="flex flex-col items-center">
+<span class="font-label-caps text-label-caps text-outline">近3月</span>
+<span class="font-data-tabular text-data-tabular text-success-gains mt-1">+36.05%</span>
+</div>
+<div class="flex flex-col items-center">
+<span class="font-label-caps text-label-caps text-outline">近6月</span>
+<span class="font-data-tabular text-data-tabular text-success-gains mt-1">+61.20%</span>
+</div>
+</div>
+<div class="font-body-sm text-body-sm text-on-surface-variant bg-surface/50 p-3 rounded border-l-2 border-secondary mb-4 flex-grow">
+              这只基金重仓了寒武纪、海光信息这样的国产芯片公司，还有中际旭创这样的通信设备龙头，以及做电子材料的南亚新材，正好踩在当下最热的科技硬件方向上。国家在大力支持半导体发展，外资机构也看好中国科技股，加上算力需求爆发，这些公司订单和业绩都有保障。基金最近一个月涨了7.9%，比同类基金平均表现强很多，说明市场资金正在追捧。虽然短期涨得有点快，但相比另一只基金，它的持仓更分散，风险更小，更适合现在买入。
+            </div>
+<div>
+<div class="font-label-caps text-label-caps text-on-surface mb-2 border-b border-surface-border pb-1">前十大持仓</div>
+<div class="flex flex-wrap gap-2">
+<span class="bg-surface-container-high px-2 py-1 rounded text-xs text-on-surface-variant flex gap-1">寒武纪 <span class="font-data-tabular text-on-surface font-medium">7.7%</span></span>
+<span class="bg-surface-container-high px-2 py-1 rounded text-xs text-on-surface-variant flex gap-1">华正新材 <span class="font-data-tabular text-on-surface font-medium">6.3%</span></span>
+<span class="bg-surface-container-high px-2 py-1 rounded text-xs text-on-surface-variant flex gap-1">中际旭创 <span class="font-data-tabular text-on-surface font-medium">6.2%</span></span>
+<span class="bg-surface-container-high px-2 py-1 rounded text-xs text-on-surface-variant flex gap-1">海光信息 <span class="font-data-tabular text-on-surface font-medium">5.7%</span></span>
+<span class="bg-surface-container-high px-2 py-1 rounded text-xs text-on-surface-variant flex gap-1">南亚新材 <span class="font-data-tabular text-on-surface font-medium">5.4%</span></span>
+<span class="text-xs text-outline self-center">...等</span>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- Tracking Monitor -->
+<section class="flex flex-col gap-stack-md mt-stack-md">
+<div class="flex items-center justify-between border-b border-surface-border pb-2">
+<h2 class="font-headline-sm text-headline-sm text-primary flex items-center gap-2">
+<span class="material-symbols-outlined text-secondary">radar</span>
+            追踪监控
+          </h2>
+<button class="flex items-center gap-1 font-label-caps text-label-caps text-on-surface hover:text-secondary transition-colors border border-surface-border px-2 py-1 rounded bg-surface-container-lowest">
+<span class="material-symbols-outlined text-sm">terminal</span> 实时日志
+          </button>
+</div>
+<div class="bg-surface-container-lowest rounded-xl border border-surface-border shadow-sm overflow-hidden">
+<div class="overflow-x-auto">
+<table class="w-full text-left border-collapse">
+<thead>
+<tr class="bg-surface-container-low font-label-caps text-label-caps text-outline">
+<th class="p-3 whitespace-nowrap">代码</th>
+<th class="p-3 whitespace-nowrap">名称</th>
+<th class="p-3 whitespace-nowrap">推荐日期</th>
+<th class="p-3 whitespace-nowrap text-right">推荐净值</th>
+<th class="p-3 whitespace-nowrap text-right">当前净值</th>
+<th class="p-3 whitespace-nowrap text-right">累计收益</th>
+<th class="p-3 whitespace-nowrap text-center">推荐次数</th>
+<th class="p-3 whitespace-nowrap text-center">信号</th>
+</tr>
+</thead>
+<tbody class="font-body-md text-body-md text-on-surface divide-y divide-surface-border">
+<tr class="hover:bg-surface-container-lowest transition-colors group">
+<td class="p-3 font-data-tabular text-secondary">027189</td>
+<td class="p-3 font-medium whitespace-nowrap">新华数字经济混合发起A</td>
+<td class="p-3 font-data-tabular text-on-surface-variant">2026-08-13</td>
+<td class="p-3 font-data-tabular text-right">0.8615</td>
+<td class="p-3 font-data-tabular text-right">0.8615</td>
+<td class="p-3 font-data-tabular text-success-gains text-right">+0.00%</td>
+<td class="p-3 font-data-tabular text-center">2</td>
+<td class="p-3 text-center">
+<span class="inline-flex items-center justify-center px-2 py-1 rounded text-xs font-bold bg-success-gains/10 text-success-gains border border-success-gains/20">持有</span>
+</td>
+</tr>
+<tr class="hover:bg-surface-container-lowest transition-colors group">
+<td class="p-3 font-data-tabular text-secondary">001475</td>
+<td class="p-3 font-medium whitespace-nowrap">易方达国防军工混合A</td>
+<td class="p-3 font-data-tabular text-on-surface-variant">2026-08-13</td>
+<td class="p-3 font-data-tabular text-right">2.2160</td>
+<td class="p-3 font-data-tabular text-right">2.2160</td>
+<td class="p-3 font-data-tabular text-success-gains text-right">+0.00%</td>
+<td class="p-3 font-data-tabular text-center">1</td>
+<td class="p-3 text-center">
+<span class="inline-flex items-center justify-center px-2 py-1 rounded text-xs font-bold bg-warning-amber/10 text-warning-amber border border-warning-amber/20">警惕</span>
+</td>
+</tr>
+<tr class="hover:bg-surface-container-lowest transition-colors group">
+<td class="p-3 font-data-tabular text-secondary">001154</td>
+<td class="p-3 font-medium whitespace-nowrap">华银平安中国主题灵活配置</td>
+<td class="p-3 font-data-tabular text-on-surface-variant">2026-08-13</td>
+<td class="p-3 font-data-tabular text-right">2.1020</td>
+<td class="p-3 font-data-tabular text-right">2.1020</td>
+<td class="p-3 font-data-tabular text-success-gains text-right">+0.00%</td>
+<td class="p-3 font-data-tabular text-center">2</td>
+<td class="p-3 text-center">
+<span class="inline-flex items-center justify-center px-2 py-1 rounded text-xs font-bold bg-success-gains/10 text-success-gains border border-success-gains/20">持有</span>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="bg-surface-container-low p-2 border-t border-surface-border text-center font-body-sm text-outline">
+            共计 3 只基金处于追踪池
+          </div>
+</div>
+</section>
+</div>
+<!-- Right Column (Minor) -->
+<div class="xl:col-span-4 flex flex-col gap-stack-lg">
+<!-- Strategy KPI -->
+<section class="bg-surface-container-lowest rounded-xl border border-surface-border p-stack-md shadow-sm">
+<h2 class="font-headline-sm text-headline-sm text-primary mb-4 border-b border-surface-border pb-2">策略 KPI</h2>
+<div class="grid grid-cols-2 gap-4">
+<div class="bg-surface-container-low p-3 rounded-lg flex flex-col">
+<span class="font-label-caps text-label-caps text-outline mb-1">累计收益</span>
+<span class="font-headline-md text-headline-md text-success-gains">+0.00%</span>
+</div>
+<div class="bg-surface-container-low p-3 rounded-lg flex flex-col">
+<span class="font-label-caps text-label-caps text-outline mb-1">累计超额</span>
+<span class="font-headline-md text-headline-md text-success-gains">+0.00%</span>
+</div>
+<div class="bg-surface-container-low p-3 rounded-lg flex flex-col">
+<span class="font-label-caps text-label-caps text-outline mb-1">命中率</span>
+<span class="font-headline-md text-headline-md text-on-surface">0.0%</span>
+</div>
+<div class="bg-surface-container-low p-3 rounded-lg flex flex-col">
+<span class="font-label-caps text-label-caps text-outline mb-1">推荐数</span>
+<span class="font-headline-md text-headline-md text-on-surface">3</span>
+</div>
+</div>
+</section>
+<!-- Momentum & Flow Grid -->
+<div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-1 gap-stack-lg">
+<!-- Sector Momentum -->
+<section class="bg-surface-container-lowest rounded-xl border border-surface-border p-stack-md shadow-sm">
+<h2 class="font-headline-sm text-headline-sm text-primary mb-3 border-b border-surface-border pb-2">板块动量</h2>
+<div class="flex flex-col gap-3 mt-2">
+<div class="flex justify-between items-center group">
+<span class="font-body-md text-on-surface group-hover:text-secondary transition-colors">医疗服务</span>
+<span class="font-data-tabular text-success-gains bg-success-gains/10 px-2 py-0.5 rounded text-sm">+3.90%</span>
+</div>
+<div class="flex justify-between items-center group">
+<span class="font-body-md text-on-surface group-hover:text-secondary transition-colors">生物制品</span>
+<span class="font-data-tabular text-success-gains bg-success-gains/10 px-2 py-0.5 rounded text-sm">+2.14%</span>
+</div>
+<div class="flex justify-between items-center group">
+<span class="font-body-md text-on-surface group-hover:text-secondary transition-colors">中药Ⅱ</span>
+<span class="font-data-tabular text-success-gains bg-success-gains/10 px-2 py-0.5 rounded text-sm">+1.66%</span>
+</div>
+<div class="flex justify-between items-center group">
+<span class="font-body-md text-on-surface group-hover:text-secondary transition-colors">医药生物</span>
+<span class="font-data-tabular text-success-gains bg-success-gains/10 px-2 py-0.5 rounded text-sm">+1.51%</span>
+</div>
+</div>
+</section>
+<!-- Capital Flow -->
+<section class="bg-surface-container-lowest rounded-xl border border-surface-border p-stack-md shadow-sm">
+<h2 class="font-headline-sm text-headline-sm text-primary mb-3 border-b border-surface-border pb-2">主力资金流</h2>
+<div class="flex flex-col gap-3 mt-2">
+<div class="flex justify-between items-center">
+<span class="font-body-md text-on-surface">医药生物</span>
+<div class="flex items-center gap-2">
+<div class="w-16 h-1.5 bg-surface-container rounded-full overflow-hidden flex justify-end"><div class="h-full bg-success-gains w-3/4"></div></div>
+<span class="font-data-tabular text-success-gains w-16 text-right">+45.2亿</span>
+</div>
+</div>
+<div class="flex justify-between items-center">
+<span class="font-body-md text-on-surface">电力</span>
+<div class="flex items-center gap-2">
+<div class="w-16 h-1.5 bg-surface-container rounded-full overflow-hidden flex justify-end"><div class="h-full bg-success-gains w-1/2"></div></div>
+<span class="font-data-tabular text-success-gains w-16 text-right">+36.1亿</span>
+</div>
+</div>
+<div class="flex justify-between items-center">
+<span class="font-body-md text-on-surface">电子</span>
+<div class="flex items-center gap-2">
+<div class="w-16 h-1.5 bg-surface-container rounded-full overflow-hidden"><div class="h-full bg-danger-losses w-full"></div></div>
+<span class="font-data-tabular text-danger-losses w-16 text-right">-170.2亿</span>
+</div>
+</div>
+<div class="flex justify-between items-center">
+<span class="font-body-md text-on-surface">有色金属</span>
+<div class="flex items-center gap-2">
+<div class="w-16 h-1.5 bg-surface-container rounded-full overflow-hidden"><div class="h-full bg-danger-losses w-[95%]"></div></div>
+<span class="font-data-tabular text-danger-losses w-16 text-right">-167.7亿</span>
+</div>
+</div>
+<div class="mt-2 pt-3 border-t border-surface-border border-dashed flex justify-between items-center bg-surface-container-low p-2 rounded">
+<span class="font-label-caps text-outline">全市场净额</span>
+<span class="font-data-tabular text-danger-losses font-bold">-827.9亿</span>
+</div>
+</div>
+</section>
+</div>
+<!-- Pipeline & System Status -->
+<section class="bg-surface-container-lowest rounded-xl border border-surface-border p-stack-md shadow-sm">
+<div class="flex items-center justify-between mb-4 border-b border-surface-border pb-2">
+<h2 class="font-headline-sm text-headline-sm text-primary">管线状态</h2>
+<span class="relative flex h-3 w-3">
+<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-secondary opacity-75"></span>
+<span class="relative inline-flex rounded-full h-3 w-3 bg-secondary"></span>
+</span>
+</div>
+<div class="flex flex-col gap-2 mb-4">
+<div class="flex justify-between text-sm">
+<span class="text-outline">状态</span>
+<span class="text-secondary font-medium">等待定时触发</span>
+</div>
+<div class="flex justify-between text-sm">
+<span class="text-outline">上次执行</span>
+<span class="font-data-tabular text-on-surface">2026-08-13</span>
+</div>
+<div class="flex justify-between text-sm">
+<span class="text-outline">下次触发</span>
+<span class="font-data-tabular text-on-surface">08-14 12:30 (全流程)</span>
+</div>
+</div>
+<div class="bg-surface-container p-3 rounded-lg border border-outline-variant/30">
+<h3 class="font-label-caps text-secondary mb-2 flex items-center gap-1"><span class="material-symbols-outlined text-[14px]">info</span> 系统信息</h3>
+<div class="font-body-sm text-on-surface-variant flex flex-col gap-1">
+<p class="flex items-center gap-2"><span class="w-1.5 h-1.5 rounded-full bg-success-gains"></span> 基金池 <span class="font-data-tabular text-on-surface font-medium">12349</span> 只</p>
+<p class="text-xs mt-1">数据更新：<span class="font-data-tabular">2026-08-12</span></p>
+<p class="text-xs">模型训练：<span class="font-data-tabular">2026-08-13</span></p>
+</div>
+</div>
+</section>
+</div>
+</div>
+</div></main><footer class="w-full bg-surface-container-low border-t border-surface-border py-stack-lg"><div class="max-w-[1440px] mx-auto px-margin-page flex flex-col md:flex-row justify-between items-center gap-stack-md"><div class="flex flex-col items-center md:items-start gap-1"><p class="font-body-sm text-body-sm text-on-surface-variant">© 2024 AI 量化投研终端. All Rights Reserved. Institutional Grade License.</p><p class="font-body-sm text-body-sm text-outline">风险提示：投资有风险，入市需谨慎。AI模型预测仅供参考，不作为投资依据。</p></div><div class="flex gap-gutter"><a class="font-label-caps text-label-caps text-on-surface-variant hover:text-secondary uppercase transition-colors" href="#">Compliance</a><a class="font-label-caps text-label-caps text-on-surface-variant hover:text-secondary uppercase transition-colors" href="#">Service Agreement</a><a class="font-label-caps text-label-caps text-on-surface-variant hover:text-secondary uppercase transition-colors" href="#">Privacy Policy</a></div></div></footer></body></html>

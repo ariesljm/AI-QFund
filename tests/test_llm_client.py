@@ -6,10 +6,11 @@
 
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import pytest
 import openai
+import pytest
 
 import app.llm.client as client_mod
 from app.llm.client import call_llm, call_llm_json, parse_llm_json

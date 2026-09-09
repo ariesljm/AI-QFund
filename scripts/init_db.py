@@ -16,7 +16,7 @@ def main():
         DB_PATH.unlink()
     con = sqlite3.connect(str(DB_PATH))
     con.execute("PRAGMA journal_mode=WAL;")
-    with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
+    with open(SCHEMA_PATH, encoding="utf-8") as f:
         con.executescript(f.read())
     con.commit()
     tables = [r[0] for r in con.execute(

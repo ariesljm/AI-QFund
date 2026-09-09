@@ -6,13 +6,14 @@
 
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
 
-from app.engine.valuation import portfolio_series, max_drawdown, sharpe_ratio
-from app.web import app as webapp, charts
-
+from app.engine.valuation import max_drawdown, portfolio_series, sharpe_ratio
+from app.web import app as webapp
+from app.web import charts
 
 FUND_NAV_ROWS = [
     ("AAA", "2026-07-27", 1.00), ("AAA", "2026-07-28", 1.10),

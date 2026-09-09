@@ -184,7 +184,7 @@
                   </div>
                   <div class="text-right flex flex-col shrink-0">
                     {% if latest.pred_alpha is not none %}
-                    <span class="font-label-caps text-label-caps text-on-surface-variant whitespace-nowrap">预测超额（1月）</span>
+                    <span class="font-label-caps text-label-caps text-on-surface-variant whitespace-nowrap">预测40日收益</span>
                     <span class="text-[24px] md:text-display-lg leading-none mt-1 {% if latest.pred_alpha >= 0 %}text-up{% else %}text-down{% endif %}">{{ "%+.1f"|format(latest.pred_alpha * 100) }}%</span>
                     {% endif %}
                   </div>
@@ -234,7 +234,7 @@
                   </div>
                   <div class="text-right flex flex-col shrink-0">
                     {% if rec2.pred_alpha is not none %}
-                    <span class="font-label-caps text-label-caps text-on-surface-variant whitespace-nowrap">预测超额（1月）</span>
+                    <span class="font-label-caps text-label-caps text-on-surface-variant whitespace-nowrap">预测40日收益</span>
                     <span class="text-[24px] md:text-display-lg leading-none mt-1 {% if rec2.pred_alpha >= 0 %}text-up{% else %}text-down{% endif %}">{{ "%+.1f"|format(rec2.pred_alpha * 100) }}%</span>
                     {% endif %}
                   </div>

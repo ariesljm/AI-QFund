@@ -5,9 +5,13 @@
 压制在 detail 显式记录。
 """
 
-from app.engine import monitor as monitor_mod
-from app.engine.monitor import (DefenseContext, DefenseRule, LogicVerificationRule,
-                                ModelUpsideRule, _apply_defense_chain)
+from app.engine.monitor import (
+    DefenseContext,
+    DefenseRule,
+    LogicVerificationRule,
+    ModelUpsideRule,
+    _apply_defense_chain,
+)
 
 
 def _ctx(**kw) -> DefenseContext:

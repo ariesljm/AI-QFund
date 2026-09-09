@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS recommend_log (
     entry_nav REAL,
     candidate_codes TEXT,
     rec_count INTEGER DEFAULT 1,
+    vetoed_json TEXT,
     created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -255,4 +256,11 @@ CREATE TABLE IF NOT EXISTS data_fetch_failures (
     last_failed_at TEXT,
     recovered_at TEXT,
     UNIQUE (fetch_type, target)
+);
+-- 申购状态（T10 限购检测，降级方案：维护者手工维护清单，启动/日更导入）
+CREATE TABLE IF NOT EXISTS purchase_restrictions (
+    code TEXT PRIMARY KEY,
+    status TEXT NOT NULL,          -- normal / limited / suspended
+    note TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
 );

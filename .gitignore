@@ -19,6 +19,16 @@ data/logs/
 data/backtest_*.json
 data/exit_*.csv
 data/bt_*.json
+data/sector_*.json
+data/sector_*.csv
+data/sector_*.txt
+data/reco_backtest_report.txt
+
+# 数据库备份（大文件，不入库）
+data/*.db.local-backup-*
+
+# 标定报告（证据文档，入库）
+!data/calibration_report_40d.md
 
 # 环境与密钥
 .env

@@ -1,8 +1,11 @@
 """推荐质量度量模块：赚钱胜率、期望绝对收益、盈亏比（阶段5 赚钱口径）。
 
-度量回答"进化后推荐质量是否提升"：profit_rate = 推荐后 20 日绝对收益 > 1%
+度量回答"进化后推荐质量是否提升"：profit_rate = 推荐后 40 日绝对收益 > 1%
 （覆盖申赎成本）的占比；mean_abs_ret = 期望绝对收益；payoff_ratio = 盈亏比。
 IC（预测分与实现收益的秩相关）保留为排序能力辅助指标。
+
+窗口：与 FORWARD_DAYS（40 交易日）单一来源对齐，
+推荐后 41 条净值（含入场日），取第 0 与第 40 条。
 
 IC 的 Spearman 秩相关用 numpy 手写（含并列平均秩），不依赖 scipy。
 """
@@ -96,11 +99,11 @@ def compute_metrics_from_pairs(pairs: list[tuple[float, float]]) -> dict:
 
 
 def compute_quality_metrics(period_start: str, period_end: str) -> dict:
-    """统计区间内推荐的 20 日实际绝对收益并计算质量指标（阶段5：赚钱口径）。
+    """统计区间内推荐的 40 日实际绝对收益并计算质量指标（阶段5：赚钱口径）。
 
-    对每条推荐取入场后 21 条净值（含入场日），用第 0 与第 20 条计算基金绝对收益
+    对每条推荐取入场后 41 条净值（含入场日），用第 0 与第 40 条计算基金绝对收益
     （end_nav / start_nav - 1，不再减指数——与训练目标/回测主标尺同口径）。
-    数据不足（净值 <21 条）的样本跳过。
+    数据不足（净值 <41 条）的样本跳过。
     全部读取经 repo 统一数据 seam（推荐决策域 read），可独立单测。
     """
     rows = repo.get_quality_sample_rows(period_start, period_end)
@@ -117,7 +120,7 @@ def compute_quality_metrics(period_start: str, period_end: str) -> dict:
             continue
         if not np.isfinite(abs_ret):
             continue
-        # Q5 裁决损耗：LLM 选中基金 vs 候选池均值（回查候选 20 日收益，排除选中基金自比）；
+        # Q5 裁决损耗：LLM 选中基金 vs 候选池均值（回查候选 40 日收益，排除选中基金自比）；
         # P1-4 回滚后扩展：同时算选中 vs 候选池最优（combo 最高的候选，若其净值可查）——
         # 回答"LLM 是否不如纯量化最优"，与均值口径同一套月度样本，零新增表。
         decision_loss = None
@@ -127,7 +130,7 @@ def compute_quality_metrics(period_start: str, period_end: str) -> dict:
             for cc in json.loads(candidate_codes):
                 if cc == code:
                     continue
-                # 20 日绝对收益单一来源（架构深化 C）：与结算/反事实同口径
+                # 40 日绝对收益单一来源（架构深化 C）：与结算/反事实同口径
                 cr = repo.nav.forward_return(cc, reco_date)
                 if cr is not None and np.isfinite(cr):
                     cand_rets.append(cr)

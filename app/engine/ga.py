@@ -59,7 +59,7 @@ def fitness(cfg: dict, repeats: int = 1) -> float:
     评估区间用近 24 个月（13 个 fast 回测点），比 12 个月（7 点）更稳，
     避免寻优权重过拟合近期单段 regime。fitness = profit_rate*2 + 期望绝对收益%：
     胜率为主（每 1pp ≈ 2 分），期望收益为次（每 1% ≈ 1 分），
-    两者均来自回测 Top 组合的 20 日绝对收益（与主目标"推荐后能赚钱"对齐）。
+    两者均来自回测 Top 组合的 40 日绝对收益（与主目标"推荐后能赚钱"对齐）。
 
     P2-10：repeats>1 时重复评估取中位数——fast 回测 profit_rate 噪声 ≈±8pp
     （fitness ±16），单次评估的选择偏差大；月度重任务可设 repeats=3 降噪（成本 ×3）。

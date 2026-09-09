@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.domain import SectorPolicy, MIN_SECTOR_EXPOSURE
+from app.domain import MIN_SECTOR_EXPOSURE, SectorPolicy
 
 _AVAILABLE = ["食品", "饮料", "医药", "电源设备", "电网设备",
               "航空航天装备", "半导体", "石油天然气", "基本金属"]

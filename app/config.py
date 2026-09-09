@@ -8,7 +8,8 @@ import re
 import tomllib as _tomllib
 from pathlib import Path
 
-from app.database import DB_PATH, db_conn
+from app.database import DB_PATH
+from app.repo.base import get_settings_all, save_settings_all
 from app.utils.log import get_logger
 
 logger = get_logger("config")
@@ -55,11 +56,8 @@ def load_settings() -> dict:
             if key not in settings[section]:
                 settings[section][key] = val
     try:
-        with db_conn() as conn:
-            rows = conn.execute(
-                "SELECT key, value FROM meta WHERE key LIKE 'settings:%'"
-            ).fetchall()
-        for key, value in rows:
+        rows = get_settings_all()
+        for key, value in rows.items():
             parts = key.split(":", 2)
             if len(parts) == 3:
                 _, section, name = parts
@@ -96,18 +94,21 @@ def save_settings(settings: dict) -> bool:
     if toml_ok:
         if DB_PATH.exists():
             try:
-                with db_conn() as conn:
-                    conn.execute("DELETE FROM meta WHERE key LIKE 'settings:%'")
+                save_settings_all({
+                    f"settings:{section}:{key}": json.dumps(value, ensure_ascii=False)
+                    for section, values in settings.items()
+                    for key, value in values.items()
+                })
             except Exception:
                 pass
     else:
         if not DB_PATH.exists():
             raise
-        with db_conn() as conn:
-            for section, values in settings.items():
-                for key, value in values.items():
-                    conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
-                                 (f"settings:{section}:{key}", json.dumps(value, ensure_ascii=False)))
+        save_settings_all({
+            f"settings:{section}:{key}": json.dumps(value, ensure_ascii=False)
+            for section, values in settings.items()
+            for key, value in values.items()
+        })
     _settings_cache = None
     logger.info("配置已保存: %s", {k: list(v.keys()) for k, v in settings.items()})
     return True

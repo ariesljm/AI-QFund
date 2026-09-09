@@ -5,18 +5,23 @@
 """
 
 import logging
+
+import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-import lightgbm as lgb
-
-from app.features.calculator import (compute_fund_features, score_frame,
-                                      apply_momentum_guard,
-                                      forward_excess_alpha, sim_trailing_stop,
-                                      sim_hard_stop)
-from app.model import load as load_model
-from app import domain
 import app.repo as repo
+from app import domain
+from app.features.calculator import (
+    apply_momentum_guard,
+    compute_fund_features,
+    forward_excess_alpha,
+    score_frame,
+    sim_hard_stop,
+    sim_trailing_stop,
+)
+from app.model import load as load_model
+from backtest._regime import regime_at_date as _regime_at_date
 
 FEATURE_COLS = repo.FEATURE_COLS
 _FORWARD_WINDOW = repo.FORWARD_WINDOW
@@ -28,14 +33,6 @@ _TOP_N = 5
 _BOTTOM_N = 5
 _MAX_BT_FUNDS = 2000
 # 全量12K基金回测太慢，随机采样2000只。
-
-
-def _regime_at_date(idx_df: pd.DataFrame, date: pd.Timestamp) -> str:
-    row = idx_df.loc[idx_df.index <= date]
-    if len(row) == 0:
-        return domain.REGIME_NEUTRAL
-    last = row.iloc[-1]
-    return domain.regime_from_close_ema60(last["close"], last["ema60"])
 
 
 def _score_funds_at_date(nav_df: pd.DataFrame, idx_df: pd.DataFrame,
@@ -84,12 +81,22 @@ def _score_funds_at_date(nav_df: pd.DataFrame, idx_df: pd.DataFrame,
 
 def _attach_forward_returns(df: pd.DataFrame, nav_df: pd.DataFrame,
                            idx_df: pd.DataFrame, bt_date: pd.Timestamp,
-                           stop_mode: str = "none", stop_param: float = 0.0) -> pd.DataFrame:
-    """附加20日前向收益（基金绝对收益 + 可选止损模拟）。
+                           stop_mode: str = "none", stop_param: float = 0.0,
+                           fee_buy_pct: float = 0.0, slippage_pct: float = 0.0) -> pd.DataFrame:
+    """附加40日前向收益（基金绝对收益 + 可选止损模拟 + 可选费后口径，reco-hardening T03）。
 
     stop_mode: "none"=固定持有；"atr"=追踪止损（stop_param=ATR 倍数）；
     "hard"=硬止损（stop_param=回撤百分比，如 0.10 表示 -10%）。
+    fee_buy_pct/slippage_pct 传 0 时关闭费用（默认，向后兼容）：
+    forward_abs_net == forward_abs、forward_stop_net == forward_stop。
+    启用时：持有到期按 FORWARD_DAYS 档赎回费；止损提前退出按 STOP_HOLD_DAYS
+    （14 日，7-29 日档中值）近似——sim 只返回收益率不返回退出天数。
     """
+    from backtest.fees import STOP_HOLD_DAYS, net_return
+
+    fee_enabled = fee_buy_pct > 0 or slippage_pct > 0
+    hold_days = _FORWARD_WINDOW
+    stop_hold_days = STOP_HOLD_DAYS
     idx_close = idx_df["close"]
     idx_pos = idx_close.index.get_indexer([bt_date])[0]
     fwd_pos = idx_pos + _FORWARD_WINDOW
@@ -104,6 +111,8 @@ def _attach_forward_returns(df: pd.DataFrame, nav_df: pd.DataFrame,
     alphas = []
     abs_rets = []
     stop_rets = []
+    abs_nets = []
+    stop_nets = []
     for _, row in df.iterrows():
         code = row["code"]
         g = nav_by_code.get(code)
@@ -111,12 +120,16 @@ def _attach_forward_returns(df: pd.DataFrame, nav_df: pd.DataFrame,
             alphas.append(np.nan)
             abs_rets.append(np.nan)
             stop_rets.append(np.nan)
+            abs_nets.append(np.nan)
+            stop_nets.append(np.nan)
             continue
         g_fwd = g.loc[bt_date:]
         if len(g_fwd) < _FORWARD_WINDOW + 1:
             alphas.append(np.nan)
             abs_rets.append(np.nan)
             stop_rets.append(np.nan)
+            abs_nets.append(np.nan)
+            stop_nets.append(np.nan)
             continue
         nav_at = g.loc[bt_date]
         nav_fwd = g_fwd.iloc[_FORWARD_WINDOW]
@@ -125,35 +138,63 @@ def _attach_forward_returns(df: pd.DataFrame, nav_df: pd.DataFrame,
         # 绝对收益（阶段5：GA fitness / 赚钱口径主标尺）
         abs_ret = nav_fwd / nav_at - 1.0 if nav_at > 0 else np.nan
         abs_rets.append(abs_ret if np.isfinite(abs_ret) else np.nan)
-        # 止损模拟（阶段6 续：参数扫描）——逐日净值路径
+        # 止损/止盈模拟（T04/T08）——逐日净值路径
         daily = g_fwd.iloc[:_FORWARD_WINDOW + 1].tolist()
         if stop_mode == "atr":
-            sr = sim_trailing_stop(daily, atr_mult=stop_param)
+            sr = sim_trailing_stop(daily, atr_mult=stop_param, max_days=_FORWARD_WINDOW)
             stop_rets.append(sr if sr is not None else np.nan)
         elif stop_mode == "hard":
-            sr = sim_hard_stop(daily, stop_pct=stop_param)
+            sr = sim_hard_stop(daily, stop_pct=stop_param, max_days=_FORWARD_WINDOW)
+            stop_rets.append(sr if sr is not None else np.nan)
+        elif stop_mode == "vol":
+            # T04 波动自适应：阈值随净值波动缩放（mult=stop_param）
+            from app.features.calculator import sim_vol_adaptive_stop
+            sr = sim_vol_adaptive_stop(daily, mult=stop_param or 1.5,
+                                       max_days=_FORWARD_WINDOW)
+            stop_rets.append(sr if sr is not None else np.nan)
+        elif stop_mode == "takeprofit":
+            # T08 盈利保护止盈：盈利达阈值后回撤结算（profit=stop_param）
+            from app.features.calculator import sim_take_profit
+            sr = sim_take_profit(daily, profit_threshold=stop_param or 0.15,
+                                 max_days=_FORWARD_WINDOW)
             stop_rets.append(sr if sr is not None else np.nan)
         else:
             stop_rets.append(abs_ret if np.isfinite(abs_ret) else np.nan)
+        # 费后到手收益（T03）：关闭费用时与毛收益一致
+        if fee_enabled:
+            abs_nets.append(net_return(abs_ret, hold_days, fee_buy_pct, slippage_pct)
+                            if np.isfinite(abs_ret) else np.nan)
+            sr_val = stop_rets[-1]
+            stop_nets.append(net_return(sr_val, stop_hold_days, fee_buy_pct, slippage_pct)
+                             if sr_val is not None and np.isfinite(sr_val) else np.nan)
+        else:
+            abs_nets.append(abs_ret if np.isfinite(abs_ret) else np.nan)
+            stop_nets.append(stop_rets[-1])
 
     df["forward_alpha"] = alphas
     df["forward_abs"] = abs_rets
     df["forward_stop"] = stop_rets
+    df["forward_abs_net"] = abs_nets
+    df["forward_stop_net"] = stop_nets
     return df
 
 
 def run_backtest(start_date: str | None = None, end_date: str | None = None,
                  cfg_override: dict | None = None, fast: bool = False,
                  lookback_days: int = 365,
-                 stop_mode: str = "none", stop_param: float = 0.0) -> dict:
+                 stop_mode: str = "none", stop_param: float = 0.0,
+                 fee_buy_pct: float = 0.0, slippage_pct: float = 0.0) -> dict:
     """回测：沿时间轴滑动，计算推荐组合 vs 基准的表现。
 
     cfg_override：临时覆盖 ranking 配置（guard/权重），用于对比不同参数，不落库。
     fast：快速模式（基金 500 只、步长 40 日），供遗传算法等批量适应度评估降成本。
     lookback_days：未传 start_date 时默认回测最近 N 天（GA 评估用 730 天更稳，
     避免 7 个点小样本过拟合近期 regime）。
-    stop_mode/stop_param：止损模拟（"none"/"atr"=ATR倍数/"hard"=回撤百分比），
-    供止损参数扫描（阶段6 续）；none 时 forward_stop == forward_abs。
+    stop_mode/stop_param：止损/止盈模拟（"none"/"atr"=ATR倍数/"hard"=回撤百分比/
+    "vol"=波动自适应(参数=波动倍数)/"takeprofit"=盈利保护(参数=盈利阈值)），
+    供参数扫描；none 时 forward_stop == forward_abs。
+    fee_buy_pct/slippage_pct：费用与执行摩擦（T03，默认 0=关闭）；
+    启用时输出费后口径 top_abs_net/top_stop_net 与费后胜率。
     """
     idx_rows = repo.get_index_series("sh000300", columns=("date", "close", "volume", "ema60"))
     if not idx_rows:
@@ -161,6 +202,8 @@ def run_backtest(start_date: str | None = None, end_date: str | None = None,
     idx_df = pd.DataFrame(idx_rows, columns=["date", "close", "volume", "ema60"])
     idx_df["date"] = pd.to_datetime(idx_df["date"])
     idx_df = idx_df.set_index("date").sort_index()
+    # T06 多周期 regime：向量化现算 EMA250（年线），_regime_at_date 与生产 repo 判定一致
+    idx_df["ema250"] = idx_df["close"].ewm(span=250, adjust=False).mean()
 
     nav_rows = repo.nav.all_rows()
     nav_df = pd.DataFrame(nav_rows, columns=["code", "date", "cum_nav"])
@@ -201,7 +244,8 @@ def run_backtest(start_date: str | None = None, end_date: str | None = None,
         if len(scores) < _TOP_N + _BOTTOM_N:
             continue
         scores = _attach_forward_returns(scores, nav_df, idx_df, bt_date,
-                                         stop_mode=stop_mode, stop_param=stop_param)
+                                         stop_mode=stop_mode, stop_param=stop_param,
+                                         fee_buy_pct=fee_buy_pct, slippage_pct=slippage_pct)
         if "forward_alpha" not in scores.columns:
             continue
         scores = scores.dropna(subset=["forward_alpha"])
@@ -214,12 +258,16 @@ def run_backtest(start_date: str | None = None, end_date: str | None = None,
         bot_alpha = bottom["forward_alpha"].mean()
         top_abs = top["forward_abs"].mean() if "forward_abs" in top.columns else np.nan
         top_stop = top["forward_stop"].mean() if "forward_stop" in top.columns else np.nan
+        top_abs_net = top["forward_abs_net"].mean() if "forward_abs_net" in top.columns else np.nan
+        top_stop_net = top["forward_stop_net"].mean() if "forward_stop_net" in top.columns else np.nan
         spread = top_alpha - bot_alpha
         ic = scores["combo"].corr(scores["forward_alpha"]) if len(scores) >= 5 else 0.0
 
         records.append({
             "date": bt_date, "top_alpha": top_alpha, "bottom_alpha": bot_alpha,
-            "top_abs": top_abs, "top_stop": top_stop, "spread": spread, "ic": ic,
+            "top_abs": top_abs, "top_stop": top_stop,
+            "top_abs_net": top_abs_net, "top_stop_net": top_stop_net,
+            "spread": spread, "ic": ic,
             "regime": _regime_at_date(idx_df, bt_date), "n_funds": len(scores),
         })
         logger.info("%s | regime=%s | top=%.2f%% bot=%.2f%% spread=%.2f%% IC=%.3f n=%d",
@@ -248,6 +296,16 @@ def run_backtest(start_date: str | None = None, end_date: str | None = None,
         "stop_profit_rate_pct": round(float((df["top_stop"] > domain.PROFIT_THRESHOLD).mean()) * 100, 1)
         if df["top_stop"].notna().any() else None,
         "stop_cfg": {"mode": stop_mode, "param": stop_param},
+        # T03 费后到手口径（费用关闭时与毛口径一致）
+        "mean_top_abs_net_pct": round(float(df["top_abs_net"].mean()) * 100, 2)
+        if df["top_abs_net"].notna().any() else None,
+        "profit_rate_net_pct": round(float((df["top_abs_net"] > domain.PROFIT_THRESHOLD).mean()) * 100, 1)
+        if df["top_abs_net"].notna().any() else None,
+        "mean_top_stop_net_pct": round(float(df["top_stop_net"].mean()) * 100, 2)
+        if df["top_stop_net"].notna().any() else None,
+        "stop_profit_rate_net_pct": round(float((df["top_stop_net"] > domain.PROFIT_THRESHOLD).mean()) * 100, 1)
+        if df["top_stop_net"].notna().any() else None,
+        "fee_cfg": {"buy_pct": fee_buy_pct, "slippage_pct": slippage_pct},
         "bull_periods": int((df["regime"] == "BULL").sum()),
         "bear_periods": int((df["regime"] == "BEAR").sum()),
     }
@@ -258,8 +316,8 @@ def run_backtest(start_date: str | None = None, end_date: str | None = None,
 
 
 if __name__ == "__main__":
-    import sys
     import json
+    import sys
     start = None
     end = None
     cfg_override = None

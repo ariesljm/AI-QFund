@@ -108,6 +108,38 @@ def get_holdings(code: str, limit: int=10) -> list[dict]:
         rows = conn.execute('SELECT h.stock_code, h.stock_name, h.weight, i.industry_name FROM fund_holdings h LEFT JOIN stock_industry_map i ON h.stock_code = i.stock_code WHERE h.code = ? AND h.report_date = (  SELECT MAX(report_date) FROM fund_holdings WHERE code = ?) ORDER BY h.weight DESC LIMIT ?', (code, code, limit)).fetchall()
     return [{'stock_code': r[0], 'stock_name': r[1], 'weight': r[2], 'industry': r[3] or ''} for r in rows]
 
+def get_holdings_summaries(codes: list[str], limit: int = 5) -> dict[str, dict]:
+    """候选批量持仓素材：{code: {"holdings": [top-N], "report_date": str|None}}。
+
+    推荐 LLM 终选素材装配 N+1 收敛（批量先例 get_candidate_nav_summaries 同风格）：
+    一次返回全部候选的最新报告期 + 该期前 limit 大持仓；无记录报告期/持仓为空。
+    """
+    if not codes:
+        return {}
+    ph = ",".join("?" for _ in codes)
+    out = {c: {"holdings": [], "report_date": None} for c in codes}
+    with db_conn() as conn:
+        latest = dict(conn.execute(
+            f"SELECT code, MAX(report_date) FROM fund_holdings "
+            f"WHERE code IN ({ph}) GROUP BY code", codes).fetchall())
+        for c in codes:
+            if c in latest:
+                out[c]["report_date"] = latest[c]
+        pairs = [x for c in codes if c in latest for x in (c, latest[c])]
+        if pairs:
+            pair_ph = ",".join("(?,?)" for _ in pairs[::2])
+            for code, sc, sn, w, ind in conn.execute(
+                f"SELECT h.code, h.stock_code, h.stock_name, h.weight, i.industry_name "
+                f"FROM fund_holdings h LEFT JOIN stock_industry_map i "
+                f"ON h.stock_code = i.stock_code "
+                f"WHERE (h.code, h.report_date) IN ({pair_ph}) "
+                f"ORDER BY h.code, h.weight DESC", pairs).fetchall():
+                lst = out[code]["holdings"]
+                if len(lst) < limit:
+                    lst.append({"stock_code": sc, "stock_name": sn,
+                                "weight": w, "industry": ind or ""})
+    return out
+
 def get_holdings_at_report(code: str, report_date: str, limit: int=10) -> list[dict]:
     """按报告期取持仓（R4 对称切片：锚点报告期前 N 大，与最新前 N 大对称比较）。
 
@@ -158,6 +190,74 @@ def get_industry_map() -> dict[str, str]:
         rows = conn.execute('SELECT stock_code, industry_name FROM stock_industry_map').fetchall()
     return dict(rows)
 
+def _percentile(values: list[float], pct: float) -> float:
+    """线性插值分位数（pct ∈ [0,100]），与 sector_pool 同口径，避免截面分位判断漂移。"""
+    if not values:
+        return 0.0
+    s = sorted(values)
+    pos = (len(s) - 1) * pct / 100.0
+    lo = int(pos)
+    hi = min(lo + 1, len(s) - 1)
+    return s[lo] + (s[hi] - s[lo]) * (pos - lo)
+
+
+def get_sector_trend_features(date: str, flow_days: int = 5) -> dict[str, dict]:
+    """赛道多周期趋势特征（聚合层，量化定池/LLM 素材共用单一来源）。
+
+    对每个真实 RBSA 赛道聚合：
+      mom_5d / mom_20d / vol_20d : 最近特征日（≤ date）基金均值（成员 <3 → None）
+      flow_5d / flow_days         : 板块快照近 flow_days 个交易日主力净流入累计（万元）与覆盖天数
+      label                      : 趋势质量标签（资金流出/短期走弱/高位降权/趋势健康）
+    高位判定：20 日动量截面 P75+（与定池过热口径同一线性插值分位）。
+    窗口降级：快照不足 flow_days 天时按可用天数累计并标注 flow_days，上游显式感知。
+    """
+    feat_date = get_latest_feature_date_before(date)
+    with db_conn() as conn:
+        feat_rows = conn.execute(
+            "SELECT rbsa_industry_1, AVG(mom_5d), AVG(momentum_20d), AVG(vol_20d), COUNT(*) "
+            "FROM fund_features WHERE date = ? AND rbsa_industry_1 IS NOT NULL "
+            "AND rbsa_industry_1 NOT IN ('', '其他') "
+            "GROUP BY rbsa_industry_1", (feat_date or date,)).fetchall()
+        snap_rows = conn.execute(
+            "SELECT sector_name, date, SUM(net_flow) FROM sector_daily_snapshot "
+            "WHERE date <= ? GROUP BY sector_name, date", (date,)).fetchall()
+    # 板块快照：每赛道取最近 flow_days 个交易日累计（不足则降级标注天数）
+    flow_by_sector: dict[str, dict] = {}
+    for sector_name, d, f in snap_rows:
+        bucket = flow_by_sector.setdefault(sector_name, {"dates": [], "total": 0.0})
+        bucket["dates"].append((d, f or 0.0))
+    for bucket in flow_by_sector.values():
+        bucket["dates"].sort(key=lambda x: x[0], reverse=True)
+        bucket["total"] = sum(f for _, f in bucket["dates"][:flow_days])
+        bucket["days"] = min(len(bucket["dates"]), flow_days)
+
+    out: dict[str, dict] = {}
+    mom20_vals: list[float] = []
+    for sector, m5, m20, vol, cnt in feat_rows:
+        has_funds = (cnt or 0) >= 3
+        out[sector] = {
+            "mom_5d": float(m5) if has_funds and m5 is not None else None,
+            "mom_20d": float(m20) if has_funds and m20 is not None else None,
+            "vol_20d": float(vol) if has_funds and vol is not None else None,
+            "flow_5d": flow_by_sector.get(sector, {}).get("total"),
+            "flow_days": flow_by_sector.get(sector, {}).get("days", 0),
+            "label": "",
+        }
+        if out[sector]["mom_20d"] is not None:
+            mom20_vals.append(out[sector]["mom_20d"])
+    p75 = _percentile(mom20_vals, 75.0) if len(mom20_vals) >= 2 else None
+    for t in out.values():
+        if t["flow_5d"] is not None and t["flow_5d"] < 0:
+            t["label"] = "资金流出"
+        elif t["mom_5d"] is not None and t["mom_5d"] <= 0:
+            t["label"] = "短期走弱"
+        elif p75 is not None and t["mom_20d"] is not None and t["mom_20d"] >= p75:
+            t["label"] = "高位降权"
+        else:
+            t["label"] = "趋势健康"
+    return out
+
+
 def get_latest_feature_date() -> str | None:
     """fund_features 最新特征日期（赛道中位动量对齐用）。"""
     with db_conn() as conn:
@@ -191,10 +291,31 @@ def get_latest_holdings_rows() -> list[tuple]:
     return list(rows)
 
 def get_market_regime() -> str:
-    """沪深300 close vs EMA60 → BULL/BEAR/NEUTRAL（大盘状态机单一来源）。"""
+    """多周期共振牛熊判定（T06）：沪深300 close vs EMA60(短) + EMA250(长，现算)。
+
+    双确认才判 BULL/BEAR，方向矛盾归 NEUTRAL（震荡期不做方向性降权）；
+    长周期数据不足时回退单周期（旧逻辑）。大盘状态机单一来源。
+    """
     with db_conn() as conn:
-        row = conn.execute("SELECT close, ema60 FROM index_daily WHERE code='sh000300' AND close IS NOT NULL AND ema60 IS NOT NULL ORDER BY date DESC LIMIT 1").fetchone()
-    return domain.regime_from_close_ema60(row[0] if row else None, row[1] if row else None)
+        row = conn.execute(
+            "SELECT close, ema60 FROM index_daily WHERE code='sh000300' "
+            "AND close IS NOT NULL AND ema60 IS NOT NULL ORDER BY date DESC LIMIT 1"
+        ).fetchone()
+        if not row:
+            return domain.REGIME_NEUTRAL
+        close, ema60 = row[0], row[1]
+        # 长周期 EMA250（年线）：取历史收盘现算（index_daily 无长均线列）
+        full = [r[0] for r in conn.execute(
+            "SELECT close FROM index_daily WHERE code='sh000300' AND close IS NOT NULL "
+            "ORDER BY date").fetchall()]
+        if len(full) > 250:
+            k = 2.0 / (250.0 + 1.0)
+            ema = full[0]
+            for v in full[1:]:
+                ema = v * k + ema * (1.0 - k)
+            return domain.regime_from_multi_timeframe(close, ema60, ema)
+        # 长周期数据不足 → 回退单周期（旧逻辑）
+        return domain.regime_from_close_ema60(close, ema60)
 
 def get_holdings_report_dates() -> dict[str, str]:
     """各基金最新持仓报告期（持仓增量下载的本地最新窗口判断，原 foundation 内联 GROUP BY）。"""
@@ -285,6 +406,25 @@ def save_meta(key: str, value: str) -> None:
     """写入 meta 配置值（与 get_meta 对称，供进化引擎记录时间戳等）。"""
     with db_conn() as conn:
         meta_set(conn, key, value)
+
+
+def get_settings_all() -> dict[str, str]:
+    """settings: 前缀键批量读（config 运行时持久化，ADR-0005 meta 单一读写 seam）。"""
+    with db_conn() as conn:
+        return dict(conn.execute(
+            "SELECT key, value FROM meta WHERE key LIKE 'settings:%'"
+        ).fetchall())
+
+
+def save_settings_all(items: dict[str, str]) -> None:
+    """settings: 前缀键整段替换（先删后插，幂等）；消费方不再持有裸 meta SQL。"""
+    with db_conn() as conn:
+        conn.execute("DELETE FROM meta WHERE key LIKE 'settings:%'")
+        conn.executemany(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            list(items.items()),
+        )
+        conn.commit()
 
 
 def get_interval_days(key: str) -> int | None:
@@ -508,50 +648,23 @@ def get_uptime_days() -> int:
     return 365
 
 
-def get_candidate_nav_summaries(items: list[tuple[str, str]]) -> dict[str, dict]:
-    """候选列表批量汇总（_candidate_summary N+1 收敛为 4 次查询）。
-
-    items 为 [(code, first_date), ...]；返回 {code: {"entry_nav", "nav_at_first",
-    "latest_nav", "signal"}}，无记录字段为 None。
-    """
-    if not items:
-        return {}
-    codes = [c for c, _ in items]
-    out = {c: {"entry_nav": None, "nav_at_first": None, "latest_nav": None, "signal": None}
-           for c, _ in items}
-    code_ph = ",".join("?" for _ in codes)
-    pair_ph = ",".join("(?,?)" for _ in items)
-    pairs = [x for c, d in items for x in (c, d)]
-    with db_conn() as conn:
-        # 最新净值（窗口函数取每 code 最新一行）
-        for code, nav in conn.execute(
-            f"SELECT code, cum_nav FROM (SELECT code, cum_nav, "
-            f"ROW_NUMBER() OVER (PARTITION BY code ORDER BY date DESC) rk "
-            f"FROM fund_nav WHERE code IN ({code_ph})) WHERE rk = 1", codes).fetchall():
-            out[code]["latest_nav"] = nav
-        # 首次推荐日净值 / entry_nav（(code, date) 成对匹配）
-        for code, nav in conn.execute(
-            f"SELECT code, cum_nav FROM fund_nav WHERE (code, date) IN ({pair_ph})",
-            pairs).fetchall():
-            out[code]["nav_at_first"] = nav
-        for code, nav in conn.execute(
-            f"SELECT code, entry_nav FROM recommend_log WHERE (code, recommend_date) IN ({pair_ph})",
-            pairs).fetchall():
-            out[code]["entry_nav"] = nav
-        # 最新监控信号（排序口径 date DESC, id DESC，与 get_latest_monitor_event 一致）
-        for code, sig in conn.execute(
-            f"SELECT code, signal FROM (SELECT code, signal, "
-            f"ROW_NUMBER() OVER (PARTITION BY code ORDER BY date DESC, id DESC) rk "
-            f"FROM monitor_events WHERE code IN ({code_ph})) WHERE rk = 1", codes).fetchall():
-            out[code]["signal"] = sig
-    return out
-
-
 def set_model_last_trained(date_str: str) -> None:
     """记录最近一次模型训练日期。"""
     with db_conn() as conn:
         meta_set(conn, META.MODEL_LAST_TRAINED, date_str)
 
 
+def get_model_label_version() -> str | None:
+    """读取模型训练标签版本（meta 表），无则返回 None（老模型无元信息）。"""
+    with db_conn() as conn:
+        return meta_get(conn, META.MODEL_LABEL_VERSION)
 
-__all__ = ["FEATURE_COLS", "MARKET_COLS", "FORWARD_WINDOW", "check_data_ready", "is_recommend_data_ready", "get_all_ranking_rows", "get_available_sectors", "get_buyable_codes", "get_buyable_feature_stats", "get_candidate_nav_summaries", "get_codes_missing_rbsa", "get_feature_codes_before", "get_feature_dates_map", "get_fund_name", "get_fund_pool_stats", "get_holdings", "get_holdings_at_report", "get_holdings_report_dates", "get_index_close", "get_index_momentum", "get_index_rows", "get_index_series", "get_industry_map", "get_industry_map_gap_count", "get_industry_map_stats", "get_industry_map_targets", "get_latest_feature_date", "get_latest_feature_date_before", "get_latest_features", "get_latest_holdings_date", "get_latest_holdings_rows", "get_market_regime", "get_market_technical", "get_meta", "get_model_last_trained", "get_data_latest_date", "get_interval_days", "get_int_cursor", "get_nav_time_state", "get_sector_momentum_median", "get_sector_momentum_medians", "get_rbsa_at_date", "get_first_rbsa_after", "get_sector_candidates", "get_sector_heatmap", "get_system_logs", "get_train_fund_codes", "get_uptime_days", "has_index_data", "has_nav_data", "sample_fund_codes_before", "save_meta", "set_model_last_trained"]
+
+def set_model_label_version(version: str) -> None:
+    """记录模型训练标签版本（train 成功后写入，供加载路径校验）。"""
+    with db_conn() as conn:
+        meta_set(conn, META.MODEL_LABEL_VERSION, version)
+
+
+
+__all__ = ["FEATURE_COLS", "MARKET_COLS", "FORWARD_WINDOW", "check_data_ready", "is_recommend_data_ready", "get_all_ranking_rows", "get_available_sectors", "get_buyable_codes", "get_buyable_feature_stats", "get_codes_missing_rbsa", "get_feature_codes_before", "get_feature_dates_map", "get_fund_name", "get_fund_pool_stats", "get_holdings", "get_holdings_at_report", "get_holdings_report_dates", "get_index_close", "get_index_momentum", "get_index_rows", "get_index_series", "get_industry_map", "get_industry_map_gap_count", "get_industry_map_stats", "get_industry_map_targets", "get_latest_feature_date", "get_latest_feature_date_before", "get_latest_features", "get_latest_holdings_date", "get_latest_holdings_rows", "get_market_regime", "get_market_technical", "get_meta", "get_model_last_trained", "get_model_label_version", "set_model_label_version", "get_data_latest_date", "get_interval_days", "get_int_cursor", "get_nav_time_state", "get_sector_momentum_median", "get_sector_momentum_medians", "get_rbsa_at_date", "get_first_rbsa_after", "get_sector_candidates", "get_sector_heatmap", "get_system_logs", "get_train_fund_codes", "get_uptime_days", "has_index_data", "has_nav_data", "sample_fund_codes_before", "save_meta", "set_model_last_trained"]

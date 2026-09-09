@@ -22,9 +22,12 @@ import numpy as np
 import pandas as pd
 
 from app import repo
-from app.features.calculator import (compute_fund_features, market_state_features,
-                                      ema60_trigger_index)
-from backtest.backtest_walkforward import _train_window, _score_at, FEATURE_COLS, MARKET_COLS
+from app.features.calculator import (
+    compute_fund_features,
+    ema60_trigger_index,
+    market_state_features,
+)
+from backtest.backtest_walkforward import FEATURE_COLS, MARKET_COLS, _score_at, _train_window
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger("bt_exit_wf")
@@ -115,7 +118,8 @@ def _sim_exits(code: str, bt_date: pd.Timestamp, bst: lgb.Booster,
     # ema60：连续 2 日 < EMA60（与生产防线 R1 同判定，单一来源）
     ex_ema = ema60_trigger_index(seg.tolist())
     if ex_ema is not None:
-        seg_e = seg.copy(); seg_e[ex_ema:] = seg[ex_ema]
+        seg_e = seg.copy()
+        seg_e[ex_ema:] = seg[ex_ema]
         _finish("ema", seg[ex_ema] / entry - 1.0, seg_e)
         out["ema_exit"] = 1
     else:
@@ -135,7 +139,8 @@ def _sim_exits(code: str, bt_date: pd.Timestamp, bst: lgb.Booster,
             ex_model = off
             break
     if ex_model is not None:
-        seg_m = seg.copy(); seg_m[ex_model:] = seg[ex_model]
+        seg_m = seg.copy()
+        seg_m[ex_model:] = seg[ex_model]
         _finish("model", seg[ex_model] / entry - 1.0, seg_m)
         out["model_exit"] = 1
     else:
@@ -210,7 +215,8 @@ def run(start: str, end: str, topn: int, max_days: int, train_pool: int,
     print(f"样本 {len(df)}（{df['date'].nunique()} 决策点 × 基金）| 区间 {start}~{end}")
     print(f"{'策略':<12}{'平均收益':>10}{'胜率':>8}{'中位收益':>10}{'平均最大回撤':>14}{'触发率':>10}")
     for key, label in [("fixed", "固定持有"), ("ema", "EMA60退出"), ("model", "模型序列退出")]:
-        rets = df[f"{key}_ret"]; dds = df[f"{key}_dd"]
+        rets = df[f"{key}_ret"]
+        dds = df[f"{key}_dd"]
         trig = df[f"{key}_exit"].mean() * 100
         print(f"{label:<12}{rets.mean() * 100:>9.2f}%{(rets > 0).mean() * 100:>7.1f}%"
               f"{rets.median() * 100:>9.2f}%{dds.mean() * 100:>13.2f}%{trig:>9.1f}%")

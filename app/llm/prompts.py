@@ -15,23 +15,25 @@ def sector_selection_prompt(
     lessons: str | None = None,
     market_tech: str | None = None,
     news_date: str | None = None,
+    news_history: str | None = None,
 ) -> str:
-    """选赛道 prompt（D5 定案）：LLM 只能在量化候选池内选 3-5 个，可否决池内赛道。
+    """选赛道 prompt（D5 定案 + Ticket 07 多周期化）：LLM 只能在量化候选池内选 3-5 个。
 
-    pool_text：量化定池产出的候选池文本（含 5/20/60 日动量信号）。
-    news_date：新闻条目实际归属日期。与决策日不同（跨日回退）时向 LLM
-    显式声明，避免把 T-1 盘后消息误判为今日增量信息。
+    pool_text：量化定池产出的候选池文本（含 5/20/60 日动量、资金流趋势与趋势质量标签）。
+    news_date：新闻条目实际归属日期。与决策日不同（跨日回退）时向 LLM 显式声明。
+    news_history：近 N 日要闻回顾（趋势视角素材）；当日新闻仅作确认/否决。
     """
     lines = [
-        f"你是专业的宏观分析师。基于 {date_str} 的多源数据，"
-        "从【量化候选池】中挑选未来短期最值得关注的3-5个赛道，并行使否决权。",
+        (f"你是专业的宏观分析师。基于 {date_str} 及此前约 20 个交易日的多周期数据，"
+         "评估各候选赛道未来 1-2 个月的上涨潜力，选择最有潜力的 3-5 个赛道，并行使否决权。"
+         "（目标：推荐的是买入后约 2 个月绝对收益为正的基金所在赛道）"),
         "",
         "【严格要求】",
         "你只能从【量化候选池】中精确选择行业名称，一字不差。",
         "候选池之外的行业名绝对禁止出现在推荐或回避结果中。",
         "若你认为候选池整体都不合适，可以不推荐任何赛道（recommended_sectors 为空）。",
         "",
-        f"【量化候选池】（由趋势+过热规避信号筛出，共{len(pool_text.split(chr(10))) if pool_text else 0}行）：",
+        f"【量化候选池】（由趋势+过热规避信号筛出，共{len(pool_text.split(chr(10))) if pool_text else 0}行，含资金流趋势与趋势质量标签）：",
         pool_text or "（无候选）",
         "",
         f"量化定池说明: {pool_reasoning or '无'}",
@@ -53,11 +55,17 @@ def sector_selection_prompt(
     lines += [
         news_summary or "无数据",
         "",
+        "【当日新闻使用规则（Ticket 07）】",
+        "当日新闻/当日涨跌/当日资金流只是短期脉冲，**仅可作确认或否决，不作为选择赛道的主要依据**。",
+        "判断赛道未来潜力的主依据是：候选池多周期动量结构、资金流趋势、趋势质量标签与下方要闻回顾。",
+        "",
         "【数据同源提示（P1-6）】",
-        "板块排行/资金流与量化候选池同源（均为东财板块快照）——它们已用于筛池，",
-        "你再读一遍不会获得增量信息；真正的新信息在【财经新闻】与【大盘技术面】。",
+        "板块排行/资金流/量化候选池同源（均为东财板块快照）——它们已用于筛池，",
+        "你再读一遍不会获得增量信息；真正的新信息在【近N日要闻回顾】与【大盘技术面】。",
         "请把判断重心放在新闻中的产业动态/政策事件，而非复读板块涨跌。",
     ]
+    if news_history:
+        lines += ["", "【近N日要闻回顾】（趋势视角：政策/产业事件的持续性信号）", news_history]
     if market_tech:
         lines += [
             "",
@@ -82,6 +90,10 @@ def sector_selection_prompt(
         "【否决权】",
         "候选池由量化信号筛出，但可能包含你不认可的赛道（如新闻/政策明确利空、产业逻辑被证伪）。",
         "对不认可的候选赛道，放入 vetoed_sectors 并给出理由；否决的赛道不会进入推荐。",
+        "",
+        "【高位与资金流出约束（Ticket 07）】",
+        "候选池中带「高位降权/资金流出」趋势质量标签的赛道中期风险偏高：宁可少选或不选，",
+        "不得为凑推荐数量而选择短期过热或资金持续流出的赛道。",
         "",
         "输出以下 JSON（纯 JSON，勿用 markdown 代码块）：",
         "{",
@@ -193,11 +205,11 @@ def evolution_analysis_prompt(
                 f"  推理:{n['reasoning']} | 信号:{n.get('signal', '')} | "
                 f"触发:{n.get('signal_triggers', {})} | 逻辑:{n.get('logic', {})}"
             )
-    # Q8：裁决损耗观测（LLM 选中 vs 候选池均值的 20 日收益差）——让元分析看到定论环节自身的问题
+    # Q8：裁决损耗观测（LLM 选中 vs 候选池均值的 40 日收益差）——让元分析看到定论环节自身的问题
     if decision_loss is not None or loss_streak >= 3:
         lines += ["", "【定论环节裁决损耗观测】"]
         if decision_loss is not None:
-            lines.append(f"  当月 LLM 选中基金 vs 候选池均值的 20 日收益差: "
+            lines.append(f"  当月 LLM 选中基金 vs 候选池均值的 40 日收益差: "
                          f"{decision_loss*100:+.2f}pp（负值 = 定论环节拉低质量）")
         if loss_streak >= 3:
             lines.append(f"  已连续 {loss_streak} 个月为负——请审视定论环节是否存在系统性偏差，"
@@ -280,13 +292,13 @@ def final_pick_prompt(
         if rd and months is not None:
             parts = [f"  持仓时效: {rd} (距今{months}个月)"]
             fund_mom = c.get("momentum_20d", 0) or 0
-            parts.append(f"基金20日动量{fund_mom:+.1f}%（量化参考）")
-            ret_1m = c.get("ret_1m")
-            if ret_1m is not None:
-                parts.append(f"近1月涨幅{ret_1m:+.1f}%（22交易日，与前端展示一致，reason 文案引用此值）")
+            parts.append(f"基金20日动量{fund_mom:+.1f}%（量化参考，不作为绝对收益依据）")
+            ps = c.get("purchase_status")
+            if ps and ps != "normal":
+                parts.append(f"⚠️ 申购状态: {ps}（限购/暂停——除非强理由否则不选）")
             if smm is not None and gap is not None:
                 parts.append(f"赛道同行中位数{smm:+.1f}%")
-                parts.append(f"偏离{gap:+.1f}%")
+                parts.append(f"偏离{gap:+.1f}%（基金相对赛道同行的滚动超额，α 质量的直接证据）")
                 if abs(gap) > 5:
                     parts.append("(走势异常)")
             lines.append(" | ".join(parts))
@@ -302,14 +314,16 @@ def final_pick_prompt(
         "   也可能是它自己跑赢同行（真本事α）。decision_logic 必须明确区分两者：",
         "   引用「偏离」（基金20日动量−赛道同行中位数）判断——接近0说明它只是吃了行业行情，",
         "   明显为正才是相对同行的超额；再结合抗跌性/风险面判断上涨质量。禁止把行业β当成基金能力。",
+        "5. 尊重量化排序：combo 排序前 30% 的候选优先；除非有强理由（如重仓股结构异常、",
+        "   赛道归属可疑、偏离超出阈值），否则不得选择排序靠后的候选。",
         "",
         "【输出两个理由字段，职责分离（P2-7 决策与文案解耦）】",
         '  - "decision_logic"：内部决策依据（给系统审计用），可以用专业术语（RBSA/动量/卡玛等），'
         "要求具体到：选它的核心量化依据、持仓结构依据、与落选者的关键差异、本轮否决/风险点。",
         '  - "reason"：给普通投资者看的大白话（展示用），禁止专业术语，'
         "需包含：这只基金重仓的行业和股票、为什么这些持仓是好的、最近有什么利好或政策支持；",
-        "reason 中提及收益涨幅时，必须引用候选名单里的「近1月涨幅」数值（与前端展示一致），",
-        "严禁把「20日动量」表述为月涨幅。",
+        "reason 中提及收益时引用「偏离」（相对赛道同行超额的幅度）即可，",
+        "严禁把「20日动量」表述为月涨幅、也不得引用已移出的「近1月涨幅」字段。",
         "不要重复大盘宏观分析结论。",
         "",
         "输出要求（务必严格遵守）：",

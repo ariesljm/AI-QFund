@@ -17,8 +17,8 @@ import pytest
 # 与 tests/ 各测试文件相同的路径样板：pytest 入口不把项目根加入 sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.utils import log as log_mod
 import app.database as db_mod
+from app.utils import log as log_mod
 
 
 @pytest.fixture(scope="session", autouse=True)

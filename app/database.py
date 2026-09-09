@@ -78,7 +78,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
     if "recommend_log" in tables:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(recommend_log)").fetchall()}
-        for col, typ in [("return_rate", "REAL"), ("feature_snapshot", "TEXT"), ("entry_nav", "REAL"), ("candidate_codes", "TEXT"), ("rec_count", "INTEGER DEFAULT 1")]:
+        for col, typ in [("return_rate", "REAL"), ("feature_snapshot", "TEXT"), ("entry_nav", "REAL"), ("candidate_codes", "TEXT"), ("rec_count", "INTEGER DEFAULT 1"), ("vetoed_json", "TEXT")]:
             if col not in cols:
                 conn.execute(f"ALTER TABLE recommend_log ADD COLUMN {col} {typ}")
                 conn.commit()
@@ -166,7 +166,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
             if col not in qm_cols:
                 conn.execute(f"ALTER TABLE quality_metrics ADD COLUMN {col} {typ}")
                 conn.commit()
-        # Q5 共识：裁决损耗（LLM 选中基金 vs 候选池均值的 20 日收益差）
+        # Q5 共识：裁决损耗（LLM 选中基金 vs 候选池均值的 40 日收益差）
         if "decision_loss" not in qm_cols:
             conn.execute("ALTER TABLE quality_metrics ADD COLUMN decision_loss REAL")
             conn.commit()

@@ -6,13 +6,15 @@
 
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app import domain
-from app.web import app as webapp, dashboard, charts, quotes
+from app.web import app as webapp
+from app.web import charts, dashboard, quotes
 
 # 直接实例化不触发 lifespan（不起调度器线程）
 client = TestClient(webapp.app)

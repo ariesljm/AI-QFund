@@ -8,13 +8,16 @@
 """
 
 import json
-import re
 from datetime import datetime, timedelta
 
 import numpy as np
 
 import app.repo as repo
 from app import domain
+from app.engine.insights import decay_insights as _decay_insights
+from app.engine.insights import insight_conflicts as _insight_conflicts
+from app.engine.insights import save_insight as _save_insight
+from app.engine.insights import save_self_fix as _save_self_fix
 from app.engine.quality import compute_quality_metrics
 from app.llm.client import LLMError, call_llm_json
 from app.llm.prompts import evolution_analysis_prompt
@@ -85,13 +88,6 @@ _MIN_SAMPLE_FOR_ADJUST = 5
 # 负 -0.10 后衰减 ≈ -15.6%（明显下行）——若取 ±0.05 会被衰减完全抵消（净≈0）
 _INSIGHT_REWARD_DELTA = 0.10
 
-# P0-2 洞察试用期：新洞察以低置信度起步（而非 schema 默认 1.0），
-# 命中胜案例 +0.10 提升、月度 ×0.95 衰减——无命中时约 10 个月降至停用阈值 0.3，
-# 避免单案例巧合以满置信度固化多年（原 1.0 → 0.2 需约 31 个月）。
-_INSIGHT_INITIAL_CONF = 0.5
-# P0-2 阈值统一：活跃判停用阈值与 get_active_insights 的进 prompt 门槛一致（原 0.2 vs 0.3 漂移）
-_INSIGHT_MIN_CONF = 0.3
-
 # Q6：元分析案例超上限时按三类比例抽样（防 token 超限、保证每类都有代表）
 _MAX_ANALYSIS_CASES = 40
 
@@ -109,7 +105,7 @@ def plan_param_adjustment(metrics: dict) -> str | None:
     if profit_rate is None or profit_rate >= 0.5:
         return None
     return (f"质量下行触发GA紧急评估: 赚钱胜率={profit_rate:.2f}<0.5"
-            "（推荐后20日绝对收益>1%的占比不足五成）")
+            "（推荐后40日绝对收益>1%的占比不足五成）")
 
 
 # ── 遗传算法参数寻优 ─────────────────────────────────────
@@ -183,7 +179,7 @@ def _ga_adjust(force: bool = False) -> str | None:
 
 def _settle_pool_outcomes(pool_sectors: list[str], reco_date: str) -> dict:
     """P1-5 否决反事实：量化池内每赛道取"第一行业命中且动量最高"的代表基金，
-    计算其入场后 20 日收益——结算时对比"LLM 选中赛道 vs 池内未选/被否决赛道"，
+    计算其入场后 40 日收益——结算时对比"LLM 选中赛道 vs 池内未选/被否决赛道"，
     度量 LLM 选赛道是否系统性错过上涨方向（否决正确率的数据基础）。
     """
     outcomes: dict = {}
@@ -208,12 +204,12 @@ def _settle_outcomes() -> int:
     """更新 sector_selections 的 outcome 字段（全部待定，幂等防漏）。
 
     - EXIT：用退出时实际收益（return_rate，监控平仓时写入）；
-    - 非 EXIT：满 FORWARD_DAYS 交易日（含入场日 21 条净值）才结算，用第 20 条
-      净值/入场净值计算 20 日绝对收益——与质量度量/GA fitness 同口径；
+    - 非 EXIT：满 FORWARD_DAYS 交易日（含入场日 41 条净值）才结算，用第 40 条
+      净值/入场净值计算 40 日绝对收益——与质量度量/GA fitness 同口径；
       窗口未满保持待定（丢弃未满窗口样本，下月自然补齐）；
     - 标签阈值与 quality 对齐（PROFIT_THRESHOLD=1%）：胜 > 1%、负 ≤ 1%，
       不再产生"平"——元分析案例标签与赚钱口径完全一致。
-    - P1-5：结算时对量化池内全部候选赛道回填 20 日收益（pool_outcomes），
+    - P1-5：结算时对量化池内全部候选赛道回填 40 日收益（pool_outcomes），
       供否决反事实度量（选中 vs 未选）。
     """
     rows = repo.get_pending_sector_selections()
@@ -243,12 +239,12 @@ def _settle_outcomes() -> int:
             outcome = "胜" if ret > domain.PROFIT_THRESHOLD else "负"
             note = f"退出时收益 {ret*100:+.2f}%"
         else:
-            # 满 20 交易日才结算：与质量度量同口径（含入场日 21 条净值），单一来源 repo.nav.forward_return
+            # 满 FORWARD_DAYS 交易日才结算：与质量度量同口径（含入场日 41 条净值），单一来源 repo.nav.forward_return
             ret = repo.nav.forward_return(code, reco_date)
             if ret is None:
                 continue
             outcome = "胜" if ret > domain.PROFIT_THRESHOLD else "负"
-            note = f"20日收益 {ret*100:+.2f}%"
+            note = f"40日收益 {ret*100:+.2f}%"
 
         pool_outcomes = _settle_pool_outcomes(pool_sectors, reco_date) if pool_sectors else None
         repo.update_sector_selection_outcome(ss_id, outcome, today, note,
@@ -269,7 +265,7 @@ def _settle_outcomes() -> int:
 def _collect_cases(last_ss_id: int = 0) -> tuple[list[dict], list[dict], list[dict]]:
     """收集 id > last_ss_id 的已结算案例（增量游标，含回填 outcome + 监控信号链）。
 
-    不再按月过滤：结算由 20 日净值窗口决定，晚满窗的案例按 id 游标自然补入——
+    不再按月过滤：结算由 FORWARD_DAYS 净值窗口决定，晚满窗的案例按 id 游标自然补入——
     修复「月 1 号未满窗、下月按月查不到」导致月中推荐永久丢失的时间窗错位。
     """
     rows = repo.get_settled_cases_after(last_ss_id)
@@ -355,80 +351,6 @@ def _batch_llm_analyze(successes: list, failures: list, neutrals: list | None = 
     return None  # None = 分析失败（调用方不推进游标，下次重试）
 
 
-def _keywords(text: str) -> set:
-    """文本关键词集：ASCII 词（len≥2）+ 中文字符 bigram。
-
-    中文无空格分词，整句中文字符串若作为单"词"保留会稀释 Dice 相似度；
-    只取中文字符 bigram 作为语义单元，使近似句子的重合度可被度量
-    （8-12 曾同日入库 5 条近似洞察而查重不命中）。
-    """
-    words = set()
-    for t in re.sub(r"[^\w\u4e00-\u9fff]", " ", text).split():
-        if len(t) >= 2 and not any("\u4e00" <= ch <= "\u9fff" for ch in t):
-            words.add(t)
-    cjk = re.findall(r"[\u4e00-\u9fff]", text)
-    if len(cjk) >= 2:
-        words |= {cjk[i] + cjk[i + 1] for i in range(len(cjk) - 1)}
-    return words
-
-
-def _insight_conflicts(new_insight: str, existing: list) -> bool:
-    """用 Dice 系数判断洞察是否与已有记录重复（中文 bigram 语义单元）。
-
-    Dice = 2|A∩B| / (|A|+|B|)：中文 bigram 下近似句子 Dice≈0.4+、
-    不相关句子 <0.15——比 Jaccard 对"部分重叠"更敏感（旧 Jaccard 阈值 0.5
-    对整句中文近乎失效，8-12 曾同日入库 5 条近似洞察而查重不命中）。
-    """
-    new_kw = _keywords(new_insight)
-    if not new_kw:
-        return True
-    for ei in existing:
-        ei_kw = _keywords(ei)
-        if not ei_kw:
-            continue
-        overlap = 2 * len(new_kw & ei_kw) / (len(new_kw) + len(ei_kw))
-        if overlap > 0.4:
-            return True
-    return False
-
-
-def _save_insight(insight: dict, degraded: bool = False) -> bool:
-    """入库洞察；质量下行（degraded）时以非活跃状态入库（待审），不自动启用。
-
-    P0-2 试用期：元分析新洞察以 _INSIGHT_INITIAL_CONF（0.5）起步，命中胜案例
-    +0.10、月度 ×0.95 衰减；condition（P3-11）透传结构化前置条件。
-    """
-    existing = repo.get_all_insights()
-    if _insight_conflicts(insight["insight"], existing):
-        return False
-    active = 0 if degraded else 1
-    condition = insight.get("condition")
-    repo.insert_insight(insight["insight"], insight.get("type", "sector"),
-                        datetime.now().strftime("%Y-%m-%d"), active,
-                        confidence=_INSIGHT_INITIAL_CONF, condition=condition)
-    logger.info("新洞察入库: [%s] %s (active=%s, conf=%.2f%s)",
-                insight.get("type", "?"), insight["insight"][:60], active,
-                _INSIGHT_INITIAL_CONF, f", condition={condition}" if condition else "")
-    return True
-
-
-# ── 置信度衰减 ─────────────────────────────────────────────
-
-def _decay_insights() -> int:
-    """降低旧洞察置信度，长期无用则标记非活跃。"""
-    rows = repo.list_active_insights()
-    decayed = 0
-    for rid, conf, _cnt in rows:
-        # 旧数据 confidence 可能为 NULL（schema DEFAULT 对历史行无效），按初始置信度兜底
-        new_conf = float(conf if conf is not None else _INSIGHT_INITIAL_CONF) * 0.95
-        # P0-2 阈值统一：与 get_active_insights 的进 prompt 门槛一致（0.3）
-        active = 1 if new_conf > _INSIGHT_MIN_CONF else 0
-        repo.update_insight_confidence(rid, new_conf, active)
-        decayed += 1
-    logger.info("置信度衰减: %d 条洞察已更新", decayed)
-    return decayed
-
-
 def _decision_loss_streak(limit: int = 3) -> int:
     """裁决损耗连续为负的月数（Q8：连续 N 个月为负 → 元分析复核 / 降级信号）。
 
@@ -498,32 +420,6 @@ def _veto_stats() -> list[str]:
 
 
 # ── 主入口 ─────────────────────────────────────────────────
-
-def _fix_key(text: str) -> str:
-    """去重键：数字归一化——fitness/配置数值变化不视为新记录。
-
-    历史问题：GA 每次应用的 fitness 值不同，「GA寻优应用: fitness X→Y」文本
-    逐次不同导致精确匹配去重永不命中，单日最多累积 43 条重复记录污染。
-    """
-    return re.sub(r"\d+\.?\d*", "#", text)
-
-
-def _save_self_fix(fix: str) -> None:
-    """入库排分自纠偏/GA 应用记录；数字归一化去重。
-
-    重复调用 run_evolve（如排分自纠偏信号误报触发的 force 循环）会把相同
-    fitness 的"GA寻优应用"反复入库（8-08 曾单日 43 条重复记录污染）；
-    按数字归一化文本去重后同一结论只记一次。
-    """
-    key = _fix_key(fix)
-    if any(_fix_key(e) == key for e in repo.get_all_insights()):
-        return
-    # GA 应用/自纠偏是已发生事实，置信度按 1.0 起步（不属元分析试用期范畴）
-    # 修复：原 insert 不带 confidence → NULL，decay 时按 0.5 兑底并与注释声称的 1.0 不符
-    repo.insert_insight(fix, "ranking", datetime.now().strftime("%Y-%m-%d"), active=1,
-                        confidence=1.0)
-    logger.info("排分自纠偏: %s", fix[:60])
-
 
 def _record_ga_applied(cfg: dict, f_before: float, f_after: float) -> None:
     """记录 GA 权重应用来源（meta last_ga_applied）：fitness 快照 + 时间戳。
@@ -608,7 +504,7 @@ def run_evolve(month: str | None = None) -> None:
     """进化引擎主入口。
 
     每日调用（管线每天附加）：
-      - 结算全部待定（幂等，满 20 日净值窗口即结算，不再等月 1 号巧合满窗）；
+      - 结算全部待定（幂等，满 FORWARD_DAYS 净值窗口即结算，不再等月 1 号巧合满窗）；
       - 质量度量上月（幂等覆盖：晚满窗的推荐每天重算覆盖，最终收敛到完整样本）。
     月度到期（距上次重任务 ≥28 天）或手动传 month 时追加重任务：
       自纠偏 + GA 寻优 + LLM 元分析（增量游标）+ 置信度衰减。
@@ -625,7 +521,7 @@ def run_evolve(month: str | None = None) -> None:
     degraded = False
     metrics = None
     try:
-        # 当月尚未结束时不计算质量度量：forward 20 日窗口未走完，
+        # 当月尚未结束时不计算质量度量：forward 40 日窗口未走完，
         # 月初运行只会产生样本为 0 的空行；历史月份需传入 month 参数补算
         if month == datetime.now().strftime("%Y-%m"):
             logger.info("本月 %s 尚未结束，跳过质量度量（历史月份可运行 evolve YYYY-MM 补算）", month)

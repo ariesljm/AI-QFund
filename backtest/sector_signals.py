@@ -27,6 +27,7 @@ from app import repo
 from app.database import db_conn
 from app.engine.quality import spearman  # 秩相关单一来源（与生产质量度量同口径）
 from app.utils.log import get_logger
+from backtest._regime import regime_series as _regime_series
 
 logger = get_logger("backtest.sector_signals")
 
@@ -103,13 +104,13 @@ def build_panel(pivot: pd.DataFrame, labels: pd.DataFrame,
     by_code = {c: (lab_g["report_date"].to_numpy(),
                    lab_g["industry_1"].to_numpy())
                for c, lab_g in lab.groupby("code")}
-    fund_dates = np.array(trading_dates)
+
 
     rows = []
     for t in _decision_dates(trading_dates):
         if t not in nav.index:
             continue
-        t_pos = nav.index.get_loc(t)
+
         row = nav.loc[t]
         ok = (row.notna()
               & mom_20.loc[t].notna()
@@ -276,8 +277,8 @@ def _regime_breakdown(panel: pd.DataFrame) -> dict:
     idx = repo.get_index_series("sh000300", ("date", "close"))
     closes = pd.Series({d: c for d, c in idx})
     closes.index = pd.to_datetime(closes.index)
-    ma60 = closes.rolling(60).mean()
-    regime_of_date = (closes > ma60).map({True: "BULL", False: "BEAR"})
+    # ⑥ 统一：多周期共振（EMA60+EMA250，含 NEUTRAL）——原 MA60 单周期与生产口径漂移
+    regime_of_date = _regime_series(closes)
     tmp = panel.copy()
     tmp["date"] = pd.to_datetime(tmp["date"])
     tmp["regime"] = tmp["date"].map(regime_of_date)
@@ -288,7 +289,7 @@ def _regime_breakdown(panel: pd.DataFrame) -> dict:
         if len(g) < 10:
             continue
         hot = g[g["pct"] >= 0.9]
-        cold = g[g["pct"] <= 0.1]
+
         out[reg] = {
             "hot_fwd_pct": round(float(hot["fwd_20d"].mean() * 100), 2) if len(hot) else None,
             "all_fwd_pct": round(float(g["fwd_20d"].mean() * 100), 2),
@@ -316,7 +317,7 @@ def run(start: str, end: str) -> dict:
 
     result = {"n_dates": int(panel["date"].nunique()),
               "n_sector_dates": int(len(panel))}
-    for feat, label in [("mom_5d", "mom_5d"),
+    for feat, _label in [("mom_5d", "mom_5d"),
                         ("mom_20d", "mom_20d"),
                         ("mom_60d", "mom_60d"),
                         ("ret_1d", "ret_1d(当日热度)")]:

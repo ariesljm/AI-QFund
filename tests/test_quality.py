@@ -5,13 +5,14 @@
 
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
 
-from app.engine import quality
 import app.database as db_mod
 from app import repo
+from app.engine import quality
 
 
 class TestComputeMetricsFromPairs:
@@ -57,15 +58,15 @@ class TestComputeQualityMetricsDB:
 
     @staticmethod
     def _seed(conn):
-        # 000001 涨 10%，000002 平，沪深300 涨 ~3.33%
-        for i in range(21):
+        # 000001 涨 10%，000002 平，沪深300 涨 ~3.33%（41 条窗口：第 0 条 → 第 40 条）
+        for i in range(41):
             d = f"2026-01-{5 + i:02d}"
             conn.execute("INSERT INTO fund_nav (code, date, cum_nav) VALUES ('000001', ?, ?)",
-                         (d, 1.0 + i * (0.1 / 20)))
+                         (d, 1.0 + i * (0.1 / 40)))
             conn.execute("INSERT INTO fund_nav (code, date, cum_nav) VALUES ('000002', ?, ?)",
                          (d, 1.0))
             conn.execute("INSERT INTO index_daily (code, date, close) VALUES ('sh000300', ?, ?)",
-                         (d, 3000.0 + i * (100.0 / 20)))
+                         (d, 3000.0 + i * (100.0 / 40)))
         conn.execute(
             "INSERT INTO recommend_log (recommend_date, code, name, score, status) "
             "VALUES ('2026-01-05', '000001', 'A', 0.9, 'HOLD')"

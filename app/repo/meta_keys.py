@@ -12,6 +12,7 @@ FUND_LIST_LAST_UPDATE = "fund_list_last_update"  # 基金列表周重建最近�
 
 # 模型生命周期
 MODEL_LAST_TRAINED = "model_last_trained"
+MODEL_LABEL_VERSION = "model_label_version"   # 训练标签版本（防新旧标签错配）
 
 # 排序配置（推荐/回测/GA 共享）
 RANKING_CFG = "ranking_cfg"

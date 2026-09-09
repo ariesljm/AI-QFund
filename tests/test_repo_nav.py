@@ -1,6 +1,7 @@
 """repo.nav 净值时间序列 module 测试：series/latest/at/at_or_before/latest_dates/batch_latest/all_rows。"""
 
 import sqlite3
+
 import pytest
 
 import app.database as db_mod
@@ -26,13 +27,15 @@ def nav_db(monkeypatch, tmp_path):
 
 @pytest.fixture
 def forward_db(monkeypatch, tmp_path):
-    """满 21 条净值窗口（A）与不足窗口（B）/入场净值为 0（X）的固定库。"""
+    """满 41 条净值窗口（A）与不足窗口（B）/入场净值为 0（X）的固定库。"""
     db_path = tmp_path / "fwd.db"
     monkeypatch.setattr(db_mod, "DB_PATH", db_path)
-    rows = [("A", f"2026-07-{d:02d}", 1.00 + i * 0.01) for i, d in enumerate(range(1, 22))]
+    rows = [("A", f"2026-06-{d:02d}", 1.00 + i * 0.01) for i, d in enumerate(range(1, 31))]
+    rows += [("A", f"2026-07-{d:02d}", 1.30 + i * 0.01) for i, d in enumerate(range(1, 12))]
     rows += [("B", f"2026-08-{d:02d}", 1.10 + i * 0.01) for i, d in enumerate(range(1, 6))]
     rows += [("X", "2026-07-01", 0.0)]
-    rows += [("X", f"2026-07-{d:02d}", 1.00 + i * 0.01) for i, d in enumerate(range(2, 22))]
+    rows += [("X", f"2026-07-{d:02d}", 1.00 + i * 0.01) for i, d in enumerate(range(2, 31))]
+    rows += [("X", f"2026-08-{d:02d}", 1.29 + i * 0.01) for i, d in enumerate(range(1, 12))]
     conn = sqlite3.connect(str(db_path))
     conn.execute("CREATE TABLE fund_nav (code TEXT, date TEXT, cum_nav REAL)")
     conn.executemany("INSERT INTO fund_nav VALUES (?,?,?)", rows)
@@ -62,9 +65,9 @@ class TestForwardReturn:
     """前向收益判定（架构深化 C 收敛）：结算/反事实/质量度量共享的单一来源。"""
 
     def test_full_window_returns_abs_ret(self, forward_db):
-        ret = nav.forward_return("A", "2026-07-01")
+        ret = nav.forward_return("A", "2026-06-01")
         assert ret is not None
-        assert abs(ret - 0.20) < 1e-9  # 第 0 条 1.00 → 第 20 条 1.20
+        assert abs(ret - 0.40) < 1e-9  # 第 0 条 1.00 → 第 40 条 1.40
 
     def test_short_window_none(self, forward_db):
         assert nav.forward_return("B", "2026-08-01") is None
@@ -110,3 +113,31 @@ class TestBatch:
         assert len(rows) == 5
         assert rows[0] == ("A", "2026-07-01", 1.00)
         assert rows[-1] == ("B", "2026-07-02", 2.10)
+
+
+class TestRet1mMany:
+    """批量近 1 月涨幅（N+1 收敛）：口径与单查一致，空/不足窗口降级 None。"""
+
+    def test_batch_matches_single(self, monkeypatch, tmp_path):
+        import sqlite3
+
+        import app.repo.base as base_mod
+
+        db = tmp_path / "nav.db"
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE fund_nav (code TEXT, date TEXT, cum_nav REAL)")
+        # 基金A 30 条升序 1.0..1.29；基金B 20 条（不足 23 窗口）
+        conn.executemany("INSERT INTO fund_nav VALUES (?, ?, ?)",
+                         [("A", f"2026-0{1+m:02d}-01", 1.0 + m * 0.01) for m in range(30)]
+                         + [("B", f"2026-0{1+m:02d}-01", 1.0 + m * 0.01) for m in range(20)])
+        conn.commit()
+        monkeypatch.setattr(base_mod, "db_conn", lambda: sqlite3.connect(db))
+        monkeypatch.setattr(nav, "db_conn", lambda: sqlite3.connect(db))
+
+        res = nav.ret_1m_many(["A", "B"])
+        # A：最新 1.29 / 第 23 新 1.07 → 20.6%；B 不足 23 条 → None
+        assert res["A"] == round((1.29 / 1.07 - 1) * 100, 1)
+        assert res["B"] is None
+
+    def test_empty_codes(self, monkeypatch, tmp_path):
+        assert nav.ret_1m_many([]) == {}

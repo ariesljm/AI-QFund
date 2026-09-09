@@ -69,3 +69,38 @@ class TestConfigCache:
         # 模拟用户运行期编辑文件设置密码（进程不重启）
         cfg.write_text('[web]\nsettings_password = "secret"\n', encoding="utf-8")
         assert config_mod.load_settings()["web"]["settings_password"] == "secret"
+
+
+class TestMetaSeamGuard:
+    """ADR-0005 守卫：config 运行时持久化收敛到 repo seam，无裸 meta SQL。"""
+
+    def test_settings_roundtrip_via_seam(self, monkeypatch, tmp_path):
+        """save_settings_all → get_settings_all 写读回环（settings: 前缀）。"""
+        import sqlite3
+
+        import app.database as db_mod
+
+        db = tmp_path / "meta.db"
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+        conn.commit()
+        monkeypatch.setattr(db_mod, "db_conn", lambda: sqlite3.connect(db))
+        # repo/base.db_conn 也来自 app.database 模块级名字 → 一并 patch
+        import app.repo.base as base_mod
+        monkeypatch.setattr(base_mod, "db_conn", lambda: sqlite3.connect(db))
+
+        from app.repo.base import get_settings_all, save_settings_all
+        save_settings_all({"settings:llm:model": '"gpt-x"', "settings:web:pw": '"s"'})
+        assert get_settings_all() == {"settings:llm:model": '"gpt-x"', "settings:web:pw": '"s"'}
+        # 整段替换语义：再次保存只留新键
+        save_settings_all({"settings:llm:model": '"gpt-y"'})
+        assert get_settings_all() == {"settings:llm:model": '"gpt-y"'}
+
+    def test_config_no_bare_meta_sql(self):
+        """守卫：config.py 不再持有裸 meta 读写（ADR-0005 单一 seam 不变式）。"""
+        src = Path(__file__).resolve().parent.parent / "app" / "config.py"
+        text = src.read_text(encoding="utf-8")
+        assert "db_conn" not in text
+        assert "FROM meta" not in text
+        assert "INTO meta" not in text
+        assert "DELETE FROM meta" not in text

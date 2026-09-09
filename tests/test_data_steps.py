@@ -8,12 +8,13 @@
 import sqlite3
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from datetime import datetime, timedelta
 
-import app.database as db_mod
 import app.data.foundation as fd
+import app.database as db_mod
 
 
 def _seed_meta(monkeypatch, tmp_path, holdings_last_run: str | None):

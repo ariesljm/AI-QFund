@@ -33,6 +33,16 @@ HOT_5D_PCT = 25.0
 # 降权乘数（追高 0.8、牛市热度 0.7，可叠加）
 CHASE_DOWNWEIGHT = 0.8
 HOT_DOWNWEIGHT = 0.7
+# Ticket 04：中长高位温和降权（40/60 日窗口验证反转显著减弱，不再整池剔除）
+MID_HIGH_DOWNWEIGHT = 0.8
+# Ticket 04：资金流出降权（近 5 日主力净流入累计为负 → 趋势走弱）
+FLOW_DOWNWEIGHT = 0.7
+# Ticket 04：极端高波动剔除分位（vol_20d 截面后 10%；风控过滤，非选基主因子）
+EXTREME_VOL_PCT = 90.0
+# T06 熊市分支（2026-09-05 熊市研究：24089 熊市样本中 vol 低分位胜率 60.1% vs 高分位 29.8%）
+# 熊市低波动防守有效——高波动赛道额外降权（非剔除；与 EXTREME_VOL_PCT 并存）
+BEAR_HIGH_VOL_PCT = 70.0
+BEAR_HIGH_VOL_DOWNWEIGHT = 0.8
 
 
 @dataclass
@@ -45,6 +55,10 @@ class SectorSignal:
     n: int
     score: float
     flags: list[str] = field(default_factory=list)
+    # Ticket 04：趋势质量标签（聚合层单一来源：资金流出/短期走弱/高位降权/趋势健康）
+    trend_label: str = ""
+    # Ticket 07：近 5 日主力净流入累计（万元；素材/定池共用，None=板块快照缺失）
+    flow_5d: float | None = None
 
 
 @dataclass
@@ -95,6 +109,10 @@ def build_sector_pool(date_str: str, available: list[str] | None = None) -> Sect
     regime = repo.get_market_regime()
     pool = SectorPool(date=eff_date, regime=regime)
 
+    # Ticket 04 信号数据源：赛道多周期趋势特征（资金流趋势/波动率/20日高位标签，
+    # 聚合层单一来源；定池/LLM 素材消费同一份数据）
+    trend = repo.get_sector_trend_features(eff_date)
+
     signals: list[SectorSignal] = []
     for sector in available:
         stats = repo.get_sector_momentum_medians(sector, eff_date)
@@ -102,6 +120,8 @@ def build_sector_pool(date_str: str, available: list[str] | None = None) -> Sect
             pool.excluded.append({"sector": sector, "reason": "成员不足或无特征数据"})
             continue
         sig = _signal_of(sector, stats)
+        sig.trend_label = (trend.get(sector) or {}).get("label", "")
+        sig.flow_5d = (trend.get(sector) or {}).get("flow_5d")
         if sig.mom_5d <= MOM_5D_MIN:
             pool.excluded.append({"sector": sector, "reason": f"5日动量不足({sig.mom_5d:.1f}% ≤ {MOM_5D_MIN:.0f}%)"})
             continue
@@ -111,15 +131,39 @@ def build_sector_pool(date_str: str, available: list[str] | None = None) -> Sect
         pool.reasoning = f"量化定池: 无满足门槛的赛道（可用 {len(available)} 个）"
         return pool
 
-    # 过热剔除：60 日动量高于全赛道 P75（长期延长 → 反转风险）
+    # Ticket 04：极端高波动剔除（vol_20d 截面 P90+）——低波动主因子已撤销
+    # （多窗口验证无区分度），仅保留极端波动作为风控过滤。
+    vols = [float(t["vol_20d"]) for t in trend.values() if t.get("vol_20d") is not None]
+    vol_p90 = _percentile(vols, EXTREME_VOL_PCT) if len(vols) >= 4 else None
+    # T06 熊市分支：高波动降权阈值（vol_20d 截面 P70）
+    vol_bear_th = _percentile(vols, BEAR_HIGH_VOL_PCT) if len(vols) >= 4 else None
+    # 中长高位（60 日 P75）：由整池剔除改为温和降权（2026-09 多窗口验证：
+    # 40/60 日持有视野下反转显著减弱，硬剔除会错杀刚启动的强势赛道）
     mom60 = [s.mom_60d for s in signals]
     overheat_th = _percentile(mom60, OVERHEAT_60D_PCT)
     keep: list[SectorSignal] = []
     for s in signals:
-        if s.mom_60d > overheat_th:
-            pool.excluded.append({"sector": s.sector, "reason": f"60日动量过热({s.mom_60d:.1f}% > P75 {overheat_th:.1f}%)"})
-        else:
-            keep.append(s)
+        tf = trend.get(s.sector) or {}
+        vol = tf.get("vol_20d")
+        if vol_p90 is not None and vol is not None and vol > vol_p90:
+            pool.excluded.append({"sector": s.sector, "reason": f"极端高波动(vol {vol:.2f} > P90 {vol_p90:.2f})"})
+            continue
+        if overheat_th is not None and s.mom_60d > overheat_th:
+            s.score *= MID_HIGH_DOWNWEIGHT
+            s.flags.append("中长高位降权")
+        if tf.get("label") == "高位降权":
+            # 20 日动量截面高位（聚合层 P75 标签）→ 温和降权，可叠加
+            s.score *= MID_HIGH_DOWNWEIGHT
+            s.flags.append("20日高位降权")
+        if tf.get("label") == "资金流出":
+            # 近 5 日主力净流入累计为负 → 趋势走弱降权
+            s.score *= FLOW_DOWNWEIGHT
+            s.flags.append("资金流出")
+        if regime == "BEAR" and vol_bear_th is not None and vol is not None and vol > vol_bear_th:
+            # T06 熊市低波动防守：熊市高波动赛道额外降权（vol P70+）
+            s.score *= BEAR_HIGH_VOL_DOWNWEIGHT
+            s.flags.append("熊市高波动降权")
+        keep.append(s)
 
     # 池内排序与降权：追高组合（5d/20d 双强）与牛市热度（BULL 下 5d 前 P25）
     if keep:

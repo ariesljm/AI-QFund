@@ -5,13 +5,14 @@
 
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from backtest.backtest_walkforward import gate_verdict, _pctile_ret, _summarize
+from backtest.backtest_walkforward import _pctile_ret, _summarize, gate_verdict
 
 
 class TestGateVerdict:
@@ -215,7 +216,7 @@ class TestPrepareTrainingDataParam:
         close = pd.Series(100.0 + np.arange(120), index=dates)
         vol = pd.Series(1e6, index=dates)
         rows = [(d.strftime("%Y-%m-%d"), float(c), float(v))
-                for d, c, v in zip(dates, close, vol)]
+                for d, c, v in zip(dates, close, vol, strict=True)]
         return rows
 
     def test_window_end_truncates_samples(self, monkeypatch):

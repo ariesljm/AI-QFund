@@ -10,10 +10,10 @@
      历史数据缺失时回退快照内 top_holdings（前 5）。
 """
 
-from app.engine.monitor import (DefenseContext, LogicVerificationRule,
-                                _format_anchor_holdings, _build_defense_context)
+import pytest
 
 import app.engine.monitor as mon
+from app.engine.monitor import DefenseContext, LogicVerificationRule, _format_anchor_holdings
 
 
 def _ctx(**kw) -> DefenseContext:
@@ -147,3 +147,30 @@ class TestSymmetricAnchorSlice:
         """无快照 → 空三元组。"""
         assert _format_anchor_holdings(None, "A") == ("", "", "")
         assert _format_anchor_holdings({}, None) == ("", "", "")
+
+
+class TestAttachR4Result:
+    """候选 3 守卫：R4 后装配结果经显式接口单次写入，快照字段不被裸赋值打破。"""
+
+    def test_attach_once(self):
+        from app.engine.monitor import DefenseContext
+        ctx = DefenseContext("F1")
+        ctx.attach_r4_result({"verdict": "维持"})
+        assert ctx.r4_precomputed is True
+        assert ctx.r4_logic == {"verdict": "维持"}
+        assert ctx.r4_skipped is False
+
+    def test_attach_none_marks_skipped(self):
+        from app.engine.monitor import DefenseContext
+        ctx = DefenseContext("F1")
+        ctx.attach_r4_result(None)  # LLM 不可用/解析失败
+        assert ctx.r4_precomputed is True
+        assert ctx.r4_logic is None
+        assert ctx.r4_skipped is True
+
+    def test_double_attach_raises(self):
+        from app.engine.monitor import DefenseContext
+        ctx = DefenseContext("F1")
+        ctx.attach_r4_result({"verdict": "维持"})
+        with pytest.raises(RuntimeError):
+            ctx.attach_r4_result({"verdict": "离场"})

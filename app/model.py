@@ -23,6 +23,11 @@ FEATURE_COLS = repo.FEATURE_COLS
 MARKET_COLS = repo.MARKET_COLS
 _FORWARD_WINDOW = repo.FORWARD_WINDOW
 
+# 训练标签版本：重构后统一为 40 日绝对收益（reco-hardening T01）。
+# 模型 meta 记录训练时的标签版本；加载路径校验不一致 → 强制重训，
+# 防止新逻辑（入场门槛/排序/监控退出）跑在旧标签模型输出上。
+LABEL_VERSION = "abs_ret_40d"
+
 # 重训间隔（天）：每周一次。
 # 验证依据（2026-08 实测）：标签是未来 20 个交易日收益，今天训练时最新可用样本
 # 已在 20 个交易日前；面板采样步长 20 天，相邻两天训练集差异仅 ~0.3%。每天重训
@@ -113,8 +118,8 @@ def prepare_training_data(window_end: str | None = None,
     if not fund_codes:
         logger.warning("训练集为空")
         empty = pd.DataFrame(columns=FEATURE_COLS + MARKET_COLS)
-        return empty, pd.Series(dtype=float, name="abs_ret_20d"), np.array([], dtype=float), \
-            empty, pd.Series(dtype=float, name="abs_ret_20d"), np.array([], dtype=float)
+        return empty, pd.Series(dtype=float, name="abs_ret_40d"), np.array([], dtype=float), \
+            empty, pd.Series(dtype=float, name="abs_ret_40d"), np.array([], dtype=float)
 
     # 面板采样：每只基金沿时间轴每 _STEP 天取一个样本
     _STEP = 20
@@ -151,8 +156,8 @@ def prepare_training_data(window_end: str | None = None,
     if not samples:
         logger.warning("训练集为空")
         empty = pd.DataFrame(columns=FEATURE_COLS + MARKET_COLS)
-        return empty, pd.Series(dtype=float, name="abs_ret_20d"), np.array([], dtype=float), \
-            empty, pd.Series(dtype=float, name="abs_ret_20d"), np.array([], dtype=float)
+        return empty, pd.Series(dtype=float, name="abs_ret_40d"), np.array([], dtype=float), \
+            empty, pd.Series(dtype=float, name="abs_ret_40d"), np.array([], dtype=float)
 
     # walk-forward：按时间排序，最后 20% 样本作验证集；权重按日期指数衰减（半衰期 90 天）
     samples.sort(key=lambda x: x[0])
@@ -162,10 +167,10 @@ def prepare_training_data(window_end: str | None = None,
     t_max = samples[-1][0]
 
     X_train = pd.DataFrame([s[1] for s in train_s], columns=FEATURE_COLS + MARKET_COLS)
-    y_train = pd.Series([s[2] for s in train_s], name="abs_ret_20d")
+    y_train = pd.Series([s[2] for s in train_s], name="abs_ret_40d")
     w_train = np.array([np.exp(-(t_max - s[0]).days / 90.0) for s in train_s], dtype=float)
     X_val = pd.DataFrame([s[1] for s in val_s], columns=FEATURE_COLS + MARKET_COLS)
-    y_val = pd.Series([s[2] for s in val_s], name="abs_ret_20d")
+    y_val = pd.Series([s[2] for s in val_s], name="abs_ret_40d")
     w_val = np.array([np.exp(-(t_max - s[0]).days / 90.0) for s in val_s], dtype=float)
 
     logger.info("训练集构建完成: %d只基金, 训练 %d 条, 验证 %d 条, 特征 %d 维, 时间衰减权重(半衰期90天)",
@@ -198,8 +203,10 @@ def train(X_train: pd.DataFrame, y_train: pd.Series,
     if save_path is not None:
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
         booster.save_model(str(save_path))
-        logger.info("LightGBM 模型已保存: %s (固定 50 轮, %d 特征, 目标=20日绝对收益)",
-                    save_path, len(FEATURE_COLS + MARKET_COLS))
+        # T01：训练成功即记录标签版本（回测临时模型 save_path=None 不写 meta）
+        repo.set_model_label_version(LABEL_VERSION)
+        logger.info("LightGBM 模型已保存: %s (固定 50 轮, %d 特征, 目标=40日绝对收益, 标签版本=%s)",
+                    save_path, len(FEATURE_COLS + MARKET_COLS), LABEL_VERSION)
     return booster
 
 
@@ -243,7 +250,7 @@ def latest_market_state() -> dict:
 
 
 def score(features: dict, market_state: dict | None = None) -> float | None:
-    """用模型对特征 dict 打分，返回预测 20 日绝对收益；无模型/特征不全/异常返回 None。
+    """用模型对特征 dict 打分，返回预测 40 日绝对收益；无模型/特征不全/异常返回 None。
 
     market_state 由调用方显式传入（与特征日期对齐的市场状态列），score 保持纯函数、
     无隐式全局依赖；缺省时回退 latest_market_state() 以保持向后兼容。
@@ -265,9 +272,18 @@ def score(features: dict, market_state: dict | None = None) -> float | None:
         return None
 
 
+def label_version_mismatch() -> bool:
+    """模型标签版本与当前代码不一致（缺失/旧标签）→ 需重训。
+
+    老模型无 meta 元信息（None）视为不一致：宁可多训一次，不可静默用错标签。
+    """
+    return repo.get_model_label_version() != LABEL_VERSION
+
+
 def get_or_train(retrain: bool = False) -> lgb.Booster | None:
-    """准备模型：到期重训或加载现有；无可用时返回 None（跳过本次推荐）。"""
-    if retrain or not MODEL_PATH.exists() or retrain_due(repo.get_model_last_trained()):
+    """准备模型：到期/标签错配重训或加载现有；无可用时返回 None（跳过本次推荐）。"""
+    if retrain or not MODEL_PATH.exists() or retrain_due(repo.get_model_last_trained()) \
+            or label_version_mismatch():
         logger.info("=== 准备训练数据并训练 LightGBM ===")
         try:
             X_train, y_train, w_train, X_val, y_val, w_val = prepare_training_data()

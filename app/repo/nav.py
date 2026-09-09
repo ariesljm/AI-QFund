@@ -78,6 +78,30 @@ def all_rows() -> list[tuple]:
     return list(rows)
 
 
+def ret_1m_many(codes: list[str], window: int = 23) -> dict[str, float | None]:
+    """候选批量近 1 月涨幅（22 交易日展示口径）：{code: pct|None}，N+1 收敛。
+
+    每 code 取最近 window 条净值，最新/第 window 新比 -1；不足 window 条或无最新值返回 None
+    （与单基金素材装配语义一致）。
+    """
+    if not codes:
+        return {}
+    ph = ",".join("?" for _ in codes)
+    out = {c: None for c in codes}
+    with db_conn() as conn:
+        rows = conn.execute(
+            f"SELECT code, cum_nav, ROW_NUMBER() OVER "
+            f"(PARTITION BY code ORDER BY date DESC) rk "
+            f"FROM fund_nav WHERE code IN ({ph})", codes).fetchall()
+    seq: dict[str, list[float]] = {}
+    for code, nav, _rk in rows:
+        seq.setdefault(code, []).append(nav)  # 时间降序：最新在前（保留 None 位置）
+    for code, vals in seq.items():
+        if len(vals) >= window and vals[0] and vals[window - 1]:
+            out[code] = round((vals[0] / vals[window - 1] - 1) * 100, 1)
+    return out
+
+
 def forward_return(code: str, since: str) -> float | None:
     """入场日起满 FORWARD_DAYS 交易日（含入场日 21 条净值）的绝对收益。
 

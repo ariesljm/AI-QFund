@@ -1,14 +1,15 @@
 """停更打标（mark_stale_funds）与特征新鲜度护栏（_feature_freshness）测试。"""
 
-import sys
 import json
+import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import app.database as db_mod
-from app.database import get_db, meta_set
-from app.data.foundation import mark_stale_funds, mark_short_history_funds
 import app.engine.recommend as rec
+from app.data.foundation import mark_short_history_funds, mark_stale_funds
+from app.database import get_db, meta_set
 from app.engine.recommend import _feature_freshness
 
 

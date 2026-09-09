@@ -7,16 +7,17 @@
 """
 
 import sys
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.engine import evolve
 from app import domain
+from app.engine import evolve
 
 
-def _make_navs(n_start: float = 1.0, n: int = 21, end: float = 1.02) -> list[tuple]:
-    """21 条净值序列：(date, cum_nav) 升序，第 0 条 n_start、第 20 条 end。"""
+def _make_navs(n_start: float = 1.0, n: int = 41, end: float = 1.02) -> list[tuple]:
+    """41 条净值序列：(date, cum_nav) 升序，第 0 条 n_start、第 40 条 end。"""
     rows = []
     for i in range(n):
         v = end if i == n - 1 else n_start
@@ -73,26 +74,26 @@ class TestSettleOutcomes:
         assert calls == []
 
     def test_hold_full_window_settles_by_nav(self, monkeypatch):
-        """非 EXIT 满 21 条净值 → 按第 20 条/入场净值定标（胜），note 为 20 日收益。"""
+        """非 EXIT 满 41 条净值 → 按第 40 条/入场净值定标（胜），note 为 40 日收益。"""
         calls, conf = self._setup(monkeypatch,
                                   pending=[_P(4, 13)],
                                   by_id={13: ("015412", domain.SIGNAL_HOLD, None, "2026-06-13", 1.0)},
                                   navs_map={"015412": _make_navs(n_start=1.0, end=1.03)})
         assert evolve._settle_outcomes() == 1
         ss_id, outcome, date, note = calls[0]
-        assert outcome == "胜" and "20日收益" in note and "3.00%" in note
+        assert outcome == "胜" and "40日收益" in note and "3.00%" in note
 
     def test_hold_full_window_loss(self, monkeypatch):
-        """非 EXIT 满窗口但 20 日收益 ≤ 1% → 负。"""
+        """非 EXIT 满窗口但 40 日收益 ≤ 1% → 负。"""
         calls, conf = self._setup(monkeypatch,
                                   pending=[_P(5, 14)],
                                   by_id={14: ("015412", domain.SIGNAL_WARNING, None, "2026-06-14", 1.0)},
                                   navs_map={"015412": _make_navs(n_start=1.0, end=0.98)})
         assert evolve._settle_outcomes() == 1
-        assert calls[0][1] == "负" and "20日收益" in calls[0][3]
+        assert calls[0][1] == "负" and "40日收益" in calls[0][3]
 
     def test_hold_unfinished_window_keeps_pending(self, monkeypatch):
-        """非 EXIT 净值不足 21 条（窗口未满）→ 保持待定，下月补齐。"""
+        """非 EXIT 净值不足 41 条（窗口未满）→ 保持待定，下月补齐。"""
         calls, conf = self._setup(monkeypatch,
                                   pending=[_P(6, 15)],
                                   by_id={15: ("004936", domain.SIGNAL_HOLD, None, "2026-07-28", 1.0)},

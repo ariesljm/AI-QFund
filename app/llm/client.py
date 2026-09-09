@@ -36,35 +36,22 @@ _LLM_TIMEOUT = 300.0           # 单次请求总超时（秒）：大 max_tokens
 
 def _audit_write(caller: str, prompt: str, raw_output: str, parsed_result: Any, ok: bool,
                  duration_ms: float, tokens: int) -> None:
-    """写入 LLM 决策审计（P0-3）：prompt 快照 + 原始输出 + 解析结果，可复现排查。
+    """写入 LLM 决策审计（P0-3，ADR-0001）：持久化收敛到 repo/decision seam。
 
-    审计写入失败不阻断主流程（技术记录，容错丢弃）；滚动保留最近 _AUDIT_MAX_ROWS 条。
+    审计写入失败不阻断主流程（技术记录，容错丢弃）；滚动保留在 seam 内。
     """
     try:
-        from app.database import db_conn
-        preview = prompt.strip().replace("\n", " ")[:200]
+        from app.repo import insert_llm_audit
         parsed_json = None
         if parsed_result is not None:
             try:
                 parsed_json = json.dumps(parsed_result, ensure_ascii=False)[:2000]
             except (TypeError, ValueError):
                 parsed_json = str(parsed_result)[:2000]
-        with db_conn() as conn:
-            conn.execute(
-                "INSERT INTO llm_audit (ts, caller, prompt_hash, prompt_preview, raw_output, "
-                "parsed_result, duration_ms, tokens, ok) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (time.strftime("%Y-%m-%d %H:%M:%S"), caller or "",
-                 f"{len(prompt)}:{prompt[:64]}", preview,
-                 (raw_output or "")[:4000], parsed_json, int(duration_ms), int(tokens or 0),
-                 1 if ok else 0),
-            )
-            conn.execute("DELETE FROM llm_audit WHERE id NOT IN "
-                         "(SELECT id FROM llm_audit ORDER BY id DESC LIMIT ?)",
-                         (_AUDIT_MAX_ROWS,))
+        insert_llm_audit(caller, prompt, raw_output, parsed_json,
+                         duration_ms, tokens, ok, max_rows=_AUDIT_MAX_ROWS)
     except Exception as e:
         logger.debug("LLM 审计写入失败: %s", str(e)[:100])
-
-
 def call_llm(
     prompt: str,
     system_prompt: str = "",

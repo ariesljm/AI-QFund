@@ -11,7 +11,7 @@ from app import domain
 from app.data.macro import fetch_macro_inputs
 from app.engine.sector_pool import SectorPool, build_sector_pool
 from app.llm.client import call_llm_json
-from app.llm.context import market_technical_text, pool_text
+from app.llm.context import market_technical_text, news_theme_summary, pool_text
 from app.llm.prompts import sector_selection_prompt, sector_selection_system_prompt
 from app.utils.log import get_logger
 
@@ -93,8 +93,9 @@ def _build_sector_prompt(date_str: str, news: dict, flow: dict,
     tech = repo.get_market_technical()
     prompt = sector_selection_prompt(
         date_str=date_str,
-        pool_text=pool_text([(c.sector, c.mom_5d, c.mom_20d, c.mom_60d, c.n, c.flags)
-                            for c in pool.candidates]),
+        pool_text=pool_text([(c.sector, c.mom_5d, c.mom_20d, c.mom_60d, c.n, c.flags,
+                              c.trend_label, c.flow_5d)
+                             for c in pool.candidates]),
         pool_reasoning=pool.reasoning,
         top_gainers=news.get("top_gainers", ""),
         top_losers=news.get("top_losers", ""),
@@ -104,6 +105,8 @@ def _build_sector_prompt(date_str: str, news: dict, flow: dict,
         lessons=lessons,
         market_tech=market_technical_text(tech) if tech else None,
         news_date=news.get("news_date") or date_str,
+        # Ticket 07：近 7 日要闻回顾（趋势视角素材；当日新闻降级为确认/否决）
+        news_history=news_theme_summary(days=7) or None,
     )
     return prompt, [i for i, _ in insight_rows]
 

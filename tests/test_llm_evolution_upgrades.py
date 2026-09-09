@@ -9,16 +9,14 @@
 """
 
 import sys
-import json
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
 
 import app.database as db_mod
 from app.database import db_conn
-import app.repo as repo
-
 
 # ── P0-1 R4 失败降级 ─────────────────────────────────────────
 
@@ -27,7 +25,7 @@ class TestR4Degradation:
 
     def test_logic_rule_skips_on_none(self):
         """r4_logic=None（LLM 失败，已预计算）→ 防线返回 None 且标记 r4_skipped。"""
-        from app.engine.monitor import LogicVerificationRule, DefenseContext
+        from app.engine.monitor import DefenseContext, LogicVerificationRule
         ctx = DefenseContext(code="F001", sector="半导体",
                              entry_snapshot={"rbsa_industry_1": "半导体"})
         ctx.r4_logic = None
@@ -38,7 +36,7 @@ class TestR4Degradation:
 
     def test_logic_rule_consumes_precomputed(self):
         """并发预计算结果被链阶段直接消费，不再重复调用 LLM。"""
-        from app.engine.monitor import LogicVerificationRule, DefenseContext
+        from app.engine.monitor import DefenseContext, LogicVerificationRule
         ctx = DefenseContext(code="F001", sector="半导体")
         ctx.r4_logic = {"logic_verdict": "断裂", "reason": "重仓退出",
                         "signal_hint": "HOLD", "sector_risk": False,
@@ -51,9 +49,9 @@ class TestR4Degradation:
 
     def test_check_logic_enhanced_returns_none_on_llm_error(self, monkeypatch):
         """LLM 技术失败（LLMError）→ _check_logic_enhanced 返回 None 而非 raise。"""
-        from app.engine.monitor import _check_logic_enhanced, DefenseContext
-        from app.llm.client import LLMError
         import app.engine.monitor as mon
+        from app.engine.monitor import DefenseContext, _check_logic_enhanced
+        from app.llm.client import LLMError
 
         def _boom(prompt, temperature=0.1, max_tokens=16384, fallback=None,
                   validator=None, caller=""):
@@ -65,8 +63,8 @@ class TestR4Degradation:
 
     def test_check_logic_enhanced_returns_none_on_parse_fail(self, monkeypatch):
         """解析失败（validator 拒绝/返回 None）→ 返回 None，不 raise。"""
-        from app.engine.monitor import _check_logic_enhanced, DefenseContext
         import app.engine.monitor as mon
+        from app.engine.monitor import DefenseContext, _check_logic_enhanced
 
         monkeypatch.setattr(mon, "call_llm_json",
                             lambda prompt, temperature=0.1, max_tokens=16384,
@@ -81,7 +79,7 @@ class TestInsightTrialPeriod:
     """元分析新洞察以 0.5 置信度起步（试用期），不再以满置信度 1.0 固化。"""
 
     def test_save_insight_uses_trial_confidence(self, monkeypatch):
-        from app.engine import evolve
+        from app.engine import evolve, insights
         inserted = {}
         monkeypatch.setattr(evolve.repo, "get_all_insights", lambda: [])
         monkeypatch.setattr(evolve.repo, "insert_insight",
@@ -90,7 +88,7 @@ class TestInsightTrialPeriod:
                                 {"conf": confidence, "condition": condition}))
         ok = evolve._save_insight({"insight": "新教训", "type": "sector"})
         assert ok
-        assert inserted["conf"] == evolve._INSIGHT_INITIAL_CONF == 0.5
+        assert inserted["conf"] == insights._INSIGHT_INITIAL_CONF == 0.5
 
     def test_save_insight_passes_condition(self, monkeypatch):
         """P3-11：结构化 condition 透传入库。"""
@@ -135,6 +133,7 @@ class TestLlmAudit:
 
     def _install_fake(self, monkeypatch):
         import openai
+
         import app.llm.client as client_mod
 
         class _FakeMsg:
@@ -274,3 +273,23 @@ class TestVetoCounterfactual:
         monkeypatch.setattr(evolve.repo, "get_empty_reco_dates", lambda d: [])
         monkeypatch.setattr(evolve.repo, "get_reco_dates", lambda d: [])
         assert evolve._veto_stats() == []
+
+
+class TestInsightSeamGuard:
+    """候选 2 守卫：insight 生命周期只在 insights 模块实现，evolve 不持有实现（防回潮）。"""
+
+    def test_insight_lifecycle_lives_in_insights_module(self):
+        from app.engine import insights
+        for name in ("keywords", "insight_conflicts", "save_insight",
+                     "decay_insights", "fix_key", "save_self_fix"):
+            assert callable(getattr(insights, name)), f"insights 缺 {name}"
+
+    def test_evolve_does_not_redefine_insight_lifecycle(self):
+        import inspect
+
+        from app.engine import evolve
+        src = inspect.getsource(evolve)
+        for name in ("def save_insight", "def decay_insights", "def insight_conflicts"):
+            assert name not in src, f"evolve 仍持有 {name}（应经 insights 模块）"
+        # evolve 通过别名 import 使用（_save_insight 等），兼容旧测试 monkeypatch
+        assert "_save_insight" in src and "_decay_insights" in src

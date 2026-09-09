@@ -1,6 +1,7 @@
 """app.data.macro 宏观数据获取 module 测试：板块/资金流/新闻解析与入库（mock HTTP 传输）。"""
 
 import json
+
 import pytest
 
 from app.data import macro

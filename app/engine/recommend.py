@@ -9,7 +9,6 @@
 
 import json
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 import lightgbm as lgb
@@ -19,9 +18,9 @@ import pandas as pd
 import app.repo as repo
 from app import domain
 from app.data.nav import fetch_fund_nav_incremental
+from app.engine.macro_agent import MacroContext, build_macro_context
 from app.features.calculator import apply_momentum_guard, market_state_features, score_frame
-from app.llm.client import call_llm_json, parse_llm_json
-from app.llm.macro_agent import MacroContext, build_macro_context
+from app.llm.client import call_llm_json
 from app.llm.prompts import final_pick_prompt, final_pick_system_prompt
 from app.model import get_or_train, model_version
 from app.repo import meta_keys as META
@@ -218,10 +217,12 @@ def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> list[dict]:
         return rank_funds(model)
 
     df = _score_sector_candidates(df, model)
-    # 全天候出手：不做预测分硬过滤（R1 目标=绝对收益，按 r̂ 横截面取 TopN；
-    # 熊市不因"预测收益为负"清空候选池，风险由监控防线兜底）
+    # Ticket 05：恢复入场质量门槛（移除 R1"全天候出手"）——模型预测 >0 才可进入
+    # 终选候选，与监控 ModelSignalRule 出场阈值共用 MIN_PREDICTED_ALPHA 单一来源。
+    # 实盘根因：进场不设门槛、出场设门槛的不对称让负预测基金照推（28 笔中 6 笔趋近 0）。
+    df = df[df["score"] > domain.MIN_PREDICTED_ALPHA]
     if df.empty:
-        logger.info("赛道内无候选基金，降级为全市场 Top 10")
+        logger.info("赛道内无正预测候选，降级为全市场 Top 10（降级路径同样受门槛约束）")
         return rank_funds(model)
 
     top_per_sector = _select_top_per_sector(df, sectors)
@@ -245,7 +246,12 @@ def rank_funds(model: lgb.Booster) -> list[dict]:
     df = score_frame(df, model, cfg, idx_mom,
                      default_regime=repo.get_market_regime(),
                      rbsa_weight_col="rbsa_weight_1")
-    # 全天候出手：与赛道内排序一致，不做预测分硬过滤（风险由监控防线兜底）
+    # Ticket 05：降级路径同样恢复入场门槛——全市场无正预测候选时返回空，
+    # 由上游 record_empty_recommendation 记空推荐日（熊市不硬推负期望基金）。
+    df = df[df["score"] > domain.MIN_PREDICTED_ALPHA]
+    if df.empty:
+        logger.info("全市场无正预测候选，返回空（空推荐日）")
+        return []
     top = df.sort_values("combo", ascending=False).head(10)
     candidates = []
     for _, r in top.iterrows():
@@ -302,11 +308,19 @@ def _sector_candidates(finalists: list[dict], sector: str,
 def _llm_final_pick(candidates: list[dict], ctx: MacroContext, insights: list) -> dict:
     """LLM 基于重仓股+CLS新闻匹配+持仓时效性做最终选择，返回选定基金和否决记录。"""
     latest_feature_date = repo.get_latest_feature_date()
+    codes = [c["code"] for c in candidates]
+    # 素材装配批量收敛（候选 8）：一次拿全候选的持仓/申购状态/近 1 月涨幅，
+    # 替代逐候选 5×N 查询；sector 中位数按赛道缓存（同赛道共享一个值）
+    holdings_mat = repo.get_holdings_summaries(codes, limit=5)
+    purchase_map = repo.get_purchase_statuses(codes)
+    ret_map = repo.nav.ret_1m_many(codes)
+    sector_median_cache: dict[str, float | None] = {}
 
     for c in candidates:
-        c["holdings"] = repo.get_holdings(c["code"], 5)
-
-        report_date = repo.get_latest_holdings_date(c["code"])
+        code = c["code"]
+        mat = holdings_mat.get(code, {"holdings": [], "report_date": None})
+        c["holdings"] = mat.get("holdings", [])
+        report_date = mat.get("report_date")
         c["report_date"] = report_date
         if report_date:
             try:
@@ -320,20 +334,19 @@ def _llm_final_pick(candidates: list[dict], ctx: MacroContext, insights: list) -
 
         sector = c.get("sector") or c.get("rbsa_industry_1", "")
         fund_mom = c.get("momentum_20d", 0) or 0
+        # T10 限购检测：申购状态标注（未知/正常不阻塞；限购/暂停在素材中提示）
+        c["purchase_status"] = purchase_map.get(code, "unknown")
         # 近1月涨幅（22 交易日，与前端 period_returns 展示口径一致，供 LLM reason 文案引用）
-        try:
-            _nav_rows = repo.nav.series(c["code"], limit=30)
-            if len(_nav_rows) >= 23 and _nav_rows[-1][1]:
-                c["ret_1m"] = round((_nav_rows[-1][1] / _nav_rows[-23][1] - 1) * 100, 1)
-            else:
-                c["ret_1m"] = None
-        except Exception:
-            c["ret_1m"] = None
+        c["ret_1m"] = ret_map.get(code)
         if sector and latest_feature_date:
-            median = repo.get_sector_momentum_median(sector, latest_feature_date)
+            if sector not in sector_median_cache:
+                median = repo.get_sector_momentum_median(sector, latest_feature_date)
+                sector_median_cache[sector] = (
+                    round(float(median), 1) if median is not None else None)
+            median = sector_median_cache[sector]
             if median is not None:
-                c["sector_median_mom"] = round(float(median), 1)
-                c["mom_gap"] = round(float(fund_mom) - float(median), 1)
+                c["sector_median_mom"] = median
+                c["mom_gap"] = round(float(fund_mom) - median, 1)
             else:
                 c["sector_median_mom"] = None
                 c["mom_gap"] = None
@@ -358,15 +371,6 @@ def _llm_final_pick(candidates: list[dict], ctx: MacroContext, insights: list) -
     raise RuntimeError("LLM最终定论返回无法解析（原始输出见 llm_audit）")
 
 
-def _parse_llm_result(content: str, valid_codes: dict) -> dict | None:
-    """解析终选定论（兼容旧调用/测试）：parse_llm_json + 结构校验 core。
-
-    call_llm_json 路径由 _validate_final_pick 复用同一校验 core（候选3 收敛）。
-    """
-    parsed = parse_llm_json(content)
-    return _validate_final_pick(parsed, valid_codes)
-
-
 def _validate_final_pick(parsed: Any, valid_codes: dict) -> dict | None:
     """终选定论结构校验（validator core）：非 dict / 代码不在候选 → None（视为解析失败）。"""
     if not isinstance(parsed, dict):
@@ -388,37 +392,8 @@ def _validate_final_pick(parsed: Any, valid_codes: dict) -> dict | None:
 
 # ========== 推荐入库 ==========
 
-_LAST_RECO_PATH = Path("data/last_recommendation.txt")
-
-
-def _dump_recommendation(date_str: str, code: str, name: str, rank: int, score: float,
-                        regime: str, candidates: list[dict], vetoed: list[dict],
-                        clear: bool = False) -> None:
-    lines = [
-        f"推荐日期: {date_str}", f"选定代码: {code}", f"选定名称: {name}",
-        f"排名: {rank}", f"评分: {score:.4f}", f"大盘环境: {regime}",
-        "", "候选:",
-    ]
-    for i, c in enumerate(candidates, 1):
-        mark = " <-- 选定" if c["code"] == code else ""
-        sector = c.get("sector", c.get("rbsa_industry_1", ""))
-        lines.append(f"  {i}. {c['code']} {c['name']} [{sector}] (评分 {c['score']:.4f}){mark}")
-    if vetoed:
-        lines.append("")
-        lines.append("LLM 否决:")
-        for v in vetoed:
-            lines.append(f"  - {v.get('code')} {v.get('name')}: {v.get('reason')}")
-    _LAST_RECO_PATH.parent.mkdir(parents=True, exist_ok=True)
-    mode = "w" if clear else "a"
-    if mode == "a" and _LAST_RECO_PATH.exists():
-        lines.insert(0, "---")
-    with open(_LAST_RECO_PATH, mode, encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
-
-
 def _save_recommendation(date_str: str, selected: dict, candidates: list[dict],
-                           vetoed: list, regime: str, feature_snapshot: str = "",
-                           clear: bool = False) -> int:
+                           vetoed: list, regime: str, feature_snapshot: str = "") -> int:
     """入库推荐记录，返回新插入行的 id。"""
     rank = next(
         (i + 1 for i, c in enumerate(candidates) if c["code"] == selected["selected_code"]), 1)
@@ -437,18 +412,18 @@ def _save_recommendation(date_str: str, selected: dict, candidates: list[dict],
         reason = reason + " | 决策逻辑: " + str(decision_logic)[:500]
     real_name = repo.get_fund_name(selected["selected_code"]) or selected["selected_name"]
     entry_nav = repo.nav.latest(selected["selected_code"])
-    # Q5 裁决损耗观测：落库当日候选池代码（LLM 面对的选择集），质量度量时回查 20 日收益
+    # Q5 裁决损耗观测：落库当日候选池代码（LLM 面对的选择集），质量度量时回查 40 日收益
     new_id = repo.insert_recommendation(
         date_str, selected["selected_code"], real_name, rank, score or 0.0, combo or 0.0, regime,
         reason, status=domain.SIGNAL_HOLD, feature_snapshot=feature_snapshot,
         entry_nav=entry_nav, candidate_codes=[c["code"] for c in candidates],
+        # T07：否决结构化落库（否决审计数据基础）
+        vetoed=vetoed,
     )
     # 同日推荐成功：清掉可能的空推荐残留（同一天先判无赛道、后成功推荐的场景）
     repo.clear_empty_recommendation(date_str)
     logger.info("推荐入库: %s %s (排名%d, 分数%.4f, id=%d)",
                 selected["selected_code"], real_name, rank, score or 0.0, new_id)
-    _dump_recommendation(date_str, selected["selected_code"], real_name, rank, score or 0.0,
-                          regime, candidates, vetoed, clear=clear)
     return new_id
 
 
@@ -667,7 +642,6 @@ def run_recommendation(retrain: bool = False) -> None:
 
         saved_id = _save_recommendation(
             date_str, selected, sector_candidates, vetoed, llm_regime, feature_snapshot,
-            clear=(idx == 0),
         )
         _write_sector_selection(date_str, ctx, saved_id)
         count += 1
@@ -685,7 +659,7 @@ def run_recommendation(retrain: bool = False) -> None:
 def _write_sector_selection(date_str: str, ctx: MacroContext,
                             log_id: int, sector_name: str | None = None) -> None:
     # P1-5 否决反事实度量：量化池内全部候选赛道随赛道选择一并持久化，
-    # 结算时逐赛道回看 20 日收益，度量 LLM 否决/未选是否系统性错过上涨赛道。
+    # 结算时逐赛道回看 40 日收益，度量 LLM 否决/未选是否系统性错过上涨赛道。
     pool_sectors = ([c["sector"] for c in ctx.candidate_sectors]
                     if getattr(ctx, "candidate_sectors", None) else None)
     repo.insert_sector_selection(

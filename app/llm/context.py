@@ -76,16 +76,41 @@ def market_technical_text(tech: dict) -> str:
 
 
 def pool_text(rows: list[tuple]) -> str:
-    """候选池 → 每赛道一行的 prompt 文本（含量化信号与降权标记）。
+    """候选池 → 每赛道一行的 prompt 文本（含量化信号、趋势标签与资金流趋势）。
 
-    rows: (sector, mom_5d, mom_20d, mom_60d, fund_count, flags) 元组列表；
+    rows: (sector, mom_5d, mom_20d, mom_60d, fund_count, flags[, trend_label, flow_5d])；
+    兼容旧 6 元组（缺趋势标签/资金流时降级为原格式）。
     调用方（sector_pool 装配）负责把领域对象摊平成基础数据，避免 llm 层依赖 engine。
     """
     lines = []
-    for sector, m5, m20, m60, n, flags in rows:
-        flags_s = "，" + ",".join(flags) if flags else ""
-        lines.append(
-            f"{sector}(5日{m5:+.1f}%, 20日{m20:+.1f}%, "
-            f"60日{m60:+.1f}%, 基金{n}只{flags_s})"
-        )
+    for row in rows:
+        sector, m5, m20, m60, n, flags = row[0], row[1], row[2], row[3], row[4], row[5]
+        trend_label = row[6] if len(row) > 6 else ""
+        flow_5d = row[7] if len(row) > 7 else None
+        parts = [f"{sector}(5日{m5:+.1f}%, 20日{m20:+.1f}%, 60日{m60:+.1f}%, 基金{n}只"]
+        if flow_5d is not None:
+            parts.append(f", 近5日资金{flow_5d:+.0f}万")
+        if flags:
+            parts.append("，" + ",".join(flags))
+        if trend_label:
+            parts.append(f"，{trend_label}")
+        parts.append(")")
+        lines.append("".join(parts))
+    return "\n".join(lines)
+
+
+def news_theme_summary(days: int = 7) -> str:
+    """近 N 日财经要闻回顾（趋势视角素材）：每行 (日期) 首条标题（截断 80 字）。
+
+    repo.get_recent_macro_news 为数据源（素材装配单一来源）；空历史返回空串。
+    """
+    rows = repo.get_recent_macro_news(days)
+    lines = []
+    for d, summary in rows:
+        first = (summary.split("\n")[0] or "").strip()
+        if not first:
+            continue
+        if len(first) > 80:
+            first = first[:80] + "…"
+        lines.append(f"({d}) {first}")
     return "\n".join(lines)

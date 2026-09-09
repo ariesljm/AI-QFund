@@ -7,13 +7,14 @@
 import sqlite3
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from datetime import datetime, timedelta
 
 import app.database as db_mod
-from app.database import get_db
 import app.repo.base as repo_base
+from app.database import get_db
 
 
 class TestMigrateNoFallbackCreates:

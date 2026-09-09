@@ -6,6 +6,7 @@
 
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
@@ -13,10 +14,9 @@ import pandas as pd
 import pytest
 
 from app import domain
-from backtest.backtest import _regime_at_date, _attach_forward_returns
+from backtest.backtest import _attach_forward_returns, _regime_at_date
 from backtest.backtest_walkforward import _sector_point
 from backtest.sector_signals import _cross_sectional_ic
-
 
 # ── 辅助：构造测试用指数/净值数据 ──────────────────────────
 
@@ -61,14 +61,32 @@ class TestRegimeAtDate:
                               index=pd.to_datetime(["2024-03-01", "2024-03-02"]))
         assert _regime_at_date(idx_df, pd.Timestamp("2024-03-05")) == domain.REGIME_BEAR
 
+    def test_multi_timeframe_bear_double_confirmation(self):
+        # 有 ema250 列：双下（close<EMA60 且 <EMA250）→ BEAR（与生产多周期判定一致）
+        idx_df = pd.DataFrame({"close": [90.0], "ema60": [95.0], "ema250": [100.0]},
+                              index=pd.to_datetime(["2024-03-01"]))
+        assert _regime_at_date(idx_df, pd.Timestamp("2024-03-01")) == domain.REGIME_BEAR
+
+    def test_multi_timeframe_conflict_neutral(self):
+        # 方向矛盾（close>EMA60 但 <EMA250，反弹未收复年线）→ NEUTRAL（单周期会误判 BULL）
+        idx_df = pd.DataFrame({"close": [97.0], "ema60": [95.0], "ema250": [100.0]},
+                              index=pd.to_datetime(["2024-03-01"]))
+        assert _regime_at_date(idx_df, pd.Timestamp("2024-03-01")) == domain.REGIME_NEUTRAL
+
+    def test_multi_timeframe_missing_ema250_falls_back(self):
+        # 无 ema250 列 → 回退单周期（旧行为）
+        idx_df = pd.DataFrame({"close": [97.0], "ema60": [95.0]},
+                              index=pd.to_datetime(["2024-03-01"]))
+        assert _regime_at_date(idx_df, pd.Timestamp("2024-03-01")) == domain.REGIME_BULL
+
 
 # ── _attach_forward_returns ─────────────────────────────────
 
 class TestAttachForwardReturns:
-    """20 日前向收益 + 可选止损模拟（none/atr/hard 三模式）。"""
+    """40 日前向收益 + 可选止损模拟（none/atr/hard 三模式，窗口随 FORWARD_DAYS）。"""
 
-    def _setup(self, fund_navs: list[float], days: int = 100, bt_offset: int = 70):
-        """构造 idx_df + nav_df + df + bt_date；fund_navs 从入场日起含 21 日净值。"""
+    def _setup(self, fund_navs: list[float], days: int = 140, bt_offset: int = 70):
+        """构造 idx_df + nav_df + df + bt_date；fund_navs 从入场日起含 41+ 日净值。"""
         idx_df = _make_idx_df(days)
         bt_date = idx_df.index[bt_offset]
         dates = [d.strftime("%Y-%m-%d") for d in idx_df.index[bt_offset:bt_offset + len(fund_navs)]]
@@ -77,21 +95,21 @@ class TestAttachForwardReturns:
         return df, nav_df, idx_df, bt_date
 
     def test_none_mode_forward_abs_equals_hold_return(self):
-        # 净值 1.0 → 1.1（20 日后），无止损 → forward_stop == forward_abs
-        fund = [1.0 + 0.005 * i for i in range(22)]  # 平缓上行
+        # 净值 1.0 → 1.2（40 日后），无止损 → forward_stop == forward_abs
+        fund = [1.0 + 0.005 * i for i in range(42)]  # 平缓上行
         df, nav_df, idx_df, bt_date = self._setup(fund)
         out = _attach_forward_returns(df, nav_df, idx_df, bt_date, stop_mode="none")
         row = out.iloc[0]
-        assert np.isclose(row["forward_abs"], fund[20] / fund[0] - 1.0)
+        assert np.isclose(row["forward_abs"], fund[40] / fund[0] - 1.0)
         assert np.isclose(row["forward_stop"], row["forward_abs"])
         # alpha = 绝对收益 - 指数收益
         idx_pos = idx_df.index.get_indexer([bt_date])[0]
-        idx_fwd_ret = idx_df["close"].iloc[idx_pos + 20] / idx_df["close"].iloc[idx_pos] - 1.0
+        idx_fwd_ret = idx_df["close"].iloc[idx_pos + 40] / idx_df["close"].iloc[idx_pos] - 1.0
         assert np.isclose(row["forward_alpha"], row["forward_abs"] - idx_fwd_ret)
 
     def test_hard_stop_triggers_on_drawdown(self):
         # 净值冲高后回撤 > 10% → 硬止损触发，提前结算
-        fund = [1.0, 1.2] + [1.0] * 19  # 冲高到 1.2 后回落到 1.0（回撤 16.7% > 10%）
+        fund = [1.0, 1.2] + [1.0] * 39  # 冲高到 1.2 后回落到 1.0（回撤 16.7% > 10%）
         df, nav_df, idx_df, bt_date = self._setup(fund)
         out = _attach_forward_returns(df, nav_df, idx_df, bt_date,
                                       stop_mode="hard", stop_param=0.10)
@@ -100,7 +118,7 @@ class TestAttachForwardReturns:
 
     def test_atr_stop_triggers_on_volatility(self):
         # 构造剧烈回撤使 ATR 追踪止损触发：入场后连续下跌
-        fund = [1.0, 0.95, 0.85, 0.70, 0.70] + [0.70] * 17
+        fund = [1.0, 0.95, 0.85, 0.70, 0.70] + [0.70] * 37
         df, nav_df, idx_df, bt_date = self._setup(fund)
         out = _attach_forward_returns(df, nav_df, idx_df, bt_date,
                                       stop_mode="atr", stop_param=2.0)
@@ -110,15 +128,15 @@ class TestAttachForwardReturns:
     def test_fwd_out_of_range_returns_df_unchanged(self):
         # idx 长度不足以容纳 fwd_pos → 提前 return df（不附加 forward_* 列）
         idx_df = _make_idx_df(days=80)
-        bt_date = idx_df.index[70]  # fwd_pos=90 >= 80
+        bt_date = idx_df.index[70]  # fwd_pos=110 >= 80
         nav_df = _make_nav_df("A", [bt_date.strftime("%Y-%m-%d")], [1.0])
         df = pd.DataFrame({"code": ["A"]})
         out = _attach_forward_returns(df, nav_df, idx_df, bt_date, stop_mode="none")
         assert "forward_abs" not in out.columns
 
     def test_missing_fund_yields_nan(self):
-        # df 中基金不在 nav_df → alpha/abs 为 nan
-        idx_df = _make_idx_df(days=100)
+        # df 中基金不在 nav_df → alpha/abs 为 nan（idx 足够容纳 40 日前视）
+        idx_df = _make_idx_df(days=140)
         bt_date = idx_df.index[70]
         nav_df = _make_nav_df("OTHER", [bt_date.strftime("%Y-%m-%d")], [1.0])
         df = pd.DataFrame({"code": ["A"]})
@@ -182,7 +200,7 @@ class TestCrossSectionalIC:
     def _make_panel(feat_vals: list, target_vals: list, dates: list[str]) -> pd.DataFrame:
         """构造 panel：date/feat/fwd_20d。"""
         rows = []
-        for d, f, t in zip(dates, feat_vals, target_vals):
+        for d, f, t in zip(dates, feat_vals, target_vals, strict=True):
             rows.append({"date": d, "feat": f, "fwd_20d": t})
         return pd.DataFrame(rows)
 

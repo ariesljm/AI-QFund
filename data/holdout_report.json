@@ -1,0 +1,32 @@
+{
+ "train": {
+  "periods": 26,
+  "profit_rate_pct": 61.5,
+  "mean_top_abs_pct": 6.8,
+  "mean_ic": 0.0241
+ },
+ "valid": {
+  "periods": 5,
+  "profit_rate_pct": 80.0,
+  "mean_top_abs_pct": 15.59,
+  "mean_ic": 0.1304
+ },
+ "diff_pp": {
+  "profit_rate_pct": 18.5,
+  "mean_top_abs_pct": 8.79
+ },
+ "verdict": "SUSPECT_OVERFIT",
+ "notes": [
+  "胜率差 +18.5pp 超阈值 10.0pp",
+  "收益差 +8.79pp 超阈值 5.0pp"
+ ],
+ "warn_pp": 10.0,
+ "cfg": {
+  "start": "2024-01-01",
+  "end": "2026-08-30",
+  "stop_mode": "none",
+  "stop_param": 0.0,
+  "fee_buy_pct": 0.15,
+  "slippage_pct": 0.3
+ }
+}
