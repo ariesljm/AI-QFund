@@ -9,8 +9,19 @@ from datetime import datetime, timedelta, timezone
 import httpx
 
 from app.data.fetchers import fetch, fetch_async
-from app.data.ingest import filter_cooldown_targets, run_batched_fetch
-from app.data.store import NAV_RETENTION_DAYS, mark_recovered_batch, save_nav_batch
+from app.data.ingest import (
+    FetchOutcome,
+    filter_cooldown_targets,
+    is_systematic_no_update,
+    run_batched_fetch,
+)
+from app.data.store import (
+    NAV_RETENTION_DAYS,
+    STAGE_NO_UPDATE,
+    mark_recovered_batch,
+    record_failure,
+    save_nav_batch,
+)
 from app.database import db_conn
 from app.utils.log import get_logger
 
@@ -221,8 +232,12 @@ def _count_stale_lagging(tasks_meta: list[tuple[str, str]], target: str | None) 
     return n
 
 
-def _save_nav_batch(conn_, results) -> dict:
-    """批处理保存净值结果，统计新增/无更新/失败（增量与全量共用）。"""
+def _summarize_nav_results(conn_, results) -> FetchOutcome:
+    """批处理净值结果汇总为 FetchOutcome 契约（增量与全量共用 handle_batch adapter）。
+
+    原名 _save_nav_batch 与 store.save_nav_batch（写入器）同名异义，改名消歧义：
+    本函数不写库语义主导，而是"逐只调写入器 + 汇总为结果契约"。
+    """
     success: set[str] = set()
     no_update: list[str] = []
     failed_codes: list[str] = []
@@ -305,7 +320,7 @@ async def _fundmobapi_incremental(session, codes: list[str], headers: dict) -> t
                     returned = {n["code"] for n in navs}
                     for n in navs:
                         results.append((n["code"],
-                                        [{"date": n["date"], "cum_nav": n["cum_nav"]}], False))
+                                        [{"date": n["date"], "cum_nav": n["cum_nav"]}]))
                     for c in group:
                         if c not in returned:
                             missing.append(c)
@@ -334,7 +349,7 @@ async def async_update_nav_incremental(concurrency: int = 5) -> int:
         "nav_incr", all_codes, "净值增量",
         # 确认无新数据（停更/无净值页）的基金接口端就是没有数据，用 7 天长冷却
         # 减少反复请求；临时拉取失败（primary）仍走默认 1 天冷却，尽快重试恢复
-        stage_cooldown_days={"no_update": 7},
+        stage_cooldown_days={STAGE_NO_UPDATE: 7},
     )
 
     headers = {
@@ -393,7 +408,7 @@ async def async_update_nav_incremental(concurrency: int = 5) -> int:
             logger.info("净值批量增量（fundmobapi 30只/请求）: %d 只（差 1 天）", len(batch_codes))
             batch_results, batch_missing = await _fundmobapi_incremental(session, batch_codes, headers)
             with db_conn() as conn_:
-                for code, navs, _f in batch_results:
+                for code, navs in batch_results:
                     n = save_nav_batch(conn_, code, navs)
                     if n:
                         total_new += n
@@ -402,6 +417,23 @@ async def async_update_nav_incremental(concurrency: int = 5) -> int:
                         no_update.append(code)
             if success:
                 mark_recovered_batch("nav_incr", sorted(success))
+            # no_update 记账与 lsjz 路径同语义（接口确认无新数据 → 累计进冷却，
+            # 防每日反复重试）；系统性假空（占比超熔断阈值，如探测与批量接口
+            # 日期竞态、PDATE 集体滞后）不记账，并入 missing 回退 lsjz 逐只
+            # 确认真伪——与 run_batched_fetch 的 NO_UPDATE_GUARD 护栏同构。
+            if no_update:
+                if is_systematic_no_update(len(no_update), len(batch_codes)):
+                    logger.error(
+                        "净值批量增量：%d/%d 只确认无新数据，占比异常——疑似批量接口返回滞后，"
+                        "并入 lsjz 回退逐只确认",
+                        len(no_update), len(batch_codes))
+                    batch_missing.extend(no_update)
+                    no_update = []
+                else:
+                    for code in no_update:
+                        record_failure("nav_incr", code, "接口确认无新数据", stage=STAGE_NO_UPDATE)
+                    logger.info("净值批量增量：%d 只确认无新数据，已累计失败次数（满 3 次进入冷却）",
+                                len(no_update))
             # 批量未返回/失败的基金回退 lsjz 逐只补全（不在此处判失败/冷却）
             if batch_missing:
                 lag_tasks.extend((c, local_max.get(c, "")) for c in batch_missing)
@@ -413,7 +445,7 @@ async def async_update_nav_incremental(concurrency: int = 5) -> int:
             outcome = await run_batched_fetch(
                 session, fetch_type="nav_incr", label="增量净值",
                 targets=lag_tasks + full_tasks, batch_size=100,
-                fetch_one=_fetch_lsjz, handle_batch=_save_nav_batch, backfill_one=_backfill_one,
+                fetch_one=_fetch_lsjz, handle_batch=_summarize_nav_results, backfill_one=_backfill_one,
                 no_update_note="接口确认无新数据", primary_note="增量净值拉取失败",
             )
             total_new += outcome["new_count"]
@@ -447,7 +479,7 @@ async def async_download_all_nav(concurrency: int = 15) -> int:
         ]
     all_codes = filter_cooldown_targets(
         "nav_full", all_codes, "全量净值",
-        stage_cooldown_days={"no_update": 7},
+        stage_cooldown_days={STAGE_NO_UPDATE: 7},
     )
     if not all_codes:
         return 0
@@ -485,7 +517,7 @@ async def async_download_all_nav(concurrency: int = 15) -> int:
         outcome = await run_batched_fetch(
             session, fetch_type="nav_full", label="全量净值",
             targets=all_codes, batch_size=batch_size,
-            fetch_one=_fetch_one, handle_batch=_save_nav_batch, backfill_one=_backfill_one,
+            fetch_one=_fetch_one, handle_batch=_summarize_nav_results, backfill_one=_backfill_one,
             no_update_note="接口无净值数据", primary_note="全量净值拉取失败",
         )
 

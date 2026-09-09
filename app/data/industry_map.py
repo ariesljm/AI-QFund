@@ -11,6 +11,7 @@ import httpx
 from app.data.fetchers import fetch, fetch_async
 from app.data.ingest import filter_cooldown_targets, run_batched_fetch
 from app.data.store import (
+    STAGE_PRIMARY,
     mark_recovered_batch,
     record_failure,
     run_backfill_rounds,
@@ -237,7 +238,7 @@ def _fetch_industry_map(unmapped_only: bool = False) -> list[tuple[str, str, str
         handled = set(outcome.get("failed", []))
         for sc in failed:
             if sc not in handled:
-                record_failure("industry_map", sc, "行业映射拉取失败", stage="primary")
+                record_failure("industry_map", sc, "行业映射拉取失败", stage=STAGE_PRIMARY)
         _headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://emweb.securities.eastmoney.com/"}
 
         def _backfill_one(sc: str) -> None:

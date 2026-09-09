@@ -7,6 +7,12 @@ from app.database import db_conn
 from app.utils.log import get_logger
 
 logger = get_logger("data_store")
+
+# 失败阶段词表（data_fetch_failures.stage）：写入与冷却映射两侧统一引用，
+# 拼错从“运行期静默落错冷却”变成 import 期即错
+STAGE_NO_UPDATE = "no_update"
+STAGE_PRIMARY = "primary"
+
 NAV_RETENTION_DAYS = 1500
 """净值保留窗口（交易日）：每只基金仅保留最近 N 条。
 

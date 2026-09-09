@@ -112,6 +112,8 @@ def get_fund_detail(code: str) -> dict | None:
         row = conn.execute('SELECT r.recommend_date, r.buy_reason, r.score, r.combo, r.regime, r.entry_nav, r.status, fb.name, fb.type, (SELECT MIN(r2.recommend_date) FROM recommend_log r2 WHERE r2.code = r.code) AS first_date FROM recommend_log r LEFT JOIN fund_basic fb ON fb.code = r.code WHERE r.code = ? ORDER BY r.recommend_date DESC LIMIT 1', (code,)).fetchone()
     if not row:
         return None
+    # split 仅为历史行兼容：旧数据 buy_reason 曾拼 "| 否决记录:"/"| 决策逻辑:" 尾巴，
+    # 新写入已解耦（P2-7 完成态），新行无分隔符时 split 原样返回
     return {'code': code, 'name': row[7] or code, 'type': row[8] or '', 'first_date': row[9] or row[0] or '', 'entry_nav': round(row[5], 4) if row[5] else None, 'buy_reason': (row[1] or '').split(' | 否决记录:')[0].strip(), 'score': row[2], 'combo': row[3], 'regime': row[4] or 'NEUTRAL', 'status': row[6] or 'HOLD'}
 
 def get_holding_codes(statuses: tuple[str, ...]=('HOLD', 'BUY_MORE', 'WARNING')) -> list[dict]:
@@ -511,12 +513,14 @@ def get_recent_monitor_signals(code: str, limit: int = 25,
     with db_conn() as conn:
         return conn.execute(sql, (code, limit)).fetchall()
 
-def insert_recommendation(date_str: str, code: str, name: str, rank: int, score: float, combo: float, regime: str, buy_reason: str, status: str='HOLD', feature_snapshot: str | None=None, entry_nav: float | None=None, candidate_codes: list | None=None, vetoed: list | None=None, reco_path: str='sector') -> int:
+def insert_recommendation(date_str: str, code: str, name: str, rank: int, score: float, combo: float, regime: str, buy_reason: str, status: str='HOLD', feature_snapshot: str | None=None, entry_nav: float | None=None, candidate_codes: list | None=None, vetoed: list | None=None, reco_path: str='sector', decision_logic: str = '') -> int:
     """写入推荐记录，返回新行 id。status 覆盖 HOLD（正常）/REJECT（风控拦截）。
 
     candidate_codes：当日该赛道候选池代码列表（Q5 裁决损耗观测：LLM 选中 vs 候选池）。
     vetoed（T07）：LLM 否决记录列表 [{code,name,reason}]——结构化落库供否决审计。
     reco_path（D+分口径）：推荐来源路径 sector/degrade，供质量度量分口径评估。
+    decision_logic（P2-7 决策与文案解耦）：内部决策依据独立列，审计用，
+    buy_reason 只存展示文案（不再拼否决/决策尾巴，展示层魔法分隔符退役）。
     （同日幂等）同日多次运行推荐引擎（重试/手动重跑）时，同 (recommend_date, code)
     更新原行而非追加——id 保持稳定，避免 monitor_events/sector_selections 引用悬空，
     也杜绝同日同一基金重复推荐记录；同时刷新 created_at 为本次运行时间，
@@ -533,13 +537,13 @@ def insert_recommendation(date_str: str, code: str, name: str, rank: int, score:
             conn.execute(
                 'UPDATE recommend_log SET name=?, rank=?, score=?, combo=?, regime=?, '
                 'buy_reason=?, status=?, feature_snapshot=?, entry_nav=?, candidate_codes=?, '
-                'vetoed_json=?, reco_path=?, '
+                'vetoed_json=?, reco_path=?, decision_logic=?, '
                 'rec_count=COALESCE(rec_count, 0) + 1, created_at=datetime(\'now\') '
                 'WHERE id=?',
                 (name, rank, score, combo, regime, buy_reason, status, feature_snapshot,
-                 entry_nav, cand_json, veto_json, reco_path, row[0]))
+                 entry_nav, cand_json, veto_json, reco_path, decision_logic, row[0]))
             return row[0]
-        cur = conn.execute('INSERT INTO recommend_log (recommend_date, code, name, rank, score, combo, regime, buy_reason, status, feature_snapshot, entry_nav, candidate_codes, vetoed_json, reco_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (date_str, code, name, rank, score, combo, regime, buy_reason, status, feature_snapshot, entry_nav, cand_json, veto_json, reco_path))
+        cur = conn.execute('INSERT INTO recommend_log (recommend_date, code, name, rank, score, combo, regime, buy_reason, status, feature_snapshot, entry_nav, candidate_codes, vetoed_json, reco_path, decision_logic) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (date_str, code, name, rank, score, combo, regime, buy_reason, status, feature_snapshot, entry_nav, cand_json, veto_json, reco_path, decision_logic))
         return cur.lastrowid or 0
 
 def insert_sector_selection(date_str: str, log_id: int, recommended_sectors: list, risk_sectors: list, sector_reasoning: str, regime_label: str, used_insight_ids: list | None = None, pool_sectors: list | None = None) -> None:

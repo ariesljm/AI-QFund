@@ -546,3 +546,87 @@ class TestNoUpdateSystemicGuard:
         rows = {r["target"]: r["stage"] for r in list_failures("holdings")}
         assert len(rows) == 90
         assert all(stage == "no_update" for stage in rows.values())  # 未被误判为 primary
+
+
+# ============================================================
+# fundmobapi 批量路径记账契约（架构深化候选 2）
+# ============================================================
+
+class TestBatchNoUpdateAccounting:
+    """批量分支记账与 lsjz 路径同语义：no_update 进冷却、系统性假空回退 lsjz。"""
+
+    @staticmethod
+    def _lsjz_resp(days: list[str]) -> str:
+        rows = ",".join(f'{{"FSRQ":"{d}","LJJZ":"1.5"}}' for d in days)
+        return f'jQuery({{"Data":{{"LSJZList":[{rows}]}},"TotalCount":{len(days)}}})'
+
+    @staticmethod
+    def _seed(code: str, aligned_to: str) -> None:
+        with db_mod.db_conn() as conn:
+            conn.execute(
+                "INSERT INTO fund_basic (code, name, type, is_buyable) VALUES (?, ?, ?, ?)",
+                (code, "测试基金", "混合型", 1))
+            conn.execute("INSERT INTO fund_nav (code, date, cum_nav) VALUES (?, ?, ?)",
+                         (code, aligned_to, 1.5))
+
+    def _stub(self, monkeypatch, batch_pdate: str, lsjz_days: list[str]):
+        """probe 定 target=07-31；批量接口返回 PDATE=batch_pdate；lsjz 返回 lsjz_days。"""
+        async def fake_probe(session, headers):
+            return "2026-07-31"
+
+        async def fake_fetch(session, url, timeout=15, headers=None):
+            if "FundMNFInfo" in url:
+                import re as _re
+                codes = _re.search(r"Fcodes=([\d,]+)", url).group(1).split(",")
+                datas = ",".join(
+                    f'{{"FCODE":"{c}","PDATE":"{batch_pdate}","ACCNAV":"1.5"}}'
+                    for c in codes)
+                return _FakeResp(f'{{"Datas":[{datas}],"ErrCode":0}}')
+            if "lsjz" in url:
+                return _FakeResp(self._lsjz_resp(lsjz_days))
+            return _FakeResp("var ACWorthTrend = [];")
+
+        monkeypatch.setattr(nav, "_probe_lsjz_latest", fake_probe)
+        monkeypatch.setattr(nav, "fetch_async", fake_fetch)
+
+    def test_batch_no_update_enters_cooldown(self, iso_db, monkeypatch):
+        """批量接口返回 PDATE <= 本地最新（确认无新数据）→ 累计失败进冷却。
+
+        回归：批量分支曾绕过失败/冷却状态机（no_update 从不 record_failure），
+        系统性重复请求无冷却痕迹。
+        """
+        self._seed("000099", "2026-07-30")
+        self._seed("000001", "2026-07-31")  # 探测基准（已对齐，跳过）
+        self._stub(monkeypatch, batch_pdate="2026-07-30", lsjz_days=[])
+
+        for _ in range(3):
+            asyncio.run(nav.async_update_nav_incremental(concurrency=1))
+
+        rows = {r["target"]: r for r in list_failures("nav_incr")}
+        assert rows["000099"]["attempts"] == 3
+        assert rows["000099"]["status"] == "failed"
+
+    def test_batch_systematic_no_update_falls_back_to_lsjz(self, iso_db, monkeypatch):
+        """批量 no_update 占比超护栏阈值（系统性假空）→ 并入 lsjz 回退确认，不记账冷却。
+
+        场景：探测定 target=07-31，批量接口 PDATE 集体滞后（返回 07-30）→
+        全部 save 得 0。lsjz 逐只确认拉到 07-31 净值并写入——批量接口异常
+        不应导致健康基金被误判停更。
+        """
+        codes = [f"{i:06d}" for i in range(1, 102)]  # 101 只 >= 护栏样本阈值
+        for c in codes:
+            self._seed(c, "2026-07-30")
+        self._stub(monkeypatch, batch_pdate="2026-07-30", lsjz_days=["2026-07-31"])
+
+        total = asyncio.run(nav.async_update_nav_incremental(concurrency=1))
+
+        assert total >= 101  # lsjz 回退每只写入 07-31 一条
+        # 无 no_update 冷却记账（系统性假空不误伤）
+        no_update_rows = [r for r in list_failures("nav_incr")
+                          if r.get("stage") == "no_update"]
+        assert no_update_rows == []
+        # 数据真实写入
+        with db_mod.db_conn() as conn:
+            n = conn.execute(
+                "SELECT COUNT(*) FROM fund_nav WHERE date = '2026-07-31'").fetchone()[0]
+        assert n == len(codes)

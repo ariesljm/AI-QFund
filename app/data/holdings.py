@@ -12,7 +12,7 @@ import httpx
 
 from app.data.fetchers import fetch, fetch_async
 from app.data.ingest import filter_cooldown_targets, run_batched_fetch
-from app.data.store import save_holdings_batch
+from app.data.store import STAGE_NO_UPDATE, save_holdings_batch
 from app.database import db_conn
 from app.repo.base import get_buyable_codes, get_holdings_report_dates
 from app.utils.log import get_logger
@@ -127,7 +127,7 @@ async def async_download_all_holdings(
     )
 
     all_codes = filter_cooldown_targets("holdings", all_codes, "持仓",
-                                        stage_cooldown_days={"no_update": _HOLDINGS_NO_UPDATE_COOLDOWN_DAYS})
+                                        stage_cooldown_days={STAGE_NO_UPDATE: _HOLDINGS_NO_UPDATE_COOLDOWN_DAYS})
 
     with db_conn() as conn:
         semaphore = asyncio.Semaphore(concurrency)

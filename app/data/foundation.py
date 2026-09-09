@@ -26,6 +26,7 @@ from app.repo import meta_keys as META
 from app.repo.base import (
     get_index_rows,
     get_industry_map_stats,
+    get_interval_days,
     get_meta,
     get_nav_time_state,
     has_index_data,
@@ -80,9 +81,8 @@ _LIST_UPDATE_INTERVAL_DAYS = 7
 def update_fund_list_weekly(force: bool = False) -> int:
     last = get_meta(META.FUND_LIST_LAST_UPDATE)
     if last and not force:
-        last_dt = datetime.strptime(last, "%Y-%m-%d")
-        age_days = (datetime.now() - last_dt).days
-        if age_days < _LIST_UPDATE_INTERVAL_DAYS:
+        age_days = get_interval_days(META.FUND_LIST_LAST_UPDATE)
+        if age_days is not None and age_days < _LIST_UPDATE_INTERVAL_DAYS:
                 logger.info("基金列表 %d 天前更新过（<%d 天），跳过",
                             age_days, _LIST_UPDATE_INTERVAL_DAYS)
                 return -1
@@ -393,14 +393,9 @@ def daily_steps() -> list[int]:
     失败不更新、下次运行自动重试；首次部署无记录视为到期（触发自举）。
     原 pipeline._daily_data_steps 与此重复（两套编号漂移），现收敛于此。
     """
-    last_raw = get_meta(META.HOLDINGS_LAST_RUN)
-    if last_raw:
-        try:
-            last = datetime.strptime(last_raw, "%Y-%m-%d").date()
-            elapsed = (datetime.now().date() - last).days
-        except ValueError:
-            elapsed = _HOLDINGS_INTERVAL_DAYS + 1
-    else:
+    # 窄读收敛（ADR-0005 残留收尾）：无记录/解析失败 → None → 视为到期
+    elapsed = get_interval_days(META.HOLDINGS_LAST_RUN)
+    if elapsed is None:
         elapsed = _HOLDINGS_INTERVAL_DAYS + 1
     if elapsed > _HOLDINGS_INTERVAL_DAYS:
         return [1, 2, 3, _STEP_HOLDINGS, _STEP_FEATURES]

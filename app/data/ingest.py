@@ -7,8 +7,11 @@
 
 import asyncio
 import time
+from typing import TypedDict
 
 from app.data.store import (
+    STAGE_NO_UPDATE,
+    STAGE_PRIMARY,
     cooldown_targets,
     list_failures,
     mark_recovered_batch,
@@ -27,6 +30,33 @@ CIRCUIT_BREAK_FAIL_RATE = 0.5
 # 疑似接口批量异常（如反爬返回空响应被解析为无数据），改按拉取失败处理，
 # 避免健康基金被误判停更、误入长冷却造成静默断档。小批量（补查、测试）不适用。
 NO_UPDATE_GUARD_MIN_TARGETS = 100
+
+
+def is_systematic_no_update(no_update_count: int, targets_count: int,
+                            no_update_guard: bool = True) -> bool:
+    """大批量下"确认无新数据"占比超熔断阈值 → 疑似接口批量异常（系统性假空）。
+
+    run_batched_fetch 与 nav 批量分支（fundmobapi）共用同一语义；样本不足
+    NO_UPDATE_GUARD_MIN_TARGETS 或 no_update_guard=False（高占比"无数据"属
+    常态的下载，如持仓：ETF联接/商品基金本就无重仓披露）时不判系统性。
+    """
+    return (no_update_guard and targets_count >= NO_UPDATE_GUARD_MIN_TARGETS
+            and no_update_count / targets_count > CIRCUIT_BREAK_FAIL_RATE)
+
+
+class FetchOutcome(TypedDict):
+    """handle_batch 结果契约（净值增量/全量/持仓共用）：
+
+    - new_count: 新增行数
+    - success: 本次有新数据写入的目标集合（主循环据此 mark_recovered）
+    - no_update: 接口确认无新数据的目标（累计进冷却）
+    - failed: 拉取失败的目标（记录 + 补查）
+    """
+
+    new_count: int
+    success: set[str]
+    no_update: list[str]
+    failed: list[str]
 
 
 def filter_cooldown_targets(fetch_type: str, targets: list, label: str,
@@ -62,7 +92,7 @@ async def run_batched_fetch(
     no_update_note: str = "接口确认无新数据",
     no_update_guard: bool = True,
     primary_note: str = "拉取失败",
-) -> dict:
+) -> FetchOutcome:
     """并发批次下载通用骨架：semaphore 并发 → 熔断 → 失败/恢复记录 → 多轮补查。
 
     - ``fetch_one(session, item)``：async 单目标拉取，返回 ``(item, payload, failed)``。
@@ -115,12 +145,10 @@ async def run_batched_fetch(
         mark_recovered_batch(fetch_type, sorted(success))
 
     # 确认无新数据的目标：默认记录失败（累计冷却次数），不计入熔断失败率、不触发补查；
-    # 大批量下无新数据占比超过熔断阈值时视为系统性接口异常，改按拉取失败处理并进入补查。
-    # 高占比"无数据"属常态的下载（如持仓：ETF联接/商品基金本就无重仓披露）可用
-    # no_update_guard=False 豁免护栏，让它们正常进入长冷却而非被误判为接口异常。
+    # 大批量下无新数据占比超熔断阈值视为系统性接口异常，改按拉取失败处理并进入补查
+    #（判定语义见 is_systematic_no_update）。
     if no_update:
-        if (no_update_guard and len(targets) >= NO_UPDATE_GUARD_MIN_TARGETS
-                and len(no_update) / len(targets) > CIRCUIT_BREAK_FAIL_RATE):
+        if is_systematic_no_update(len(no_update), len(targets), no_update_guard):
             logger.error(
                 "%s：%d/%d 个目标确认无新数据，占比超 %.0f%%——疑似接口批量异常"
                 "（如反爬返回空响应），改按拉取失败处理",
@@ -129,14 +157,14 @@ async def run_batched_fetch(
             all_failed.extend(no_update)
         else:
             for item in no_update:
-                record_failure(fetch_type, item, no_update_note, stage="no_update")
+                record_failure(fetch_type, item, no_update_note, stage=STAGE_NO_UPDATE)
             logger.info("%s：%d 个目标确认无新数据，已累计失败次数（满 3 次进入冷却）",
                         label, len(no_update))
 
     # 失败目标：记录并多轮补查
     if all_failed:
         for item in all_failed:
-            record_failure(fetch_type, item, primary_note, stage="primary")
+            record_failure(fetch_type, item, primary_note, stage=STAGE_PRIMARY)
         logger.info("%s失败 %d 个目标，开始补查", label, len(all_failed))
         if backfill_one is not None:
             run_backfill_rounds(fetch_type, all_failed, backfill_one,

@@ -263,6 +263,21 @@ class TestRecommendLogIdempotent:
                 " ORDER BY rank").fetchall()
         assert [r[0] for r in rows] == ["019115", "002910"]
 
+    def test_decision_logic_stored_separately(self, monkeypatch, tmp_path):
+        """P2-7 完成态：decision_logic 独立列，buy_reason 纯文案（不再拼尾巴）。"""
+        decision_mod = self._setup(monkeypatch, tmp_path)
+        new_id = decision_mod.insert_recommendation(
+            "2026-08-12", "019115", "东财卓越成长A", 1, 0.07, 5.0,
+            "NEUTRAL", "半导体动量强劲", vetoed=[{"code": "002910", "reason": "波动大"}],
+            decision_logic="重仓半导体且动量超阈值")
+        with decision_mod.db_conn() as conn:
+            row = conn.execute(
+                "SELECT buy_reason, decision_logic, vetoed_json FROM recommend_log WHERE id=?",
+                (new_id,)).fetchone()
+        assert row[0] == "半导体动量强劲"       # 纯文案，无 "| 否决记录:"/ "| 决策逻辑:" 尾巴
+        assert row[1] == "重仓半导体且动量超阈值"  # 决策逻辑独立列
+        assert "002910" in row[2]              # 否决仍结构化落库
+
 
 class TestRankingRowsLatestSnapshotOnly:
     """017787 事故回归：排序/反事实查询必须只取每基金最新特征快照。

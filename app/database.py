@@ -78,7 +78,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
     if "recommend_log" in tables:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(recommend_log)").fetchall()}
-        for col, typ in [("return_rate", "REAL"), ("feature_snapshot", "TEXT"), ("entry_nav", "REAL"), ("candidate_codes", "TEXT"), ("rec_count", "INTEGER DEFAULT 1"), ("vetoed_json", "TEXT"), ("reco_path", "TEXT DEFAULT 'sector'")]:
+        for col, typ in [("return_rate", "REAL"), ("feature_snapshot", "TEXT"), ("entry_nav", "REAL"), ("candidate_codes", "TEXT"), ("rec_count", "INTEGER DEFAULT 1"), ("vetoed_json", "TEXT"), ("reco_path", "TEXT DEFAULT 'sector'"), ("decision_logic", "TEXT")]:
             if col not in cols:
                 conn.execute(f"ALTER TABLE recommend_log ADD COLUMN {col} {typ}")
                 conn.commit()

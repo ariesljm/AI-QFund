@@ -167,10 +167,15 @@ def _select_top_per_sector(df: pd.DataFrame, sectors: list[str]) -> list[dict]:
 
 
 def _build_candidate_record(f: dict) -> dict:
-    """单条候选结果装配（rbsa 分解 + 量化分，下游入库/展示共用 schema）。"""
+    """单条候选结果装配（rbsa 分解 + 量化分，下游入库/展示共用 schema）。
+
+    主路径与降级路径（rank_funds）共用：降级无赛道分解，sector 留空、
+    sector_rel_* 取中性默认值——两路径候选 schema 归一，下游不再用
+    or 兑底补 schema 洞。
+    """
     return {
         "code": f["code"], "name": f["name"],
-        "sector": f["sector"],
+        "sector": f.get("sector", ""),
         "rbsa_industry_1": f.get("rbsa_industry_1", ""),
         "rbsa_industry_2": f.get("rbsa_industry_2", ""),
         "rbsa_industry_3": f.get("rbsa_industry_3", ""),
@@ -275,21 +280,10 @@ def rank_funds(model: lgb.Booster) -> list[dict]:
         logger.info("全市场无正预测候选，返回空（空推荐日）")
         return []
     top = df.sort_values("combo", ascending=False).head(10)
-    candidates = []
-    for _, r in top.iterrows():
-        candidates.append({
-            "code": r["code"], "name": r["name"], "regime": r["regime"],
-            "score": float(r["score"]), "combo": float(r["combo"]),
-            "hurst_60d": float(r["hurst_60d"]), "momentum_20d": float(r["momentum_20d"]),
-            "calmar": float(r["calmar"]),
-            "capture_up": round(float(r.get("capture_up", 1.0)), 2),
-            "capture_down": round(float(r.get("capture_down", 1.0)), 2),
-            "downside_vol": round(float(r.get("downside_vol", 0.0)), 4),
-            "drawdown_60d": round(float(r.get("drawdown_60d", 0.0)), 1),
-            "rbsa_industry_1": r.get("rbsa_industry_1", ""),
-            "rbsa_weight_1": float(r.get("rbsa_weight_1", 0.0) or 0.0),
-        })
-    return candidates
+    # schema 归一：与主路径共用 _build_candidate_record（sector 留空、
+    # sector_rel_* 取中性默认）。此前内联重建 dict 缺 sector/sector_rel_*，
+    # 下游用 or 兑底；降级候选因此曾被消费端赛道过滤错误裁剪。
+    return [_build_candidate_record(r.to_dict()) for _, r in top.iterrows()]
 
 
 # ========== LLM 最终定论 ==========
@@ -327,17 +321,37 @@ def _sector_candidates(finalists: list[dict], sector: str,
     return [c for c in by_code.values() if c["code"] not in excluded_codes]
 
 
-def _llm_final_pick(candidates: list[dict], ctx: MacroContext, insights: list) -> dict:
-    """LLM 基于重仓股+CLS新闻匹配+持仓时效性做最终选择，返回选定基金和否决记录。"""
-    latest_feature_date = repo.get_latest_feature_date()
+def _pick_group_candidates(finalists: list[dict], sector: str,
+                           reco_path: str, excluded_codes: set[str]) -> list[dict]:
+    """单分组的候选整理：主路径按赛道过滤，降级路径全市场直通。
+
+    降级语义单一承载点：reco_path == "degrade" 时全市场候选
+    （schema 无赛道归属）不受 LLM 赛道约束，只做已选去重。
+    此前该语义只存在于 _rank_within_sectors 返回点注释，消费端
+    仍按赛道过滤，导致降级候选被裁剪、优质候选日被错误记成空推荐日。
+    """
+    if reco_path == "degrade":
+        return [c for c in finalists if c["code"] not in excluded_codes]
+    return _sector_candidates(finalists, sector, excluded_codes)
+
+
+def _assemble_finalist_material(candidates: list[dict],
+                                latest_feature_date: str | None) -> list[dict]:
+    """终选素材装配：DB 取数 + 口径计算（持仓/申购/赛道中位数/mom_gap）。
+
+    对齐 monitor 的 DefenseContext 形状——装配与判定分离：本函数是
+    终选素材口径（持仓月龄、mom_gap、限购标注）的唯一归属，可脱离
+    LLM 调用独立测试；llm/context.py 只负责文案格式化，_llm_final_pick
+    只消费已装配素材。不变异入参（返回拷贝），主循环后续消费原字段不受影响。
+    """
     codes = [c["code"] for c in candidates]
-    # 素材装配批量收敛（候选 8）：一次拿全候选的持仓/申购状态/近 1 月涨幅，
-    # 替代逐候选 5×N 查询；sector 中位数按赛道缓存（同赛道共享一个值）
     holdings_mat = repo.get_holdings_summaries(codes, limit=5)
     purchase_map = repo.get_purchase_statuses(codes)
     sector_median_cache: dict[str, float | None] = {}
 
+    assembled = []
     for c in candidates:
+        c = dict(c)
         code = c["code"]
         mat = holdings_mat.get(code, {"holdings": [], "report_date": None})
         c["holdings"] = mat.get("holdings", [])
@@ -372,6 +386,15 @@ def _llm_final_pick(candidates: list[dict], ctx: MacroContext, insights: list) -
         else:
             c["sector_median_mom"] = None
             c["mom_gap"] = None
+        assembled.append(c)
+    return assembled
+
+
+def _llm_final_pick(candidates: list[dict], ctx: MacroContext, insights: list) -> dict:
+    """LLM 基于重仓股+CLS新闻匹配+持仓时效性做最终选择，返回选定基金和否决记录。"""
+    latest_feature_date = repo.get_latest_feature_date()
+    # 素材装配与判定分离：本函数只负责 LLM 定论，取数与口径在 _assemble_finalist_material
+    candidates = _assemble_finalist_material(candidates, latest_feature_date)
 
     prompt = final_pick_prompt(candidates, ctx, insights)
     system_prompt = final_pick_system_prompt()
@@ -425,15 +448,12 @@ def _save_recommendation(date_str: str, selected: dict, candidates: list[dict],
         (c["score"] for c in candidates if c["code"] == selected["selected_code"]), None)
     combo = next(
         (c["combo"] for c in candidates if c["code"] == selected["selected_code"]), None)
-    veto_json = json.dumps(vetoed, ensure_ascii=False)
+    # P2-7 决策与文案解耦（完成态）：buy_reason 只存展示文案；否决已有
+    # vetoed_json 列（T07），决策逻辑走 decision_logic 独立列——不再拼
+    # "| 否决记录:"/"| 决策逻辑:" 尾巴进文案，展示层魔法分隔符契约退役
+    #（split 保留仅为历史行兼容）。
     reason = selected.get("reason", "")
-    if vetoed:
-        reason = reason + " | 否决记录: " + veto_json
-    # P2-7：决策逻辑字段单独追加保存（展示层读 buy_reason 时按 ' | 否决记录:' 截断，
-    # 决策逻辑不会误入前端文案）
-    decision_logic = selected.get("decision_logic", "")
-    if decision_logic:
-        reason = reason + " | 决策逻辑: " + str(decision_logic)[:500]
+    decision_logic = str(selected.get("decision_logic", ""))[:500]
     real_name = repo.get_fund_name(selected["selected_code"]) or selected["selected_name"]
     entry_nav = repo.nav.latest(selected["selected_code"])
     # Q5 裁决损耗观测：落库当日候选池代码（LLM 面对的选择集），质量度量时回查 40 日收益
@@ -442,7 +462,7 @@ def _save_recommendation(date_str: str, selected: dict, candidates: list[dict],
         reason, status=domain.SIGNAL_HOLD, feature_snapshot=feature_snapshot,
         entry_nav=entry_nav, candidate_codes=[c["code"] for c in candidates],
         # T07：否决结构化落库（否决审计数据基础）
-        vetoed=vetoed, reco_path=reco_path,
+        vetoed=vetoed, reco_path=reco_path, decision_logic=decision_logic,
     )
     # 同日推荐成功：清掉可能的空推荐残留（同一天先判无赛道、后成功推荐的场景）
     repo.clear_empty_recommendation(date_str)
@@ -451,17 +471,28 @@ def _save_recommendation(date_str: str, selected: dict, candidates: list[dict],
     return new_id
 
 
-def _expected_feature_date() -> str | None:
-    """期望特征日期：今天交易日→昨交易日（数据任务盘前拉 T-1 净值）；否则最近交易日。
+def _trade_calendar() -> set[str] | None:
+    """交易日历缓存（meta 单次解析）；无缓存/解析失败返回 None（调用方不误伤）。
 
-    无交易日历缓存返回 None（调用方不误报/不误伤）。
+    滞后口径三处（期望日期/全局新鲜度/单基金闸门）共用，替代各自重复
+    get_meta + json.loads（原 _drop_stale_feature_rows 逐行重复解析）。
     """
     raw = repo.get_meta(META.TRADE_DATES_CACHE)
     if not raw:
         return None
     try:
-        days = set(json.loads(raw))
+        return set(json.loads(raw))
     except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def _expected_feature_date() -> str | None:
+    """期望特征日期：今天交易日→昨交易日（数据任务盘前拉 T-1 净值）；否则最近交易日。
+
+    无交易日历缓存返回 None（调用方不误报/不误伤）。
+    """
+    days = _trade_calendar()
+    if not days:
         return None
     today = datetime.now().date().isoformat()
     if today in days:
@@ -477,14 +508,8 @@ def _feature_freshness(feat_date: str | None) -> int:
     if not feat_date:
         return 0
     expected = _expected_feature_date()
-    if expected is None or feat_date >= expected:
-        return 0
-    raw = repo.get_meta(META.TRADE_DATES_CACHE)
-    if not raw:
-        return 0
-    try:
-        days = set(json.loads(raw))
-    except (json.JSONDecodeError, TypeError):
+    days = _trade_calendar()
+    if expected is None or feat_date >= expected or not days:
         return 0
     return trading_day_lag(feat_date, expected, days=days)
 
@@ -500,17 +525,14 @@ def _drop_stale_feature_rows(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty or "feature_date" not in df.columns:
         return df
     expected = _expected_feature_date()
-    if expected is None:
+    days = _trade_calendar()
+    if expected is None or not days:
         return df  # 无交易日历缓存：不误伤，全局护栏兜底
 
     def _lag(fd: object) -> int:
         if not isinstance(fd, str) or not fd:
             return domain.MAX_FEATURE_LAG_TRADE_DAYS + 1  # 无日期 → 视为陈旧
         if fd >= expected:
-            return 0
-        try:
-            days = set(json.loads(repo.get_meta(META.TRADE_DATES_CACHE) or ""))
-        except (json.JSONDecodeError, TypeError):
             return 0
         return trading_day_lag(fd, expected, days=days)
 
@@ -618,10 +640,15 @@ def run_recommendation(retrain: bool = False) -> None:
     logger.info("=== 赛道内相对化排序 ===")
     finalists, reco_path = _rank_within_sectors(ctx, model)
     if not finalists:
+        # 空推原因分层（审计 P1-2）：特征严重陈旧（数据基座连续失败）= data_failure，
+        # 引擎侧此前不可达——全市场无正预测/候选全被滤时被误记 no_opportunity；
+        # 赛道正常但无候选/无正预测 = no_opportunity（合法决策）。
+        reason_type = "data_failure" if lag >= 2 else "no_opportunity"
         repo.record_empty_recommendation(
             date_str, ctx.sector_reasoning or "候选基金为空（赛道无匹配基金或动量护栏过滤）",
-            reason_type="no_opportunity")
-        logger.info("无候选基金（无匹配赛道或动量护栏过滤），记录空推荐日")
+            reason_type=reason_type)
+        logger.info("无候选基金（无匹配赛道或动量护栏过滤），记录空推荐日（%s，特征滞后 %d 交易日）",
+                    reason_type, lag)
         return
     logger.info("候选 %d 只: %s",
                 len(finalists),
@@ -635,7 +662,10 @@ def run_recommendation(retrain: bool = False) -> None:
     for idx, sector in enumerate(target_sectors):
         if count >= MAX_PICKS:
             break
-        sector_candidates = _sector_candidates(finalists, sector, selected_codes)
+        # 降级路径只在首个分组执行一次（全市场池无赛道分组，后续赛道无新候选）
+        if reco_path == "degrade" and idx > 0:
+            break
+        sector_candidates = _pick_group_candidates(finalists, sector, reco_path, selected_codes)
         if not sector_candidates:
             logger.warning("赛道 [%s] 无可投基金，跳过", sector)
             continue

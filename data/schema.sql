@@ -92,6 +92,9 @@ CREATE TABLE IF NOT EXISTS recommend_log (
     vetoed_json TEXT,
     -- 推荐来源路径：sector=赛道内选基（主路径），degrade=全市场 Top10 降级路径
     reco_path TEXT DEFAULT 'sector',
+    -- 内部决策依据（P2-7 决策与文案解耦）：LLM 的 decision_logic，审计用，
+    -- 不进展示文案（buy_reason 回归纯文案，不再拼否决/决策尾巴）
+    decision_logic TEXT,
     created_at TEXT DEFAULT (datetime('now'))
 );
 
