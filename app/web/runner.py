@@ -126,13 +126,16 @@ def last_run_date() -> str | None:
 def _sched_run_time(now: datetime, sched: dict) -> datetime | None:
     """调度窗口触发点（单一口径，候选5 收敛：scheduler_loop 与 next_run_for 共用）。
 
-    hour/min 都非空才视为启用（修复：展示页曾只判 hour——仅填小时时显示启用但
-    调度永不触发）；返回今日该时刻；None = 未启用。窗口到期 = now >= 返回值，
+    hour/min 任一缺失或空字符串才视为未启用（0 是合法整点，不得误判）；
+    返回今日该时刻；None = 未启用。窗口到期 = now >= 返回值，
     由调用方按各自语义判断（scheduler_loop：到期且当日未跑 → 触发；
     next_run_for：到期且当日已跑 → 顺延一天展示）。
     """
-    h = (str(sched.get("hour") or "")).strip()
-    m = (str(sched.get("minute") or "")).strip()
+    h = sched.get("hour")
+    m = sched.get("minute")
+    if h is None or m is None:
+        return None
+    h, m = str(h).strip(), str(m).strip()
     if h == "" or m == "":
         return None
     return now.replace(hour=int(h), minute=int(m), second=0, microsecond=0)

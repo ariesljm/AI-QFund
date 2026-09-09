@@ -87,6 +87,11 @@ class TestNextRunFor:
             hour=11, minute=30)
         assert runner._sched_run_time(now, {"hour": 11, "minute": 30}) == now.replace(
             hour=11, minute=30)
+        # 整点 minute=0 是合法配置（回归：曾误判为未启用导致调度静默失效）
+        assert runner._sched_run_time(now, {"hour": 12, "minute": 0}) == now.replace(
+            hour=12, minute=0)
+        assert runner._sched_run_time(now, {"hour": 0, "minute": 30}) == now.replace(
+            hour=0, minute=30)
         # 缺 minute / 空值 → 未启用
         assert runner._sched_run_time(now, {"hour": "11"}) is None
         assert runner._sched_run_time(now, {"hour": "", "minute": "30"}) is None
