@@ -176,6 +176,18 @@ class TestSummarize:
         assert s["baseline"]["abs_pct"] == pytest.approx(0.125)
         assert s["baseline"]["win_rate_pct"] == pytest.approx(50.0)
 
+    def test_drawdown_two_scopes(self):
+        """回撤双口径（2026-09 修）：全期 vs 出手序列——门的对比看后者。
+
+        回归：此前只报全期回撤（不看出手门），用它对比不同门会把模型重训
+        噪声误读成门的效果。
+        """
+        s = _summarize(self._make_df(), "rules", -3.0, 90.0, 250, 750, 5, 1.0)
+        # 全期序列：+2, -3, +4, -1 → 复利峰 1.02 后谷 0.9894 → -3.0%
+        assert s["max_drawdown_pct"] == pytest.approx(-3.0, abs=0.05)
+        # 出手序列：+2, +4 → 无回撤
+        assert s["max_drawdown_invested_pct"] == pytest.approx(0.0)
+
     def test_empty_block(self):
         df = pd.DataFrame(columns=["date", "regime", "investable", "reasons",
                                    "top_abs_pct", "top_alpha_pct", "ic",

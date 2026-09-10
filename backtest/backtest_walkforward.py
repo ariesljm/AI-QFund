@@ -556,13 +556,23 @@ def _summarize(df: pd.DataFrame, gate: str, mom_threshold: float, pct_threshold:
     else:
         per_fund_stop = None
 
-    # 最大回撤：TopN 均值等权、每 20 交易日换仓（复利累乘）的累计曲线
-    rets = df["top_abs_pct"] / 100.0
-    if len(rets) > 0:
+    # 最大回撤：TopN 均值等权、每 20 交易日换仓（复利累乘）的累计曲线。
+    # 两个口径（2026-09 修）：
+    # - all_drawdown：全期决策点（不看出手门）——现状基准，与历史 summary 兼容；
+    #   它无法反映“带门策略”的真实回撤（门只筛出手日，不改全期序列），
+    #   用它对比不同门会把模型重训噪声误读成门的效果。
+    # - invested_drawdown：仅出手日序列——带门策略的真实回撤，门的对比看这个。
+    def _max_drawdown(sub: pd.DataFrame) -> float:
+        if len(sub) == 0 or "top_abs_pct" not in sub.columns:
+            return 0.0
+        rets = sub["top_abs_pct"] / 100.0
+        if len(rets) == 0:
+            return 0.0
         cum = (1.0 + rets).cumprod()
-        max_drawdown = round(float((cum / cum.cummax() - 1.0).min() * 100), 2)
-    else:
-        max_drawdown = 0.0
+        return round(float((cum / cum.cummax() - 1.0).min() * 100), 2)
+
+    max_drawdown = _max_drawdown(df)
+    max_drawdown_invested = _max_drawdown(df[df["investable"]])
 
     summary = {
         "points_total": int(len(df)),
@@ -572,6 +582,7 @@ def _summarize(df: pd.DataFrame, gate: str, mom_threshold: float, pct_threshold:
         "per_fund": per_fund,
         "per_fund_stop": per_fund_stop,
         "max_drawdown_pct": max_drawdown,
+        "max_drawdown_invested_pct": max_drawdown_invested,
         "baseline": {
             "points": int(len(df)),
             "abs_pct": round(float(df["baseline_abs_pct"].mean()), 3),
@@ -603,7 +614,7 @@ def _summarize(df: pd.DataFrame, gate: str, mom_threshold: float, pct_threshold:
         print(f"止损版: 只数={per_fund_stop['n_funds']}  绝对收益均值={per_fund_stop['abs_pct']}%  "
               f"名义胜率={per_fund_stop['win_rate_pct']}%  赚钱胜率(>{profit_threshold}%)={per_fund_stop['profit_rate_pct']}%  "
               f"盈亏比={per_fund_stop['payoff_ratio']}  (EMA60趋势退出)")
-    print(f"回撤  : 累计最大回撤={max_drawdown}%")
+    print(f"回撤  : 全期最大回撤={max_drawdown}% | 出手序列最大回撤={max_drawdown_invested}% (门的对比看后者)")
     print(f"基线  : 随机{topn}只 绝对收益均值={summary['baseline']['abs_pct']}%  "
           f"胜率={summary['baseline']['win_rate_pct']}%")
     print(f"耗时: {elapsed:.0f}s")
