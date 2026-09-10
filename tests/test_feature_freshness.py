@@ -15,11 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pandas as pd
 import pytest
 
-from app import domain
 from app.engine import recommend
-from app.repo import base as repo_base
 from app.repo import meta_keys as META
-
 
 # 固定交易日历：2026-08-24(一) ~ 2026-09-04(五) 剔除周三节假日，共 10 个交易日
 TRADE_DAYS = [

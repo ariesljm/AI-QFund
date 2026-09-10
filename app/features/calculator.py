@@ -175,6 +175,22 @@ def _ema_series(navs: np.ndarray, span: int = _EMA_SPAN) -> np.ndarray:
     return ema
 
 
+def latest_below_ema60(navs: list[float]) -> bool:
+    """最新净值是否 < EMA60（推荐侧 R1 对齐门槛，B 修复 2026-09）。
+
+    与 ema60_trigger_index 同口径（ewm span=60, k=2/61）。判据“最新 < EMA60”
+    是 R1“连续2日<EMA60”触发的必要条件：过滤掉最新跌破 EMA60 的基金后，
+    R1 当天必不触发——从源头避免“推荐当天即 EXIT”（推荐/监控矛盾）。
+    数据不足 span 条返回 False（保守：不滤，交回防线判定）。
+    """
+    if len(navs) < _EMA_SPAN:
+        return False
+    arr = np.asarray(navs, dtype=float)
+    if np.any(arr <= 0):
+        return False
+    return bool(arr[-1] < _ema_series(arr, _EMA_SPAN)[-1])
+
+
 def ema60_trigger_index(navs: list[float] | np.ndarray, confirm_days: int = _EMA_CONFIRM_DAYS,
                         span: int = _EMA_SPAN) -> int | None:
     """EMA60 连续 confirm 日 < EMA 的首个触发下标；不触发/数据不足返回 None。

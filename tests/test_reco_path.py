@@ -105,54 +105,42 @@ class TestPickGroupCandidates:
         got = _pick_group_candidates(finalists, "半导体", "sector", set())
         assert [c["code"] for c in got] == ["F1"]
 
-    def test_rank_funds_schema_normalized(self):
+    def test_rank_funds_schema_normalized(self, monkeypatch):
         """rank_funds 复用 _build_candidate_record 后 schema 与主路径归一。"""
-        from app.engine.recommend import rank_funds
         import app.engine.recommend as rec_mod
+        from app.domain import FEATURE_COLS, RankingConfig
+        from app.engine.recommend import rank_funds
 
         class _FakeModel:
             def predict(self, X, **kw):
                 import numpy as np
                 return np.array([0.6])
 
-        rows = [{"code": "F1", "name": "基金F1", "regime": "BULL",
-                 "feature_date": "2026-09-01",
-                 "rbsa_industry_1": "医药", "rbsa_weight_1": 0.6,
-                 "score": 0.6, "combo": 0.6, "hurst_60d": 0.5,
-                 "momentum_20d": 5.0, "calmar": 1.0}]
-        # rank_funds 会 dropna(subset=FEATURE_COLS)：特征列必须齐全
-        from app.domain import FEATURE_COLS
-        for col in FEATURE_COLS:
-            rows[0].setdefault(col, 1.0)
-        monkey = rec_mod.repo
-        # 仅本测试内打桩
-        class _MP:
-            def __init__(self): self.patches = []
-            def setattr(self, obj, name, val): self.patches.append((obj, name, getattr(obj, name))); setattr(obj, name, val)
-            def undo(self):
-                for obj, name, val in reversed(self.patches): setattr(obj, name, val)
-        mp = _MP()
-        try:
-            mp.setattr(monkey, "get_ranking_cfg", lambda: __import__("app.domain", fromlist=["RankingConfig"]).RankingConfig())
-            mp.setattr(monkey, "get_all_ranking_rows", lambda: rows)
-            mp.setattr(monkey, "get_index_momentum", lambda: 2.0)
-            mp.setattr(monkey, "get_market_regime", lambda: "BULL")
-            got = rank_funds(_FakeModel())
-            assert len(got) == 1
-            c = got[0]
-            # schema 归一：主路径键齐备（sector 空、sector_rel_* 中性默认）
-            assert c["sector"] == ""
-            assert c["rbsa_industry_1"] == "医药"
-            assert c["sector_rel_momentum"] == 0.0
-            assert c["sector_rel_calmar"] == 0.0
-            assert "regime" not in c  # 无下游消费，归一时丢弃
-        finally:
-            mp.undo()
+        row = {"code": "F1", "name": "基金F1", "feature_date": "2026-09-01",
+               "rbsa_industry_1": "医药", "rbsa_weight_1": 0.6,
+               "score": 0.6, "combo": 0.6, "hurst_60d": 0.5,
+               "momentum_20d": 5.0, "calmar": 1.0}
+        for col in FEATURE_COLS:  # dropna(subset=FEATURE_COLS) 要求特征列齐全
+            row.setdefault(col, 1.0)
 
+        monkeypatch.setattr(rec_mod.repo, "get_ranking_cfg", lambda: RankingConfig())
+        monkeypatch.setattr(rec_mod.repo, "get_all_ranking_rows", lambda: [row])
+        monkeypatch.setattr(rec_mod.repo, "get_index_momentum", lambda: 2.0)
+        monkeypatch.setattr(rec_mod.repo, "get_market_regime", lambda: "BULL")
+        # 现价在 EMA60 上方（B 修复的 EMA60 门槛不剔除本用例）
+        up = [1.0 + i * 0.005 for i in range(70)]
+        monkeypatch.setattr(rec_mod.repo.nav, "series",
+                            lambda code, since=None, until=None, limit=None:
+                            [(f"2026-01-{i:02d}", v) for i, v in enumerate(up)])
 
-# ============================================================
-# 终选素材装配（架构深化候选 3：装配/判定分离）
-# ============================================================
+        got = rank_funds(_FakeModel())
+        assert len(got) == 1
+        c = got[0]
+        assert c["sector"] == ""              # 降级候选无赛道归属
+        assert c["rbsa_industry_1"] == "医药"
+        assert c["sector_rel_momentum"] == 0.0
+        assert c["sector_rel_calmar"] == 0.0
+        assert "regime" not in c              # 无下游消费，归一时丢弃
 
 class TestAssembleFinalistMaterial:
     """素材口径（月龄/mom_gap/限购）可脱离 LLM 调用独立测试。"""
@@ -191,3 +179,62 @@ class TestAssembleFinalistMaterial:
               "momentum_20d": 5.0}], "2026-09-01")
         assert got[0]["mom_gap"] is None
         assert got[0]["sector_median_mom"] is None
+
+
+# ============================================================
+# 推荐侧 EMA60 趋势门槛（B 修复：从源头避免"推荐当天即 EXIT"）
+# ============================================================
+
+class TestBelowEma60Gate:
+    """不选现价跌破自身 EMA60 的基金（与监控 R1 同口径）。"""
+
+    def test_returns_codes_below_ema60(self, monkeypatch):
+        import app.engine.recommend as rec_mod
+
+        down = [1.0 - i * 0.005 for i in range(70)]   # 持续下跌 → 跌破
+        up = [1.0 + i * 0.005 for i in range(70)]     # 持续上涨 → 未跌破
+
+        def fake_series(code, since=None, until=None, limit=None):
+            vals = down if code == "DOWN" else up
+            return [(f"2026-01-{i:02d}", v) for i, v in enumerate(vals)]
+
+        monkeypatch.setattr(rec_mod.repo.nav, "series", fake_series)
+        below = rec_mod._below_ema60(["DOWN", "UP"])
+        assert below == {"DOWN"}
+
+    def test_insufficient_data_not_filtered(self, monkeypatch):
+        import app.engine.recommend as rec_mod
+        monkeypatch.setattr(rec_mod.repo.nav, "series",
+                            lambda code, since=None, until=None, limit=None:
+                            [("2026-01-01", 1.0), ("2026-01-02", 0.9)])
+        assert rec_mod._below_ema60(["X"]) == set()
+
+    def test_rank_funds_filters_below_ema60(self, monkeypatch):
+        """降级路径：全市场 Top10 中跌破 EMA60 的被剔除。"""
+        import app.engine.recommend as rec_mod
+        from app.domain import FEATURE_COLS, RankingConfig
+
+        down = [1.0 - i * 0.005 for i in range(70)]
+
+        row_down = {"code": "DOWN", "name": "跌基", "feature_date": "2026-09-01",
+                    "rbsa_industry_1": "医药", "rbsa_weight_1": 0.6,
+                    "score": 0.9, "combo": 0.9, "hurst_60d": 0.5, "momentum_20d": 1.0,
+                    "calmar": 1.0}
+        for c in FEATURE_COLS:
+            row_down.setdefault(c, 1.0)
+
+        class _M:
+            def predict(self, X, **kw):
+                import numpy as np
+                return np.array([0.9] * len(X))
+
+        monkeypatch.setattr(rec_mod.repo, "get_ranking_cfg", lambda: RankingConfig())
+        monkeypatch.setattr(rec_mod.repo, "get_all_ranking_rows", lambda: [row_down])
+        monkeypatch.setattr(rec_mod.repo, "get_index_momentum", lambda: 2.0)
+        monkeypatch.setattr(rec_mod.repo, "get_market_regime", lambda: "BULL")
+        monkeypatch.setattr(rec_mod.repo.nav, "series",
+                            lambda code, since=None, until=None, limit=None:
+                            [(f"2026-01-{i:02d}", v) for i, v in enumerate(down)])
+
+        got = rec_mod.rank_funds(_M())
+        assert got == []          # 唯一候选跌破 EMA60 → 空（空推荐日）

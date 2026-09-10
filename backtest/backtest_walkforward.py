@@ -162,10 +162,24 @@ def _pctile_ret(idx_close: pd.Series, bt_pos: int, pct_window: int,
     return float((roll < cur).mean() * 100)
 
 
-def gate_verdict(close: float, ema60: float, mom20: float, pctile: float | None,
-                 mom_threshold: float, pct_threshold: float) -> tuple[bool, list[str]]:
-    """规则门：任一条件触发 → 不可投。返回 (是否可投, 触发原因列表)。"""
+def gate_verdict(close: float, ema60: float, ema250: float | None, mom20: float,
+                 pctile: float | None, mom_threshold: float, pct_threshold: float,
+                 gate: str = "rules") -> tuple[bool, list[str]]:
+    """规则门：BEAR(EMA250) 单条件不可投（rules，默认）；strict 为旧三条件一票否决（保留作对照）。
+
+    旧三条件（EMA60/指数20日动量/250日分位）样本内诊断（2021-2026 walk-forward
+    重分组）：EMA60 独立条件在熊市反弹中段放行（-2.57%/点、正占比仅 39%），
+    动量门挡底部反转（+15.77%）、分位门挡强势延续（+5.98%），出手均值 +0.73%
+    低于无门全期 +3.67%——净负贡献。简化为与 regime 同源的单一 EMA250 门后
+    出手均值 +7.07%（同一模型同一 Top5，仅门重分组）。注意：样本内后视分组，
+    过热保护同时消失，需持续用 walk-forward 复核。
+    """
     reasons: list[str] = []
+    if gate == "rules":
+        if ema250 is not None and close < ema250:
+            reasons.append("BEAR(收盘<EMA250)")
+        return (not reasons, reasons)
+    # strict：旧三条件一票否决（EMA60/动量/分位）
     if ema60 is not None and close < ema60:
         reasons.append("BEAR(收盘<EMA60)")
     if mom20 * 100 < mom_threshold:
@@ -315,8 +329,12 @@ def _process_point(bt_date_str: str, gate: str, mom_threshold: float,
     mom20 = close / float(idx_close.iloc[bt_pos - _STEP_DAYS]) - 1.0 if bt_pos >= _STEP_DAYS else 0.0
     pctile = _pctile_ret(idx_close, bt_pos, pct_window, pct_lookback)
     if gate == "rules":
-        investable, reasons = gate_verdict(close, ema60, mom20, pctile,
-                                           mom_threshold, pct_threshold)
+        ema250 = float(_ema250_of(idx_close).iloc[bt_pos])
+        investable, reasons = gate_verdict(close, ema60, ema250, mom20,
+                                           pctile, mom_threshold, pct_threshold, gate=gate)
+    elif gate == "strict":
+        investable, reasons = gate_verdict(close, ema60, None, mom20,
+                                           pctile, mom_threshold, pct_threshold, gate=gate)
     else:
         investable, reasons = True, []
 
@@ -601,8 +619,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="walk-forward 回测验证（无前视偏差）")
     parser.add_argument("--start", default=_DEFAULT_START)
     parser.add_argument("--end", default=_DEFAULT_END)
-    parser.add_argument("--gate", choices=["none", "rules"], default="rules",
-                        help="规则门开关（none=现状基准，rules=绝对门+防追高护栏）")
+    parser.add_argument("--gate", choices=["none", "rules", "strict"], default="rules",
+                        help="规则门开关（none=现状基准，rules=BEAR(EMA250)单条件门，strict=旧三条件一票否决作对照）")
     parser.add_argument("--mom-threshold", type=float, default=-3.0)
     parser.add_argument("--pct-threshold", type=float, default=90.0)
     parser.add_argument("--pct-window", type=int, default=250)

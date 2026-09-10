@@ -16,55 +16,91 @@ from backtest.backtest_walkforward import _pctile_ret, _summarize, gate_verdict
 
 
 class TestGateVerdict:
-    """规则门三条件判定：任一触发 → 不可投。"""
+    """规则门判定：rules=BEAR(EMA250) 单条件（默认）；strict=旧三条件一票否决。"""
+
+    def test_rules_bear_ema250_blocks(self):
+        """默认 rules 门：收盘 < EMA250 → 不可投（与 regime 同源）。"""
+        ok, reasons = gate_verdict(close=4800.0, ema60=4900.0, ema250=5000.0, mom20=0.02,
+                                   pctile=10.0, mom_threshold=-3.0, pct_threshold=90.0)
+        assert ok is False
+        assert any("EMA250" in r for r in reasons)
+
+    def test_rules_above_ema250_investable(self):
+        """收盘 >= EMA250 → 可投（旧门在此被 EMA60/动量/分位误杀的场景放行）。"""
+        ok, reasons = gate_verdict(close=5100.0, ema60=5200.0, ema250=5000.0, mom20=-0.05,
+                                   pctile=95.0, mom_threshold=-3.0, pct_threshold=90.0)
+        assert ok is True
+        assert reasons == []
+
+    def test_rules_ema250_none_skips(self):
+        """EMA250 缺失不误杀（交由其他防线）。"""
+        ok, reasons = gate_verdict(close=4800.0, ema60=4900.0, ema250=None, mom20=-0.05,
+                                   pctile=95.0, mom_threshold=-3.0, pct_threshold=90.0)
+        assert ok is True
+
+    def test_strict_keeps_three_conditions(self):
+        """strict 模式保留旧三条件（对照用）。"""
+        ok, reasons = gate_verdict(close=4800.0, ema60=4900.0, ema250=None, mom20=-0.05,
+                                   pctile=99.0, mom_threshold=-3.0, pct_threshold=90.0,
+                                   gate="strict")
+        assert ok is False
+        assert len(reasons) == 3
+
 
     def test_all_clear_investable(self):
-        ok, reasons = gate_verdict(close=5000.0, ema60=4900.0, mom20=0.02,
+        ok, reasons = gate_verdict(close=5000.0, ema60=4900.0, ema250=None, mom20=0.02,
                                    pctile=50.0, mom_threshold=-3.0,
-                                   pct_threshold=90.0)
+                                   pct_threshold=90.0,
+                                   gate="strict")
         assert ok is True
         assert reasons == []
 
     def test_bear_condition(self):
-        ok, reasons = gate_verdict(close=4800.0, ema60=4900.0, mom20=0.01,
+        ok, reasons = gate_verdict(close=4800.0, ema60=4900.0, ema250=None, mom20=0.01,
                                    pctile=50.0, mom_threshold=-3.0,
-                                   pct_threshold=90.0)
+                                   pct_threshold=90.0,
+                                   gate="strict")
         assert ok is False
         assert any("BEAR" in r for r in reasons)
 
     def test_momentum_condition(self):
-        ok, reasons = gate_verdict(close=5000.0, ema60=4900.0, mom20=-0.04,
+        ok, reasons = gate_verdict(close=5000.0, ema60=4900.0, ema250=None, mom20=-0.04,
                                    pctile=50.0, mom_threshold=-3.0,
-                                   pct_threshold=90.0)
+                                   pct_threshold=90.0,
+                                   gate="strict")
         assert ok is False
         assert any("动量" in r for r in reasons)
 
     def test_pctile_condition(self):
-        ok, reasons = gate_verdict(close=5000.0, ema60=4900.0, mom20=0.01,
+        ok, reasons = gate_verdict(close=5000.0, ema60=4900.0, ema250=None, mom20=0.01,
                                    pctile=95.0, mom_threshold=-3.0,
-                                   pct_threshold=90.0)
+                                   pct_threshold=90.0,
+                                   gate="strict")
         assert ok is False
         assert any("分位" in r for r in reasons)
 
     def test_multiple_conditions_accumulate(self):
-        ok, reasons = gate_verdict(close=4800.0, ema60=4900.0, mom20=-0.05,
+        ok, reasons = gate_verdict(close=4800.0, ema60=4900.0, ema250=None, mom20=-0.05,
                                    pctile=99.0, mom_threshold=-3.0,
-                                   pct_threshold=90.0)
+                                   pct_threshold=90.0,
+                                   gate="strict")
         assert ok is False
         assert len(reasons) == 3
 
     def test_ma60_none_skips_bear(self):
         """ema60 缺失时 BEAR 条件跳过，其余条件照常判定。"""
-        ok, reasons = gate_verdict(close=5000.0, ema60=None, mom20=0.01,
+        ok, reasons = gate_verdict(close=5000.0, ema60=None, ema250=None, mom20=0.01,
                                    pctile=50.0, mom_threshold=-3.0,
-                                   pct_threshold=90.0)
+                                   pct_threshold=90.0,
+                                   gate="strict")
         assert ok is True
         assert reasons == []
 
     def test_pctile_none_skips_overheat(self):
-        ok, reasons = gate_verdict(close=5000.0, ema60=4900.0, mom20=0.01,
+        ok, reasons = gate_verdict(close=5000.0, ema60=4900.0, ema250=None, mom20=0.01,
                                    pctile=None, mom_threshold=-3.0,
-                                   pct_threshold=90.0)
+                                   pct_threshold=90.0,
+                                   gate="strict")
         assert ok is True
         assert reasons == []
 
@@ -262,3 +298,32 @@ class TestPrepareTrainingDataParam:
         X, y, w, *_ = model_mod.prepare_training_data()  # 缺省走 get_train_fund_codes
         assert calls["n"] == 1
         assert len(X) == 0  # 空基金池 → 空样本（不报错）
+
+
+class TestLatestBelowEma60:
+    """推荐侧 R1 对齐门槛（B 修复）：最新 < EMA60 判定，与 R1 同口径。"""
+
+    def test_below_when_downtrend(self):
+        """持续下跌序列：最新必然跌破 EMA60。"""
+        from app.features.calculator import latest_below_ema60
+        navs = [1.0 - i * 0.005 for i in range(70)]
+        assert latest_below_ema60(navs) is True
+
+    def test_above_when_uptrend(self):
+        """持续上涨序列：最新在 EMA60 上方。"""
+        from app.features.calculator import latest_below_ema60
+        navs = [1.0 + i * 0.005 for i in range(70)]
+        assert latest_below_ema60(navs) is False
+
+    def test_insufficient_data_not_filtered(self):
+        """数据不足 60 条不滤（保守，交回防线判定）。"""
+        from app.features.calculator import latest_below_ema60
+        assert latest_below_ema60([1.0, 0.9, 0.8]) is False
+
+    def test_aligned_with_r1_no_trigger_when_above(self):
+        """契约：未被门槛过滤（最新>=EMA60）的基金，R1 当天必不触发。"""
+        from app.features.calculator import ema60_exit, latest_below_ema60
+        navs = [1.0 + i * 0.003 for i in range(80)]
+        assert latest_below_ema60(navs) is False
+        triggered, _ = ema60_exit(navs)
+        assert triggered is False

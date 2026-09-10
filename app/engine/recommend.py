@@ -19,7 +19,12 @@ import app.repo as repo
 from app import domain
 from app.data.nav import fetch_fund_nav_incremental
 from app.engine.macro_agent import MacroContext, build_macro_context
-from app.features.calculator import apply_momentum_guard, market_state_features, score_frame
+from app.features.calculator import (
+    apply_momentum_guard,
+    latest_below_ema60,
+    market_state_features,
+    score_frame,
+)
 from app.llm.client import call_llm_json
 from app.llm.prompts import final_pick_prompt, final_pick_system_prompt
 from app.model import get_or_train, model_version
@@ -88,6 +93,22 @@ def _dedup_fund_name(name: str) -> str:
     # 份额后缀紧贴基金类型词（如"混合A"），前一个字符须为非字母/下划线/数字；
     # 避免误伤代码型结尾（如测试名"基金SC_A"的 A 不是份额）。
     return _re.sub(r"(?<![A-Za-z_0-9])(A|B|C|D|E|F|H|I|O|Y|Z)$", "", (name or "").strip())
+
+
+def _below_ema60(codes: list[str]) -> set[str]:
+    """现价跌破自身 EMA60 的基金集合（推荐侧 R1 对齐门槛，B 修复 2026-09）。
+
+    推荐只看短期动量特征，可能选到“中期趋势向下、短期反弹”的基金——监控
+    R1（EMA60 趋势退出）入场当天即判 EXIT，推荐/监控矛盾。前置过滤掉最新
+    净值 < EMA60 的基金（与 calculator.latest_below_ema60 同口径），从源头
+    消除该矛盾。数据不足 60 条的基金不滤（保守，交回防线判定）。
+    """
+    below: set[str] = set()
+    for code in codes:
+        navs = [v for _, v in repo.nav.series(code, limit=62)]
+        if latest_below_ema60(navs):
+            below.add(code)
+    return below
 
 
 def _filter_sector_candidates(df: pd.DataFrame, sectors: list[str],
@@ -236,6 +257,15 @@ def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> tuple[list[di
     df = _filter_sector_candidates(df, sectors, risk_set)
     if df.empty:
         return rank_funds(model), "degrade"
+    # B 修复（2026-09）：EMA60 趋势门槛——不选现价跌破自身 EMA60 的基金，
+    # 否则监控 R1 入场当天即判趋势退出（推荐/监控矛盾）。
+    below = _below_ema60(df["code"].tolist())
+    if below:
+        df = df[~df["code"].isin(below)]
+        if df.empty:
+            logger.info("赛道内候选全部跌破自身EMA60，降级为全市场 Top 10")
+            return rank_funds(model), "degrade"
+        logger.info("EMA60 趋势门槛剔除 %d 只（现价<自身EMA60，R1 会立即退出）", len(below))
 
     df = _score_sector_candidates(df, model)
     # Ticket 05：恢复入场质量门槛（移除 R1"全天候出手"）——模型预测 > 赚钱阈值才可进入
@@ -280,6 +310,14 @@ def rank_funds(model: lgb.Booster) -> list[dict]:
         logger.info("全市场无正预测候选，返回空（空推荐日）")
         return []
     top = df.sort_values("combo", ascending=False).head(10)
+    # B 修复（2026-09）：EMA60 趋势门槛（与主路径同口径）——全市场 Top10
+    # 逐只查净值，滤掉现价跌破自身 EMA60 的基金。
+    below = _below_ema60(top["code"].tolist())
+    if below:
+        top = top[~top["code"].isin(below)]
+    if top.empty:
+        logger.info("全市场 Top10 全部跌破自身EMA60，返回空（空推荐日）")
+        return []
     # schema 归一：与主路径共用 _build_candidate_record（sector 留空、
     # sector_rel_* 取中性默认）。此前内联重建 dict 缺 sector/sector_rel_*，
     # 下游用 or 兑底；降级候选因此曾被消费端赛道过滤错误裁剪。
