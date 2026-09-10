@@ -222,6 +222,7 @@ class TestBelowEma60Gate:
                     "calmar": 1.0}
         for c in FEATURE_COLS:
             row_down.setdefault(c, 1.0)
+        row_down["reversal_20d"] = -2.0   # 仍在下行（无企稳）→ 应被 EMA60 门槛过滤
 
         class _M:
             def predict(self, X, **kw):
@@ -238,3 +239,52 @@ class TestBelowEma60Gate:
 
         got = rec_mod.rank_funds(_M())
         assert got == []          # 唯一候选跌破 EMA60 → 空（空推荐日）
+
+
+    def test_recovery_exempts_below_ema60(self, monkeypatch):
+        """跌破 EMA60 但 reversal_20d>0（企稳反转）→ 放行（熊市潜力点，方向 1+2）。"""
+        import app.engine.recommend as rec_mod
+
+        down = [1.0 - i * 0.005 for i in range(70)]   # 持续下跌 → 跌破 EMA60
+
+        def fake_series(code, since=None, until=None, limit=None):
+            return [(f"2026-01-{i:02d}", v) for i, v in enumerate(down)]
+
+        monkeypatch.setattr(rec_mod.repo.nav, "series", fake_series)
+
+        # reversal_20d > 0 → 放行；<= 0 → 过滤
+        recovery = {"A": 3.0, "B": -1.0, "C": 0.0}
+        below = rec_mod._below_ema60(["A", "B", "C"], recovery_map=recovery)
+        assert below == {"B", "C"}
+        assert "A" not in below
+
+    def test_rank_funds_keeps_recovering_below_ema60(self, monkeypatch):
+        """降级路径：跌破 EMA60 但 reversal_20d>0 的候选保留。"""
+        import app.engine.recommend as rec_mod
+        from app.domain import FEATURE_COLS, RankingConfig
+
+        down = [1.0 - i * 0.005 for i in range(70)]
+
+        row = {"code": "REC", "name": "反转基金", "feature_date": "2026-09-01",
+               "rbsa_industry_1": "医药", "rbsa_weight_1": 0.6,
+               "score": 0.9, "combo": 0.9, "hurst_60d": 0.5, "momentum_20d": 1.0,
+               "calmar": 1.0, "reversal_20d": 2.5}
+        for c in FEATURE_COLS:
+            row.setdefault(c, 1.0)
+
+        class _M:
+            def predict(self, X, **kw):
+                import numpy as np
+                return np.array([0.9] * len(X))
+
+        monkeypatch.setattr(rec_mod.repo, "get_ranking_cfg", lambda: RankingConfig())
+        monkeypatch.setattr(rec_mod.repo, "get_all_ranking_rows", lambda: [row])
+        monkeypatch.setattr(rec_mod.repo, "get_index_momentum", lambda: 2.0)
+        monkeypatch.setattr(rec_mod.repo, "get_market_regime", lambda: "BULL")
+        monkeypatch.setattr(rec_mod.repo.nav, "series",
+                            lambda code, since=None, until=None, limit=None:
+                            [(f"2026-01-{i:02d}", v) for i, v in enumerate(down)])
+
+        got = rec_mod.rank_funds(_M())
+        assert len(got) == 1           # 反转中 → 保留
+        assert got[0]["code"] == "REC"

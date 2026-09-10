@@ -339,3 +339,36 @@ class TestLatestBelowEma60:
         assert latest_below_ema60(navs) is False
         triggered, _ = ema60_exit(navs)
         assert triggered is False
+
+
+class TestEma60ExitEntryExempt:
+    """R1 入场后净值不足豁免（方向 2，2026-09）：避免"推荐当天即 EXIT"。"""
+
+    def test_post_entry_too_short_exempt(self):
+        """入场后净值不足 confirm_days+1 条 → 不触发（011315 根因修复）。"""
+        from app.features.calculator import ema60_exit
+        # 62 条历史 + 入场后 0 条（推荐当天净值 T-1 滞后场景）
+        trend = [1.0 - i * 0.005 for i in range(62)]   # 持续下跌 → 历史中段连续跌破
+        entry_idx = len(trend)  # 入场在序列末尾（post 空）
+        triggered, reason = ema60_exit(trend, entry_idx=entry_idx)
+        assert triggered is False
+        assert reason == ""
+
+    def test_single_post_entry_exempt(self):
+        """入场后仅 1 条净值（不足 3 条）→ 豁免。"""
+        from app.features.calculator import ema60_exit
+        trend = [1.0 - i * 0.005 for i in range(62)] + [0.68]
+        entry_idx = len(trend) - 1   # 入场后 1 条
+        triggered, _ = ema60_exit(trend, entry_idx=entry_idx)
+        assert triggered is False
+
+    def test_sufficient_post_entry_triggers(self):
+        """入场后足量净值且连续跌破 → 正常触发（不受豁免影响）。"""
+        from app.features.calculator import ema60_exit
+        trend = [1.0 - i * 0.005 for i in range(62)]   # 历史下跌
+        post = [0.62, 0.60, 0.58]                      # 入场后继续跌破 3 条
+        navs = trend + post
+        entry_idx = len(trend)
+        triggered, reason = ema60_exit(navs, entry_idx=entry_idx)
+        assert triggered is True
+        assert "EMA60" in reason

@@ -95,18 +95,25 @@ def _dedup_fund_name(name: str) -> str:
     return _re.sub(r"(?<![A-Za-z_0-9])(A|B|C|D|E|F|H|I|O|Y|Z)$", "", (name or "").strip())
 
 
-def _below_ema60(codes: list[str]) -> set[str]:
+def _below_ema60(codes: list[str], recovery_map: dict[str, float] | None = None) -> set[str]:
     """现价跌破自身 EMA60 的基金集合（推荐侧 R1 对齐门槛，B 修复 2026-09）。
 
     推荐只看短期动量特征，可能选到“中期趋势向下、短期反弹”的基金——监控
     R1（EMA60 趋势退出）入场当天即判 EXIT，推荐/监控矛盾。前置过滤掉最新
-    净值 < EMA60 的基金（与 calculator.latest_below_ema60 同口径），从源头
-    消除该矛盾。数据不足 60 条的基金不滤（保守，交回防线判定）。
+    净值 < EMA60 的基金（与 calculator.latest_below_ema60 同口径）。
+    熊市反转入围（方向 1+2）：recovery_map 提供每基金 reversal_20d（正=下跌
+    减速/企稳），跌破 EMA60 但 reversal_20d > 0 的反转基金放行——熊市中找
+    底部反转潜力基金，正是核心目的（牛熊市都推荐）。监控 R1 已同步加 entry_idx
+    豁免（入场后净值不足不判），放行后不会“推荐当天即 EXIT”。
+    数据不足 60 条的基金不滤（保守，交回防线判定）。
     """
     below: set[str] = set()
     for code in codes:
         navs = [v for _, v in repo.nav.series(code, limit=62)]
         if latest_below_ema60(navs):
+            recovery = (recovery_map or {}).get(code, 0.0)
+            if recovery > 0:
+                continue  # 跌破但企稳反转 → 放行（熊市潜力点）
             below.add(code)
     return below
 
@@ -257,9 +264,11 @@ def _rank_within_sectors(ctx: MacroContext, model: lgb.Booster) -> tuple[list[di
     df = _filter_sector_candidates(df, sectors, risk_set)
     if df.empty:
         return rank_funds(model), "degrade"
-    # B 修复（2026-09）：EMA60 趋势门槛——不选现价跌破自身 EMA60 的基金，
-    # 否则监控 R1 入场当天即判趋势退出（推荐/监控矛盾）。
-    below = _below_ema60(df["code"].tolist())
+    # B 修复（2026-09）+ 熊市反转入围（方向 1+2）：EMA60 趋势门槛——
+    # 现价跌破自身 EMA60 且未企稳（reversal_20d<=0）的基金剔除；
+    # 跌破但 reversal_20d>0（下跌减速/反转）的放行（熊市潜力点）。
+    below = _below_ema60(df["code"].tolist(),
+                         recovery_map=df.set_index("code")["reversal_20d"].to_dict())
     if below:
         df = df[~df["code"].isin(below)]
         if df.empty:
@@ -310,9 +319,11 @@ def rank_funds(model: lgb.Booster) -> list[dict]:
         logger.info("全市场无正预测候选，返回空（空推荐日）")
         return []
     top = df.sort_values("combo", ascending=False).head(10)
-    # B 修复（2026-09）：EMA60 趋势门槛（与主路径同口径）——全市场 Top10
-    # 逐只查净值，滤掉现价跌破自身 EMA60 的基金。
-    below = _below_ema60(top["code"].tolist())
+    # B 修复（2026-09）+ 熊市反转入围（方向 1+2）：EMA60 趋势门槛（与主路径
+    # 同口径）——全市场 Top10 逐只查净值，滤掉现价跌破自身 EMA60 且未企稳的；
+    # reversal_20d>0（企稳反转）的放行。
+    below = _below_ema60(top["code"].tolist(),
+                         recovery_map=top.set_index("code")["reversal_20d"].to_dict())
     if below:
         top = top[~top["code"].isin(below)]
     if top.empty:

@@ -82,13 +82,25 @@
   <!-- ============ 今日投研 ============ -->
   <div id="tab-today" class="flex flex-col gap-stack-lg px-margin-page pt-stack-lg pb-16">
     {% if empty_today %}
+    {% if empty_today.reason_type == 'data_failure' %}
+    <!-- data_failure：数据故障导致空推（警示色，明确告知） -->
     <div class="border border-error bg-error-container/30 p-3 flex items-start gap-3 rounded-lg">
-      <span class="material-symbols-outlined text-error text-[18px] mt-0.5">info</span>
+      <span class="material-symbols-outlined text-error text-[18px] mt-0.5">error</span>
       <div>
-        <p class="font-label-caps text-error">今日无推荐</p>
+        <p class="font-label-caps text-error">今日未推荐（数据故障）</p>
+        <p class="text-on-surface-variant text-[13px] mt-1">{{ empty_today.reasoning or '数据异常导致未推荐，请检查数据基座' }}</p>
+      </div>
+    </div>
+    {% else %}
+    <!-- no_opportunity：市场/量化判断无合适机会（合法决策，中性提示） -->
+    <div class="border border-surface-border bg-surface-container-high/40 p-3 flex items-start gap-3 rounded-lg">
+      <span class="material-symbols-outlined text-on-surface-variant text-[18px] mt-0.5">info</span>
+      <div>
+        <p class="font-label-caps text-on-surface-variant">今日无合适推荐</p>
         <p class="text-on-surface-variant text-[13px] mt-1">{{ empty_today.reasoning or '今日无合适机会' }}</p>
       </div>
     </div>
+    {% endif %}
     {% endif %}
 
     <!-- AI 赛道报告（设计稿 AI Track Report：通栏卡 + 大盘状态指示卡） -->

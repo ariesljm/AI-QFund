@@ -74,16 +74,16 @@ def get_empty_recommendation(date_str: str | None=None) -> dict | None:
             if has_reco:
                 return None
             row = conn.execute(
-                'SELECT date, reasoning FROM empty_recommendations WHERE date = ?',
+                'SELECT date, reasoning, COALESCE(reason_type, \'no_opportunity\') FROM empty_recommendations WHERE date = ?',
                 (date_str,),
             ).fetchone()
         else:
             row = conn.execute(
-                'SELECT date, reasoning FROM empty_recommendations ORDER BY date DESC LIMIT 1',
+                'SELECT date, reasoning, COALESCE(reason_type, \'no_opportunity\') FROM empty_recommendations ORDER BY date DESC LIMIT 1',
             ).fetchone()
     if not row:
         return None
-    return {'date': row[0], 'reasoning': row[1] or ''}
+    return {'date': row[0], 'reasoning': row[1] or '', 'reason_type': row[2] or ''}
 
 
 def clear_empty_recommendation(date_str: str) -> None:

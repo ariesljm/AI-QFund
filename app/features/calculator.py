@@ -221,8 +221,13 @@ def ema60_exit(navs: list[float], confirm_days: int = _EMA_CONFIRM_DAYS,
     预热段使 EMA 基线即时可用、R1 买入首日即生效，触发判据仍从序列第 span 条起。
     entry_idx：入场在序列中的位置（生产监控传 len(navs_trend)-len(navs_post)，回测不传）——
     仅约束 reason 文案"自高点回撤"的高点取自入场后段，避免预热段历史高点夸大数字；
-    触发判定不受影响。回测验证参数（勿改）：span=60, confirm=2 交易日。
-    """
+    触发判定不受影响。
+    豁免（2026-09 B 修复）：入场后净值不足 confirm_days+1 条时返回不触发——
+    此时 ema60_trigger_index 扫描到的是入场前历史趋势（如推荐当天净值 T-1 滞后、
+    navs_post 为空，触发点全在预热段），凭它判 EXIT 就是"推荐当天即离场"矛盾的根因
+    （011315 现场：推荐也选到中期跌势基金，R1 立即砍）。入场后至少 \n    confirm_days+1 个净值点才开始判。回测验证参数（勿改）：span=60, confirm=2 交易日。"""
+    if entry_idx is not None and len(navs) - entry_idx < confirm_days + 1:
+        return False, ""
     idx = ema60_trigger_index(navs, confirm_days)
     if idx is None:
         return False, ""

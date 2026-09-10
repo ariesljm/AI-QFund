@@ -131,6 +131,7 @@ class TestEmptyRecommendationRecord:
         repo.record_empty_recommendation("2026-08-01", "今日无合适机会")
         assert repo.get_empty_recommendation("2026-08-01") == {
             "date": "2026-08-01", "reasoning": "今日无合适机会",
+            "reason_type": "no_opportunity",   # 语义分层（方向 3，UI 展示区分）
         }
 
     def test_history_retained(self, monkeypatch, tmp_path):
