@@ -71,3 +71,81 @@ class TestRepoRegime:
         monkeypatch.setattr(base_mod, "db_conn", lambda: conn)
         # 收盘 108 > ema60 90 → 单周期 BULL
         assert base_mod.get_market_regime() == domain.REGIME_BULL
+
+
+class TestMarketBelowEma250:
+    """市场门判定（2026-09）：沪深300 跌破年线 → 不出手。"""
+
+    @staticmethod
+    def _conn_with(closes):
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE index_daily (code TEXT, date TEXT, close REAL, ema60 REAL)")
+        rows = [("sh000300", f"d{i:04d}", float(c), float(c)) for i, c in enumerate(closes)]
+        conn.executemany("INSERT INTO index_daily VALUES (?, ?, ?, ?)", rows)
+        conn.commit()
+        return conn
+
+    def test_below_ema250_blocks(self, monkeypatch):
+        import app.repo.base as base_mod
+        # 长期上涨后末段暴跌 → close < EMA250
+        closes = [100.0 + i * 0.5 for i in range(300)] + [80.0]
+        monkeypatch.setattr(base_mod, "db_conn", lambda: self._conn_with(closes))
+        assert base_mod.get_market_below_ema250() is True
+
+    def test_above_ema250_allows(self, monkeypatch):
+        import app.repo.base as base_mod
+        closes = [100.0 + i * 0.5 for i in range(300)] + [400.0]
+        monkeypatch.setattr(base_mod, "db_conn", lambda: self._conn_with(closes))
+        assert base_mod.get_market_below_ema250() is False
+
+    def test_insufficient_data_not_blocked(self, monkeypatch):
+        import app.repo.base as base_mod
+        monkeypatch.setattr(base_mod, "db_conn", lambda: self._conn_with([100.0, 90.0, 80.0]))
+        assert base_mod.get_market_below_ema250() is False
+
+
+class TestMarketGateInRecommendation:
+    """推荐入口：市场门触发 → 记空推荐日且不调用 LLM。"""
+
+    def test_gate_blocks_before_llm(self, monkeypatch):
+        import app.engine.recommend as rec_mod
+
+        recorded = {}
+        llm_calls = []
+        monkeypatch.setattr(rec_mod.repo, "get_latest_feature_date", lambda: "2026-09-09")
+        monkeypatch.setattr(rec_mod, "_feature_freshness", lambda d: 0)
+        monkeypatch.setattr(rec_mod, "_market_gate_enabled", lambda: True)
+        monkeypatch.setattr(rec_mod.repo, "get_market_below_ema250", lambda: True)
+        monkeypatch.setattr(
+            rec_mod.repo, "record_empty_recommendation",
+            lambda date, reason, reason_type="no_opportunity": recorded.update(
+                {"date": date, "reason": reason, "rt": reason_type}))
+        monkeypatch.setattr(rec_mod, "build_macro_context",
+                            lambda d: llm_calls.append(d))
+
+        rec_mod.run_recommendation()
+
+        assert recorded["rt"] == "no_opportunity"
+        assert "EMA250" in recorded["reason"]
+        assert llm_calls == []      # LLM 未调用（门在 LLM 之前）
+
+    def test_gate_disabled_does_not_block(self, monkeypatch):
+        """开关关闭时不拦（不记市场门空推荐日）。
+
+        注意：不真跑 get_or_train——真实训练会污染模型缓存，导致后续
+        model/retrain 测试读到的不是 _FakeBooster（曾在本套件全量运行时炸
+        test_retrain 两个用例）。
+        """
+        import app.engine.recommend as rec_mod
+
+        recorded = []
+        monkeypatch.setattr(rec_mod.repo, "get_latest_feature_date", lambda: "2026-09-09")
+        monkeypatch.setattr(rec_mod, "_feature_freshness", lambda d: 0)
+        monkeypatch.setattr(rec_mod, "_market_gate_enabled", lambda: False)
+        monkeypatch.setattr(rec_mod.repo, "record_empty_recommendation",
+                            lambda *a, **k: recorded.append(a))
+        monkeypatch.setattr(rec_mod, "get_or_train", lambda retrain=False: None)
+
+        rec_mod.run_recommendation()
+        assert recorded == []   # 未被市场门拦（无市场门空推荐日）
