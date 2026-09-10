@@ -294,7 +294,7 @@ def _ema250_latest(closes: list[float]) -> float | None:
     """收盘序列的 EMA250（年线）末值（现算）；数据不足 250 条返回 None。
 
     与回测 _ema250_of / backtest gate 同口径（k=2/251, adjust=False）；
-    市场 regime 判定与市场门共用单一来源。
+    市场 regime 判定等长周期口径共用单一来源。
     """
     if len(closes) <= 250:
         return None
@@ -303,25 +303,6 @@ def _ema250_latest(closes: list[float]) -> float | None:
     for v in closes[1:]:
         ema = v * k + ema * (1.0 - k)
     return ema
-
-
-def get_market_below_ema250() -> bool:
-    """沪深300 收盘 < EMA250（年线）——市场门判定（2026-09，回测验证）。
-
-    与回测 gate_verdict(rules) 同口径（单条件）：跌破年线 → 今日不出手，
-    从源头回避熊市区间。回测（2021-2026、67 决策点、同一轮同源对比）：
-    出手日均值 +2.30%→+6.88%、胜率 55%→72%、出手序列回撤 -49.8%→-24.8%。
-    数据不足（<250 条）返回 False（不误拦，交回 LLM 门）。
-    """
-    with db_conn() as conn:
-        rows = conn.execute(
-            "SELECT close FROM index_daily WHERE code='sh000300' AND close IS NOT NULL "
-            "ORDER BY date").fetchall()
-    closes = [float(r[0]) for r in rows]
-    if not closes:
-        return False
-    ema = _ema250_latest(closes)
-    return ema is not None and closes[-1] < ema
 
 
 def get_market_regime() -> str:
@@ -705,4 +686,4 @@ def set_model_label_version(version: str) -> None:
 
 
 
-__all__ = ["FEATURE_COLS", "MARKET_COLS", "FORWARD_WINDOW", "check_data_ready", "is_recommend_data_ready", "get_all_ranking_rows", "get_available_sectors", "get_buyable_codes", "get_buyable_feature_stats", "get_codes_missing_rbsa", "get_feature_codes_before", "get_feature_dates_map", "get_fund_name", "get_fund_pool_stats", "get_holdings", "get_holdings_at_report", "get_holdings_report_dates", "get_holdings_summaries", "get_index_close", "get_index_momentum", "get_index_rows", "get_index_series", "get_industry_map", "get_industry_map_gap_count", "get_industry_map_stats", "get_industry_map_targets", "get_latest_feature_date", "get_latest_feature_date_before", "get_latest_features", "get_latest_holdings_date", "get_latest_holdings_rows", "get_market_below_ema250", "get_market_regime", "get_market_technical", "get_meta", "get_model_last_trained", "get_model_label_version", "set_model_label_version", "get_data_latest_date", "get_interval_days", "get_int_cursor", "get_nav_time_state", "get_sector_momentum_median", "get_sector_momentum_medians", "get_rbsa_at_date", "get_first_rbsa_after", "get_sector_candidates", "get_sector_heatmap", "get_system_logs", "get_train_fund_codes", "get_uptime_days", "has_index_data", "has_nav_data", "sample_fund_codes_before", "save_meta", "set_model_last_trained"]
+__all__ = ["FEATURE_COLS", "MARKET_COLS", "FORWARD_WINDOW", "check_data_ready", "is_recommend_data_ready", "get_all_ranking_rows", "get_available_sectors", "get_buyable_codes", "get_buyable_feature_stats", "get_codes_missing_rbsa", "get_feature_codes_before", "get_feature_dates_map", "get_fund_name", "get_fund_pool_stats", "get_holdings", "get_holdings_at_report", "get_holdings_report_dates", "get_holdings_summaries", "get_index_close", "get_index_momentum", "get_index_rows", "get_index_series", "get_industry_map", "get_industry_map_gap_count", "get_industry_map_stats", "get_industry_map_targets", "get_latest_feature_date", "get_latest_feature_date_before", "get_latest_features", "get_latest_holdings_date", "get_latest_holdings_rows", "get_market_regime", "get_market_technical", "get_meta", "get_model_last_trained", "get_model_label_version", "set_model_label_version", "get_data_latest_date", "get_interval_days", "get_int_cursor", "get_nav_time_state", "get_sector_momentum_median", "get_sector_momentum_medians", "get_rbsa_at_date", "get_first_rbsa_after", "get_sector_candidates", "get_sector_heatmap", "get_system_logs", "get_train_fund_codes", "get_uptime_days", "has_index_data", "has_nav_data", "sample_fund_codes_before", "save_meta", "set_model_last_trained"]

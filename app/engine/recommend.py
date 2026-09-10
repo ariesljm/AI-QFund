@@ -95,15 +95,6 @@ def _dedup_fund_name(name: str) -> str:
     return _re.sub(r"(?<![A-Za-z_0-9])(A|B|C|D|E|F|H|I|O|Y|Z)$", "", (name or "").strip())
 
 
-def _market_gate_enabled() -> bool:
-    """市场门开关（settings [market_gate] enabled，缺省开启；读失败不误拦）。"""
-    try:
-        from app.config import load_settings
-        return bool((load_settings().get("market_gate") or {}).get("enabled", True))
-    except Exception:
-        return True
-
-
 def _below_ema60(codes: list[str]) -> set[str]:
     """现价跌破自身 EMA60 的基金集合（推荐侧 R1 对齐门槛，B 修复 2026-09）。
 
@@ -661,17 +652,6 @@ def run_recommendation(retrain: bool = False) -> None:
     elif lag >= 2:
         logger.error("特征新鲜度：最新特征日期 %s 滞后 %d 个交易日——数据基座连续失败，推荐将基于严重陈旧特征",
                      feat_date, lag)
-
-    # 市场门（2026-09，回测验证）：沪深300 收盘 < EMA250（年线）→ 今日不出手。
-    # 与回测 gate_verdict(rules) 同口径；同源对比（2021-2026、67 决策点）：
-    # 出手日均值 +2.30%→+6.88%、胜率 55%→72%、出手序列回撤 -49.8%→-24.8%。
-    # 置于 LLM 之前：熊市区间不白耗一次宏观 LLM 调用。
-    if _market_gate_enabled() and repo.get_market_below_ema250():
-        repo.record_empty_recommendation(
-            date_str, "市场门：沪深300 收盘跌破年线（EMA250），今日不出手（熊市区间回避）",
-            reason_type="no_opportunity")
-        logger.info("市场门触发：沪深300 跌破 EMA250（年线），记录空推荐日（不出手）")
-        return
 
     insights = _load_insights()
 
