@@ -7,6 +7,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import app.database as db_mod
+
+import pytest
+
+import app.utils.trading_calendar as _tc_mod
+
+
+@pytest.fixture(autouse=True)
+def _reset_calendar_cache():
+    """交易日历模块级缓存跨测试残留（换库后不命中旧缓存）。"""
+    _tc_mod._cache = None
+    yield
+    _tc_mod._cache = None
 import app.engine.recommend as rec
 from app.data.foundation import mark_short_history_funds, mark_stale_funds
 from app.database import get_db, meta_set

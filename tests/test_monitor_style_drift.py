@@ -150,3 +150,30 @@ class TestEntryRbsaFallback:
         monkeypatch.setattr(monitor_mod, "get_first_rbsa_after", lambda code, d: None)
         ind, w = monitor_mod._entry_rbsa("x", None, None)
         assert ind is None and w is None
+
+
+class TestSameIndustryNormalization:
+    """跨体系命名归一（季报 EM2016 名 vs 板块名）："煤炭"与"煤炭开采"是同行业，不算切换。"""
+
+    def test_substring_relation_is_same(self):
+        assert monitor_mod._same_industry("煤炭", "煤炭开采") is True
+        assert monitor_mod._same_industry("煤炭开采", "煤炭") is True
+        assert monitor_mod._same_industry("半导体", "半导体设备") is True
+
+    def test_different_industries_are_not_same(self):
+        assert monitor_mod._same_industry("石油天然气", "煤炭开采") is False
+        assert monitor_mod._same_industry("半导体", "白酒") is False
+
+    def test_empty_is_not_same(self):
+        assert monitor_mod._same_industry("", "煤炭") is False
+        assert monitor_mod._same_industry("煤炭", "") is False
+
+    def test_style_drift_uses_normalization(self):
+        """同义行业（煤炭→煤炭开采）不触发切换；不同行业才触发。"""
+        same = StyleDriftRule().check(_ctx(
+            cur_feat=_stub_features("煤炭", 37.0), entry_rbsa=("煤炭开采", 37.0)))
+        assert same is None  # 同义，不算切换
+
+        diff = StyleDriftRule().check(_ctx(
+            cur_feat=_stub_features("白酒", 37.0), entry_rbsa=("半导体", 37.0)))
+        assert diff is not None and diff.signal == "EXIT"

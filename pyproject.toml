@@ -15,6 +15,8 @@ dependencies = [
     "tls-client>=1.0.1",
     "uvicorn>=0.51.0",
     "mini-racer>=0.14.1",
+    "scikit-learn>=1.9.0",
+    "scipy>=1.17.1",
 ]
 
 [tool.uv]

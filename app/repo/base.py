@@ -337,6 +337,17 @@ def get_holdings_report_dates() -> dict[str, str]:
     return dict(rows)
 
 
+def get_holdings_report_dates_all() -> dict[str, set[str]]:
+    """各基金已留存的全部持仓报告期（历史多期回填的增量跳过判断）。"""
+    with db_conn() as conn:
+        rows = conn.execute(
+            "SELECT code, report_date FROM fund_holdings").fetchall()
+    result: dict[str, set[str]] = {}
+    for code, report_date in rows:
+        result.setdefault(code, set()).add(report_date)
+    return result
+
+
 def get_nav_time_state() -> tuple[dict[str, tuple[str, str]], list[str]]:
     """净值时间状态（单一归属）：(每基金日期区间 {code:(首日,末日)}, 全部净值日期升序)。
 

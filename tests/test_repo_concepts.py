@@ -103,6 +103,23 @@ class TestStoreFeatureWrite:
                 "SELECT COUNT(*) FROM fund_features WHERE code='000001'").fetchone()[0]
         assert n == 0
 
+    def test_risk_adjusted_cols_are_persisted(self):
+        """新增的风险调整列（sharpe/sortino/ttr）必须落库。
+
+        回归：曾因 save 语句列清单未同步，特征算了却没保存——
+        快照新列全为 NULL，候选过滤 dropna(FEATURE_COLS) 直接清空。
+        """
+        _seed()
+        store.save_fund_features({
+            "code": "000001", "date": "2026-08-03", "regime": "BULL",
+            "sharpe_60d": 1.25, "sortino_60d": 1.8, "ttr_60d": 12.0,
+        })
+        with db_conn() as conn:
+            row = conn.execute(
+                "SELECT sharpe_60d, sortino_60d, ttr_60d FROM fund_features "
+                "WHERE code='000001' AND date='2026-08-03'").fetchone()
+        assert row == (1.25, 1.8, 12.0)
+
     def test_meta_goes_through_repo(self):
         """meta 写收敛到 repo.save_meta（Q2）：database.meta_set 无直接外部调用。"""
         repo.save_meta("test_key_xy", "v")

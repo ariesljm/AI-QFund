@@ -630,3 +630,30 @@ class TestBatchNoUpdateAccounting:
             n = conn.execute(
                 "SELECT COUNT(*) FROM fund_nav WHERE date = '2026-07-31'").fetchone()[0]
         assert n == len(codes)
+
+
+class TestForwardReturnFromNavs:
+    """40 日收益主标尺纯计算（架构审查候选 3：单一来源）。"""
+
+    def test_full_window(self):
+        from app.repo.nav import forward_return_from_navs
+        navs = [1.0, 1.1, 1.2, 1.3]
+        assert forward_return_from_navs(navs, 0, 3) == pytest.approx(0.3)
+
+    def test_window_too_short_returns_none(self):
+        from app.repo.nav import forward_return_from_navs
+        assert forward_return_from_navs([1.0, 1.1], 0, 3) is None
+
+    def test_invalid_endpoint_returns_none(self):
+        from app.repo.nav import forward_return_from_navs
+        assert forward_return_from_navs([0.0, 1.0, 1.2], 0, 2) is None
+        assert forward_return_from_navs([1.0, 1.2, None], 0, 2) is None
+
+    def test_mid_gap_keeps_endpoint_semantics(self):
+        """与原 forward_return 同语义：只检查端点，中间断档不影响区间收益。"""
+        from app.repo.nav import forward_return_from_navs
+        assert forward_return_from_navs([1.0, None, 1.2], 0, 2) == pytest.approx(0.2)
+
+    def test_negative_pos_returns_none(self):
+        from app.repo.nav import forward_return_from_navs
+        assert forward_return_from_navs([1.0, 1.1], -1, 1) is None

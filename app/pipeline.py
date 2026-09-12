@@ -133,6 +133,19 @@ def _run_recommend_safely(cid: str) -> None:
     _run_phase_safely("推荐引擎", _run_recommend_gated, cid)
 
 
+def _run_style_track_safely(cid: str) -> None:
+    """风格反推槽位（ticket 05）：监控前刷新 fund_style_track。
+
+    R2/R3 日频化与 R1.5 相对超额止损都消费该表；反推失败不阻断监控
+    （防线自行回退季度 RBSA）。
+    """
+    def _run() -> None:
+        from app.engine.style_track import update_all_fund_styles
+        n = update_all_fund_styles()
+        logger.info("风格反推完成: %d 只基金", n)
+    _run_phase_safely("风格反推", _run, cid)
+
+
 def _run_recommend_gated() -> None:
     """门控 + 推荐引擎：门控未就绪仅跳过推荐（监控不受影响）。"""
     if not _ensure_recommend_data_ready():
@@ -148,6 +161,7 @@ def run(today: datetime | None = None) -> None:
     # 监控有净值新鲜度护栏（陈旧走数据告警），全流程继续执行
     _run_phase_safely("数据基座", lambda: run_data_foundation(steps=daily_steps()), cid)
     _run_recommend_safely(cid)
+    _run_style_track_safely(cid)
     _run_phase_safely("监控引擎", run_monitor, cid)
     _run_phases(_evolve_phase(today), "进化槽位", cid)
 
@@ -168,4 +182,5 @@ def run_recommend(today: datetime | None = None) -> None:
     """
     today, cid = _run_slot("推荐槽位", today)
     _run_recommend_safely(cid)
+    _run_style_track_safely(cid)
     _run_phase_safely("监控引擎", run_monitor, cid)

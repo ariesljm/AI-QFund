@@ -60,6 +60,10 @@ CREATE TABLE IF NOT EXISTS fund_features (
     mom_5d REAL,
     mom_60d REAL,
     vol_20d REAL,
+    sharpe_60d REAL,
+    sortino_60d REAL,
+    ttr_60d REAL,
+    style_r2 REAL DEFAULT 0,
     rbsa_industry_1 TEXT,
     rbsa_weight_1 REAL,
     rbsa_industry_2 TEXT,
@@ -232,6 +236,9 @@ CREATE TABLE IF NOT EXISTS quality_metrics (
     timing_contribution REAL,
     e2e_sample_count INTEGER,
     e2e_points_json TEXT,
+    -- 体验指标（ticket 12）：推荐至退出的平均持仓自然日数与平均最大回撤
+    e2e_mean_hold_days REAL,
+    e2e_mean_max_drawdown REAL,
     -- 分桶赚钱率（模型校准观测 #1）：按预测分分桶的赚钱率/样本数，验证 L1 回归与胜率口径对齐
     by_score_bucket_json TEXT
 );
@@ -258,6 +265,18 @@ CREATE TABLE IF NOT EXISTS sector_daily_snapshot (
     pct_chg REAL,
     net_flow REAL,
     PRIMARY KEY (date, sector_code)
+);
+
+-- 净值反推风格暴露（ticket 05）：每日 RBSA 结果，Top-2 行业 + 拟合优度
+CREATE TABLE IF NOT EXISTS fund_style_track (
+    fund_code TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
+    industry_1 TEXT,
+    weight_1 REAL,
+    industry_2 TEXT,
+    weight_2 REAL,
+    r_squared REAL,
+    PRIMARY KEY (fund_code, trade_date)
 );
 
 -- 数据拉取失败记录（全量/增量下载失败追踪与重试恢复）

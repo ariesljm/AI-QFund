@@ -9,6 +9,7 @@
 import asyncio
 import sys
 import time
+import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -355,3 +356,81 @@ class TestQPSGate:
         asyncio.run(run())
         assert len(sleeps) == 2  # 满桶 1 个，后两个各等 ~1s
         assert all(abs(s - 1.0) < 0.05 for s in sleeps)
+
+
+class TestPush2StrategyChainSuccessPaths:
+    """push2 降级链对比（架构审查候选 7 补充）：原只测全失败路径。
+
+    顺序 curl_cffi → tls_client → curl.exe，首个成功者生效且不触发后续。
+    每个策略函数自带 try/except+日志，注入依赖经 sys.modules / subprocess.run。
+    """
+
+    def _push2_url(self):
+        return "https://push2.eastmoney.com/api/qt/ulist.np/get"
+
+    def _bootstrap_curlcffi(self, monkeypatch, status_or_resp):
+        """注入 curl_cffi.requests 模块；返回 514 或给定响应。"""
+        cc_pkg = types.ModuleType("curl_cffi")
+        cc_mod = types.ModuleType("curl_cffi.requests")
+        if isinstance(status_or_resp, int):
+            cc_mod.get = lambda *a, **k: httpx.Response(
+                status_or_resp, request=httpx.Request("GET", self._push2_url()))
+        else:
+            cc_mod.get = lambda *a, **k: status_or_resp
+        monkeypatch.setitem(sys.modules, "curl_cffi", cc_pkg)
+        monkeypatch.setitem(sys.modules, "curl_cffi.requests", cc_mod)
+
+    def test_chain_first_success_wins(self, monkeypatch):
+        """curl_cffi 成功(200) → 直接返回，不落到 tls_client / curl.exe。"""
+        self._bootstrap_curlcffi(
+            monkeypatch, httpx.Response(200, content=b"[1,2]",
+                                        request=httpx.Request("GET", self._push2_url())))
+        import subprocess as _subproc
+        called = []
+        def _boom(*a, **k):
+            called.append(a)
+            raise RuntimeError("不应降级到 curl.exe")
+        monkeypatch.setattr(_subproc, "run", _boom)
+
+        resp = fetchers._push2_fetch(self._push2_url())
+        assert resp.status_code == 200 and resp.content == b"[1,2]"
+        assert called == []
+
+    def test_chain_second_success_after_first_514(self, monkeypatch):
+        """curl_cffi 514 → tls_client 成功（第二级生效，不落 curl.exe）。"""
+        self._bootstrap_curlcffi(monkeypatch, 514)
+        tl_pkg = types.ModuleType("tls_client")
+
+        class _FakeSession:
+            def __init__(self, *a, **k):
+                pass
+
+            def get(self, url, headers=None, timeout_seconds=None):
+                return httpx.Response(200, content=b"[9]",
+                                      request=httpx.Request("GET", url))
+        tl_pkg.Session = _FakeSession
+        monkeypatch.setitem(sys.modules, "tls_client", tl_pkg)
+        import subprocess as _subproc
+        called = []
+        monkeypatch.setattr(_subproc, "run",
+                            lambda *a, **k: called.append(a) or (_ for _ in ()).throw(RuntimeError("x")))
+
+        resp = fetchers._push2_fetch(self._push2_url())
+        assert resp.status_code == 200 and resp.content == b"[9]"
+        assert called == []
+
+    def test_chain_curl_exe_last_success(self, monkeypatch):
+        """curl_cffi 514 + tls-client 异常 → curl.exe 成功（末级兜底生效）。"""
+        self._bootstrap_curlcffi(monkeypatch, 514)
+        tl_pkg = types.ModuleType("tls_client")
+        tl_pkg.Session = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("tls 失败"))
+        monkeypatch.setitem(sys.modules, "tls_client", tl_pkg)
+        import subprocess as _subproc
+
+        class _Rs:
+            returncode = 0
+            stdout = "[7,8]"
+        monkeypatch.setattr(_subproc, "run", lambda *a, **k: _Rs())
+
+        resp = fetchers._push2_fetch(self._push2_url())
+        assert resp.status_code == 200 and resp.content == b"[7,8]"

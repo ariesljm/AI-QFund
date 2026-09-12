@@ -14,7 +14,11 @@ from app.data.fetchers import fetch, fetch_async
 from app.data.ingest import filter_cooldown_targets, run_batched_fetch
 from app.data.store import STAGE_NO_UPDATE, save_holdings_batch
 from app.database import db_conn
-from app.repo.base import get_buyable_codes, get_holdings_report_dates
+from app.repo.base import (
+    get_buyable_codes,
+    get_holdings_report_dates,
+    get_holdings_report_dates_all,
+)
 from app.utils.log import get_logger
 
 logger = get_logger("data.holdings")
@@ -36,22 +40,40 @@ _HOLDING_ROW_RE = re.compile(
 
 
 
+def _parse_holdings_history(text: str) -> list[tuple[str, list[dict]]]:
+    """解析东财持仓页为多期列表（year=YYYY&month= 一次返回该年全部季度）。
+
+    按报告期日期标签分块，每块独立提取持仓行；返回 [(report_date, holdings), ...]，
+    顺序与页面一致（最新季度在前）。单期页面同样适用（返回单元素列表）。
+    """
+    positions = [(m.group(1), m.start()) for m in _HOLDING_DATE_RE.finditer(text)]
+    if not positions:
+        return []
+    result: list[tuple[str, list[dict]]] = []
+    for i, (report_date, start) in enumerate(positions):
+        end = positions[i + 1][1] if i + 1 < len(positions) else len(text)
+        holdings: list[dict] = []
+        for code, name, weight_str in _HOLDING_ROW_RE.findall(text[start:end]):
+            try:
+                weight = float(weight_str)
+            except ValueError:
+                weight = 0.0
+            holdings.append({
+                "stock_code": code,
+                "stock_name": name,
+                "weight": weight,
+            })
+        if holdings:
+            result.append((report_date, holdings))
+    return result
+
+
 def _parse_holdings_html(text: str) -> tuple[str | None, list[dict]]:
-    date_m = _HOLDING_DATE_RE.search(text)
-    report_date = date_m.group(1) if date_m else None
-    holdings = []
-    for m in _HOLDING_ROW_RE.finditer(text):
-        stock_code, stock_name, weight_str = m.group(1), m.group(2), m.group(3)
-        try:
-            weight = float(weight_str)
-        except ValueError:
-            weight = 0.0
-        holdings.append({
-            "stock_code": stock_code,
-            "stock_name": stock_name,
-            "weight": weight,
-        })
-    return report_date, holdings
+    """单期持仓解析（增量抓取路径）：取多期解析的首期，保持原调用契约。"""
+    history = _parse_holdings_history(text)
+    if not history:
+        return None, []
+    return history[0]
 
 
 _HOLDINGS_HEADERS = {
@@ -201,6 +223,61 @@ async def async_download_all_holdings(
         "持仓下载完成: %d 只有持仓, 共 %d 条, 耗时 %.1f 秒",
         funds_with_holdings, total_rows, elapsed,
     )
+    return total_rows
+
+
+def backfill_holdings_history(years: int = 3) -> int:
+    """历史多期持仓回填：对每只可买基金按年份拉取该年全部季度持仓入库。
+
+    year=YYYY&month= 一次返回该年 4 个季度；已完整回填的历史年份跳过（幂等、
+    可断点续传）。当年季度由每日增量 Step4 负责，本函数只处理历史年份。
+    返回新增持仓行数。
+    """
+    if years < 1:
+        raise ValueError("years 必须 >= 1")
+    codes = get_buyable_codes()
+    existing = get_holdings_report_dates_all()
+    current_year = datetime.now().year
+    years_range = range(current_year - 1, current_year - years - 1, -1)
+
+    total_rows = 0
+    with db_conn() as conn:
+        for idx, code in enumerate(codes, 1):
+            have = existing.get(code, set())
+            for year in years_range:
+                quarters = [
+                    f"{year}-12-31", f"{year}-09-30",
+                    f"{year}-06-30", f"{year}-03-31",
+                ]
+                if all(q in have for q in quarters):
+                    continue  # 该年已完整回填
+                resp = fetch(
+                    _API_HOLDINGS_URL,
+                    params={"type": "jjcc", "code": code, "topLine": "10",
+                            "year": str(year), "month": ""},
+                    headers=_HOLDINGS_HEADERS, timeout=15,
+                )
+                raw = resp.content
+                charset = getattr(resp, "encoding", None) or "gbk"
+                try:
+                    text = raw.decode(charset)
+                except (UnicodeDecodeError, LookupError):
+                    text = raw.decode("gbk", errors="replace")
+                for report_date, holdings in _parse_holdings_history(text):
+                    if report_date in have or not holdings:
+                        continue
+                    rows = [
+                        (code, report_date, h["stock_code"], h["stock_name"], h["weight"])
+                        for h in holdings
+                    ]
+                    save_holdings_batch(conn, rows)
+                    total_rows += len(rows)
+                    have.add(report_date)
+            conn.commit()  # 每只基金提交一次，中断可续传
+            if idx % 500 == 0:
+                logger.info("历史持仓回填进度: %d/%d, 新增 %d 行",
+                            idx, len(codes), total_rows)
+    logger.info("历史持仓回填完成: 新增 %d 行", total_rows)
     return total_rows
 
 

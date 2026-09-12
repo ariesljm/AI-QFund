@@ -13,6 +13,10 @@ FUND_LIST_LAST_UPDATE = "fund_list_last_update"  # 基金列表周重建最近�
 # 模型生命周期
 MODEL_LAST_TRAINED = "model_last_trained"
 MODEL_LABEL_VERSION = "model_label_version"   # 训练标签版本（防新旧标签错配）
+# 特征列 schema 版本：特征列增删后递增，强制 fund_features 快照全量重算
+# （否则旧的"已最新"快照会带着新增列的 NULL 被跳过，dropna(FEATURE_COLS) 清空候选）
+FEATURE_SCHEMA_VERSION = "feature_schema_version"
+LGB_PARAMS_SNAPSHOT = "lgb_params_snapshot"   # GA 月度寻优的树结构超参快照（每日训练读取）
 
 # 排序配置（推荐/回测/GA 共享）
 RANKING_CFG = "ranking_cfg"

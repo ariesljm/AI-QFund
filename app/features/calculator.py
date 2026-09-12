@@ -1,6 +1,7 @@
 """特征计算模块：Hurst、动量、卡玛、RBSA、大盘状态机。"""
 
 import time
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -14,12 +15,27 @@ from app.utils.log import get_logger
 logger = get_logger("features")
 
 _FEATURE_RETENTION_ROWS = 250
+
+# 特征列 schema 版本：FEATURE_COLS 增删时**必须递增**。
+# 否则 skip 逻辑会把"已最新"但缺新列（NULL）的旧快照留下，
+# 而候选过滤的 dropna(FEATURE_COLS) 会直接清空整个候选池。
+# v2: 新增 sharpe_60d / sortino_60d / ttr_60d（风险调整三指标）
+# v3: 新增 style_r2（净值反推拟合优度=风格清晰度，walk-forward 回测 P5 证实有独立预测增益）
+_FEATURE_SCHEMA_VERSION = "v3"
 """fund_features 每只基金保留的特征快照行数（与净值保留窗口一致，覆盖监控风格漂移的历史查询）。"""
 
 # combo 配方固定系数（combo_score 单一来源）：与 GA 可调权重（regime_combo_weights）区分。
 _COMBO_SECTOR_REL_MOMENTUM_W = 0.15   # 赛道相对动量对 combo 的固定贡献
 _COMBO_SECTOR_REL_CALMAR_W = 0.05     # 赛道相对卡玛的固定贡献
 _COMBO_RBSA_W = 0.003                 # RBSA 行业权重暴露的固定贡献
+# 赛道拥挤度惩罚贡献（ticket 08）：惩罚值本身已归一到 [-1, 0]，故系数放大到
+# 与 calmar 同量级，使极端拥挤足以�±动排序但不至于一票否决。
+_COMBO_SECTOR_CROWDING_W = 0.3
+
+# 拥挤度判定参数（sector_crowding_penalty）
+_CROWDING_MIN_SAMPLES = 5        # 最小样本数（不足则降级不惩罚）
+_CROWDING_EXTREME_Z = 2.0        # 最新净流入 z-score 极端阈值
+_CROWDING_SLOPE_RATIO = 2.0      # 后半段/前半段均值比（斜率过陡阈值）
 
 
 def sim_trailing_stop(daily_navs: list[float], atr_mult: float = 2.0,
@@ -264,11 +280,68 @@ def sim_ema60_exit(daily_navs: list[float], confirm_days: int = _EMA_CONFIRM_DAY
     return arr[-1] / arr[0] - 1.0
 
 
-def market_state_features(idx_close: np.ndarray, idx_vol: np.ndarray) -> dict:
-    """市场状态列（单一来源）：指数 20 日动量(%)、20 日波动率(%)。
+def calc_sector_heat(cum_rets: list[float]) -> float:
+    """赛道热度（市场级、**可历史化**）：近 5 日各赛道累计涨幅的横截面分化度。
+
+    取 (P90 − 中位数)：赛道间涨幅分化越极端，说明资金越集中、拥挤风险越高。
+    因基于板块日涨幅（sector_daily_snapshot，自 2024-03 有历史），可与指数列
+    一样回溯到任意决策日，故能真进 LightGBM 训练（net_flow 仅 ~17 日，不可行）。
+
+    纯函数；有效样本 < 5 个赛道 → 0.0（优雅降级，不窃动模型）。
+    """
+    arr = np.asarray([float(x) for x in cum_rets if x is not None], dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if arr.size < 5:
+        return 0.0
+    return float(np.percentile(arr, 90) - np.median(arr))
+
+
+def load_sector_pct_frame(start: str | None = None, end: str | None = None):
+    """加载板块日涨幅矩阵（index=date，columns=sector_name，值为百分数）。
+
+    一次查询建成宽表，供训练（逐决策日切片）/推荐（最新切片）复用，避免 N+1。
+    无数据返回 None（调用方降级为热度 0）。
+    """
+    import app.repo as repo
+
+    rows = repo.get_sector_pct_series(start or "0000-01-01", end or "9999-12-31")
+    if not rows:
+        return None
+    df = pd.DataFrame([(d, n, p) for d, _c, n, p in rows],
+                      columns=["date", "sector", "pct"])
+    return df.pivot_table(index="date", columns="sector", values="pct", aggfunc="last")
+
+
+def sector_heat_from_frame(sector_frame, as_of: str | None = None, window: int = 5) -> float:
+    """从板块日涨幅矩阵算截至 as_of 的赛道热度（严格不含未来数据）。"""
+    if sector_frame is None or len(sector_frame) == 0:
+        return 0.0
+    df = sector_frame if as_of is None else sector_frame.loc[:as_of]
+    if len(df) < window:
+        return 0.0
+    cum = df.iloc[-window:].sum(axis=0)          # 各赛道近 window 日累计涨幅
+    return calc_sector_heat(list(cum.dropna().values))
+
+
+_latest_heat_cache: dict = {}
+
+
+def latest_sector_heat() -> float:
+    """最新交易日赛道热度（进程内按日缓存，避免每次推荐重建宽表）。"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    if _latest_heat_cache.get("date") != today:
+        _latest_heat_cache["value"] = sector_heat_from_frame(load_sector_pct_frame())
+        _latest_heat_cache["date"] = today
+    return float(_latest_heat_cache["value"])
+
+
+def market_state_features(idx_close: np.ndarray, idx_vol: np.ndarray,
+                          sector_heat: float = 0.0) -> dict:
+    """市场状态列（单一来源）：指数 20 日动量/波动率、60 日偏离、赛道热度。
 
     R1 绝对收益目标配套：全基金共享的时变特征，让模型感知市场 beta 分量。
     入参为截至决策日的指数历史窗口（不含未来数据，训练/回测无前视）。
+    sector_heat（ticket 08）：赛道拥挤度代理，缺数据传 0.0 不窃动。
     """
     feat: dict = {}
     if len(idx_close) >= 21:
@@ -287,6 +360,7 @@ def market_state_features(idx_close: np.ndarray, idx_vol: np.ndarray) -> dict:
         feat["bias_60d"] = float((idx_close[-1] - idx_ma60) / idx_ma60 * 100)
     else:
         feat["bias_60d"] = 0.0
+    feat["sector_heat_5d"] = float(sector_heat)
     return feat
 
 
@@ -335,11 +409,45 @@ def calc_hurst(series: np.ndarray, max_lag: int = 20) -> float:
     return float(np.clip(slope, 0, 1))
 
 
+def _style_r2_from_frame(nav_dates: list[str], nav_vals: np.ndarray,
+                         sector_frame, window: int = 60) -> float | None:
+    """净值(带日期)×板块宽表 → 最近 window 日反推拟合优度 r_squared（不落库）。
+
+    回测验收结论（spec P5）：r_squared（风格清晰度）对 40 日收益有独立正贡献
+    （+0.045, p<0.001），主线权重 weight_1 无贡献——故只取 r2 进特征。
+    数据不足/不可解释时返回 None（调用方降级为 0.0，避免 None 打崩候选池）。
+    sector_frame：date × sector 宽表（pct 百分数），index 须为有序字符串日期。
+    """
+    from app.engine.style_track import solve_style_weights
+    from app.features.sector import style_returns_matrix
+    if sector_frame is None or len(nav_vals) < window + 1:
+        return None
+    vals = nav_vals[-window - 1:]
+    if any(not np.isfinite(v) or v <= 0 for v in vals):
+        return None
+    ret = np.array([vals[i] / vals[i - 1] - 1.0 for i in range(1, len(vals))])
+    ret_dates = nav_dates[-window:]
+    # 深模块：宽表精确重排到净值窗口 + ÷100 + 全日期覆盖过滤（单点收敛）
+    m = style_returns_matrix(ret_dates, sector_frame=sector_frame)
+    if m is None:
+        return None
+    R, _names = m
+    try:
+        _w, r2 = solve_style_weights(ret, R)
+    except Exception:
+        return None
+    return round(float(r2), 4)
+
+
 def compute_fund_features(navs: np.ndarray, idx_closes: np.ndarray,
-                          idx_volumes: np.ndarray) -> dict | None:
-    """从净值+指数数组计算 7 个特征（纯函数，不触碰 DB；数据不足返回 None）。
+                          idx_volumes: np.ndarray,
+                          nav_dates: list[str] | None = None,
+                          sector_frame=None) -> dict | None:
+    """从净值+指数数组计算特征（纯函数，不触碰 DB；数据不足返回 None）。
 
     特征公式单一来源：calc_features / 训练样本 / 回测均复用，避免多套公式漂移。
+    nav_dates/sector_frame：style_r2（风格清晰度）反推用，可选——缺省时
+    style_r2 取 0.0（无信号），保证旧调用与数据不足场景自动降级。
     """
     if len(navs) < 60:
         return None
@@ -388,6 +496,22 @@ def compute_fund_features(navs: np.ndarray, idx_closes: np.ndarray,
     else:
         feat["downside_vol"] = 0.0
 
+    # 风险调整三指标（业务要求“优先考虑”）：夏普 / 索提诺 / 最大回撤恢复时间。
+    # 统一 60 日窗口；无风险利率取 0（简化，公募基金比较口径一致）。
+    if len(returns) >= 60:
+        r60 = returns[-60:]
+        ann_ret = float(r60.mean() * 252)
+        sd = float(r60.std() * np.sqrt(252))
+        feat["sharpe_60d"] = ann_ret / sd if sd > 1e-10 else 0.0
+        neg60 = r60[r60 < 0]
+        dsd = float(neg60.std() * np.sqrt(252)) if neg60.size > 0 else 0.0
+        feat["sortino_60d"] = ann_ret / dsd if dsd > 1e-10 else 0.0
+        feat["ttr_60d"] = _ttr_days(navs[-61:])
+    else:
+        feat["sharpe_60d"] = 0.0
+        feat["sortino_60d"] = 0.0
+        feat["ttr_60d"] = 0.0
+
     if len(idx_closes) >= 60 and len(returns) >= 60:
         idx_ret = np.diff(idx_closes) / idx_closes[:-1]
         idx_ret = idx_ret[np.isfinite(idx_ret)]
@@ -400,17 +524,68 @@ def compute_fund_features(navs: np.ndarray, idx_closes: np.ndarray,
         feat["capture_up"] = feat["capture_down"] = 1.0
 
     # bias_60d（指数偏离60日均线）已移入 market_state_features（市场层面特征，顺带发现）
+    # style_r2（ticket 05 + spec P5）：净值可被板块解释的程度 = 风格清晰度。
+    # 回测证明其对 40 日收益有独立正贡献；数据不足/不可解释时降级 0.0（无信号）。
+    feat["style_r2"] = 0.0
+    if nav_dates is not None and sector_frame is not None and len(navs) >= 61:
+        r2 = _style_r2_from_frame(list(nav_dates), np.asarray(navs, dtype=float),
+                                  sector_frame)
+        if r2 is not None:
+            feat["style_r2"] = r2
     return feat
+
+
+def _ttr_days(navs) -> float:
+    """最大回撤恢复时间 TTR（交易日，ticket：风险调整三指标之一）。
+
+    定义：从最深回撤谷底回到**回撤前高点**所需交易日数。
+    - 窗口内未恢复 → 返回谷底到窗口末的长度（越长越差，作惩罚）
+    - 无回撤 → 0.0
+    - 数据不足（<2 点）→ 0.0
+
+    纯函数，供 calc_features / 测试复用。
+    """
+    arr = np.asarray(navs, dtype=float)
+    if arr.size < 2:
+        return 0.0
+    peak = np.maximum.accumulate(arr)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        dd = (arr - peak) / peak
+    trough = int(np.argmin(dd))
+    if dd[trough] >= -1e-12:
+        return 0.0                      # 窗口内无回撤
+    prior_peak = int(np.argmax(arr[:trough + 1]))
+    recover = np.nonzero(arr[trough:] >= arr[prior_peak])[0]
+    if recover.size == 0:
+        return float(arr.size - 1 - trough)   # 未恢复：剩余窗口长度
+    return float(recover[0])
+
+
+def _minmax01(s: "pd.Series") -> "pd.Series":
+    """min-max 归一到 [0,1]；退化（全等/非有限）时返回 0.5 中性值。"""
+    try:
+        lo, hi = float(s.min()), float(s.max())
+    except (TypeError, ValueError):
+        return pd.Series(0.5, index=s.index)
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi - lo <= 1e-12:
+        return pd.Series(0.5, index=s.index)
+    return (s - lo) / (hi - lo)
 
 
 def combo_score(score_norm: float, rel_strength: float, calmar: float, hurst: float,
                 w: dict[str, float], sector_rel_momentum: float = 0.0,
-                sector_rel_calmar: float = 0.0, rbsa_weight: float = 0.0) -> float:
+                sector_rel_calmar: float = 0.0, rbsa_weight: float = 0.0,
+                sector_crowding: float = 0.0, sharpe_norm: float = 0.0,
+                sortino_norm: float = 0.0, ttr_norm: float = 0.0) -> float:
     """组合打分公式单一来源（主路径/降级路径/回测共用）。
 
     主路径传 sector_rel + rbsa_weight；降级与回测路径缺失的数据按 0 处理。
     固定系数：赛道相对动量 0.15 / 赛道相对卡玛 0.05 / RBSA 行业权重 0.003，
     为 combo 配方常量（与 regime_combo_weights 的 GA 可调权重区分）。
+    sector_crowding：赛道拥挤度惩罚（≤0，ticket 08），缺数据传 0 不惩罚。
+    sharpe_norm / sortino_norm / ttr_norm：风险调整三指标（池内归一到 [0,1]，
+    ttr 已反向），按 RankingConfig 的 sharpe/sortino/ttr 权重进入 combo；
+    三权重合计（默认 0.50）高于 model_weight（0.30）——业务要求这三项优先。
     """
     return (score_norm * w["model"]
             + rel_strength * w["rs"]
@@ -418,7 +593,45 @@ def combo_score(score_norm: float, rel_strength: float, calmar: float, hurst: fl
             + calmar * w["cal"]
             + sector_rel_calmar * _COMBO_SECTOR_REL_CALMAR_W
             + (hurst - 0.5) * 10 * w["hurst"]
-            + rbsa_weight * _COMBO_RBSA_W)
+            + rbsa_weight * _COMBO_RBSA_W
+            + sector_crowding * _COMBO_SECTOR_CROWDING_W
+            + sharpe_norm * w.get("sharpe", 0.0)
+            + sortino_norm * w.get("sortino", 0.0)
+            + ttr_norm * w.get("ttr", 0.0))
+
+
+def sector_crowding_penalty(flows: list[float]) -> float:
+    """赛道拥挤度惩罚（ticket 08）：短期净流入**极端**且**斜率过陡** → 负惩罚。
+
+    flows：该赛道近期主力净流入序列（升序，最新在末）。
+    判定：最新值 z-score > _CROWDING_EXTREME_Z 且后半段均值 ≥ 前半段
+    × _CROWDING_SLOPE_RATIO → 拥挤；惩罚随极端程度线性加深（上限 -1）。
+
+    纯函数、无 DB 依赖；样本不足 / 零方差 / 段均非正 → 0.0（不惩罚，优雅降级）。
+
+    注：net_flow 历史覆盖有限（东财资金流接口不可达，仅实时快照逐日累积），
+    故当前作为 **combo 层特征惩罚**生效；待累积足够样本后可同口径升入
+    LightGBM 输入列（见 ticket 08 说明）。
+    """
+    vals = [float(f) for f in flows if f is not None]
+    n = len(vals)
+    if n < _CROWDING_MIN_SAMPLES:
+        return 0.0
+    arr = np.asarray(vals, dtype=float)
+    sd = float(arr.std())
+    if sd <= 1e-12:
+        return 0.0
+    z_last = (float(arr[-1]) - float(arr.mean())) / sd
+    if z_last <= _CROWDING_EXTREME_Z:
+        return 0.0
+    half = n // 2
+    front = float(arr[:half].mean()) if half else 0.0
+    back = float(arr[half:].mean())
+    if front <= 1e-12 or back <= 1e-12:
+        return 0.0
+    if (back / front) < _CROWDING_SLOPE_RATIO:
+        return 0.0
+    return -float(min(z_last / (_CROWDING_EXTREME_Z * 2.0), 1.0))
 
 
 def regime_combo_weights(regime: str, cfg: dict | domain.RankingConfig) -> dict:
@@ -435,6 +648,14 @@ def regime_combo_weights(regime: str, cfg: dict | domain.RankingConfig) -> dict:
     w_rs = cfg["rel_strength_weight"]
     w_cal = cfg["calmar_weight"]
     w_hurst = cfg["hurst_weight"]
+    # 风险调整三指标：**不随 regime 缩放**——业务要求“必须优先考虑”，
+    # 若跟随 BULL/BEAR 系数会被稀释（如 BULL 下 hurst×1.3 相对抬高其他项）。
+    # 用 cfg.get 兼容只带旧 key 的调用方（直构 dict 的测试/回测），
+    # 默认值取 RankingConfig 默认（而非 0），确保优先语义不会被静默丢弃。
+    _d = domain.RankingConfig
+    w_sharpe = cfg.get("sharpe_weight", _d.sharpe_weight)
+    w_sortino = cfg.get("sortino_weight", _d.sortino_weight)
+    w_ttr = cfg.get("ttr_weight", _d.ttr_weight)
     if regime == "BULL":
         w_rs *= 1.3
         w_hurst *= 1.3
@@ -443,7 +664,8 @@ def regime_combo_weights(regime: str, cfg: dict | domain.RankingConfig) -> dict:
         w_cal *= 1.5
         w_rs *= 0.7
         w_hurst *= 0.5
-    return {"model": w_model, "rs": w_rs, "cal": w_cal, "hurst": w_hurst}
+    return {"model": w_model, "rs": w_rs, "cal": w_cal, "hurst": w_hurst,
+            "sharpe": w_sharpe, "sortino": w_sortino, "ttr": w_ttr}
 
 
 def apply_momentum_guard(df: pd.DataFrame, cfg) -> pd.DataFrame:
@@ -458,7 +680,8 @@ def score_frame(df: pd.DataFrame, model, cfg: dict | domain.RankingConfig, idx_m
                 default_regime: str = "NEUTRAL",
                 rbsa_weight_col: str | None = None,
                 sector_rel_momentum_col: str | None = None,
-                sector_rel_calmar_col: str | None = None) -> pd.DataFrame:
+                sector_rel_calmar_col: str | None = None,
+                sector_crowding_col: str | None = None) -> pd.DataFrame:
     """对特征 DataFrame 统一打分：预测 → 相对化 → 归一化 → combo。
 
     主路径 / 降级路径 / 回测共用。model 为 None 时 score_norm 取 0.5（回测无模型场景）。
@@ -466,7 +689,9 @@ def score_frame(df: pd.DataFrame, model, cfg: dict | domain.RankingConfig, idx_m
     市场状态列（MARKET_COLS）缺失时按 0 填充（防御）：正常调用方须在打分前注入。
     """
     df = df.copy()
-    for c in domain.MARKET_COLS:
+    # 防御：列缺失时按 0.0 填充（正常调用方须注入；schema 升级期间旧快照缺新列
+    # style_r2 等时，缺失=无信号=0，与 calc_features 的降级语义一致）。
+    for c in domain.MARKET_COLS + domain.FEATURE_COLS:
         if c not in df.columns:
             df[c] = 0.0
     if model is not None:
@@ -482,6 +707,15 @@ def score_frame(df: pd.DataFrame, model, cfg: dict | domain.RankingConfig, idx_m
     # Ticket 06：相对强弱基准由 20 日动量改为 5 日动量（多窗口验证：40 日持有
     # 视野下 5 日动量延续性最强（hot +3.08%/胜率 63%），20 日动量已无区分度）
     calmar_clipped = df["calmar"].clip(-5, 5)
+    # 风险调整三指标（业务要求“优先考虑”）：池内 min-max 归一到 [0,1]，
+    # 与 score_norm 同量级——TTR 反向（恢复越慢得分越低）。
+    # 缺列（旧库/回测早段）补 0：归一会退化为 0.5 中性，不窃动排序。
+    for _c in ("sharpe_60d", "sortino_60d", "ttr_60d"):
+        if _c not in df.columns:
+            df[_c] = 0.0
+    sharpe_n = _minmax01(df["sharpe_60d"].astype(float))
+    sortino_n = _minmax01(df["sortino_60d"].astype(float))
+    ttr_n = 1.0 - _minmax01(df["ttr_60d"].astype(float))
     if "regime" in df.columns and len(df) > 0 and pd.notna(df["regime"].iloc[0]):
         regime = df["regime"].iloc[0]
     else:
@@ -492,6 +726,10 @@ def score_frame(df: pd.DataFrame, model, cfg: dict | domain.RankingConfig, idx_m
         sector_rel_momentum=df[sector_rel_momentum_col] if sector_rel_momentum_col else 0.0,
         sector_rel_calmar=df[sector_rel_calmar_col] if sector_rel_calmar_col else 0.0,
         rbsa_weight=df[rbsa_weight_col] if rbsa_weight_col else 0.0,
+        sector_crowding=df[sector_crowding_col] if sector_crowding_col else 0.0,
+        sharpe_norm=sharpe_n,
+        sortino_norm=sortino_n,
+        ttr_norm=ttr_n,
     )
     return df
 
@@ -513,7 +751,8 @@ def calc_rbsa(holdings: list[dict], industry_map: dict[str, str] | None = None) 
 
 def calc_features(code: str,
                   idx_closes: np.ndarray | None = None,
-                  idx_volumes: np.ndarray | None = None) -> dict:
+                  idx_volumes: np.ndarray | None = None,
+                  sector_frame=None) -> dict:
     """计算单只基金特征并返回（内部函数，仅 calc_all_features / 回测调用）。"""
     rows = repo.nav.series(code)
     if len(rows) < 60:
@@ -525,7 +764,8 @@ def calc_features(code: str,
         idx_rows = repo.get_index_rows()
         idx_volumes = np.array([r[2] for r in idx_rows], dtype=float) if idx_rows else np.array([])
         idx_closes = np.array([r[1] for r in idx_rows], dtype=float) if idx_rows else np.array([])
-    feat = compute_fund_features(navs, idx_closes, idx_volumes)
+    feat = compute_fund_features(navs, idx_closes, idx_volumes,
+                                 nav_dates=dates, sector_frame=sector_frame)
     if feat is None:
         return {}
     features: dict = {"code": code, "date": dates[-1]}
@@ -554,6 +794,8 @@ def calc_all_features(batch_commit: int = 500) -> int:
     idx_rows = repo.get_index_rows()
     idx_volumes = np.array([r[2] for r in idx_rows], dtype=float) if idx_rows else np.array([])
     idx_closes = np.array([r[1] for r in idx_rows], dtype=float) if idx_rows else np.array([])
+    # style_r2 反推用的板块日涨幅宽表（一次加载，全基金共享；2024-03 起有数据）
+    sector_frame = load_sector_pct_frame()
     rbsa_data: dict[str, list[dict]] = {}
     _rbsa_buf: dict[str, list[dict]] = {}
     for code, sc, sn, w in repo.get_latest_holdings_rows():
@@ -589,9 +831,16 @@ def calc_all_features(batch_commit: int = 500) -> int:
         for c in repo.get_feature_codes_before(industry_map_date):
             if c in rbsa_data and c not in holdings_need_rbsa:
                 holdings_need_rbsa.add(c)
+    # schema 升级 → 旧快照缺列，必须全量重算一次（版本成功后落位，中断则下次重试）
+    _prev_schema = repo.get_meta(META.FEATURE_SCHEMA_VERSION)
+    schema_upgraded = _prev_schema != _FEATURE_SCHEMA_VERSION
+    if schema_upgraded:
+        logger.info("特征 schema 升级（%s → %s）：强制全量重算快照",
+                    _prev_schema or "无", _FEATURE_SCHEMA_VERSION)
     skip_codes = {
         c for c in all_codes
-        if c in feature_dates and c in nav_latest and feature_dates[c] >= nav_latest[c]
+        if not schema_upgraded
+        and c in feature_dates and c in nav_latest and feature_dates[c] >= nav_latest[c]
         and c not in holdings_need_rbsa
     }
     logger.info(
@@ -605,7 +854,7 @@ def calc_all_features(batch_commit: int = 500) -> int:
         if code in skip_codes:
             done += 1
             continue
-        features = calc_features(code, idx_closes, idx_volumes)
+        features = calc_features(code, idx_closes, idx_volumes, sector_frame)
         done += 1
         if features:
             top = rbsa_data.get(code, [])
@@ -626,4 +875,7 @@ def calc_all_features(batch_commit: int = 500) -> int:
     trim_fund_features(_FEATURE_RETENTION_ROWS)
     elapsed = time.monotonic() - start_time
     logger.info("特征计算完成: %d/%d 只基金入库, 耗时 %.1f 秒", saved, total, elapsed)
+    # schema 版本在成功后落位（计算异常则不落位，下次仍强制全量）
+    if schema_upgraded:
+        repo.save_meta(META.FEATURE_SCHEMA_VERSION, _FEATURE_SCHEMA_VERSION)
     return saved

@@ -78,17 +78,30 @@ def all_rows() -> list[tuple]:
     return list(rows)
 
 
+def forward_return_from_navs(navs: list, pos: int, forward: int) -> float | None:
+    """净值序列 → 满 forward 个净值日的区间收益（纯计算，单一来源）。
+
+    窗口越界或端点非法（缺失/非正）→ None。生产（forward_return）与引擎研究
+    （walk_forward._fwd_ret / backtest_model.y_abs）共用，消除 4 份重复实现
+    与末端截断语义分叉（架构审查候选 3）。navs: 升序净值值序列；pos: 决策日索引。
+    """
+    end = pos + forward
+    if end >= len(navs) or pos < 0:
+        return None
+    start_nav, end_nav = navs[pos], navs[end]
+    if not (start_nav and end_nav and start_nav > 0):
+        return None
+    return float(end_nav) / float(start_nav) - 1.0
+
+
 def forward_return(code: str, since: str) -> float | None:
-    """入场日起满 FORWARD_DAYS 交易日（含入场日 41 条净值）的绝对收益。
+    """入场日起满 FORWARD_DAYS 个交易日（含入场日 41 条净值）的绝对收益。
 
     架构深化 C：结算/反事实/质量度量三处消费同一判定（单一来源）——
     窗口不足或净值异常（缺失/非正）统一返回 None，不再各自拷贝实现。
+    纯计算逻辑收敛于 forward_return_from_navs（架构审查候选 3）。
     """
     navs = series(code, since=since, limit=domain.FORWARD_DAYS + 1)
     if len(navs) < domain.FORWARD_DAYS + 1:
         return None
-    start_nav = navs[0][1]
-    end_nav = navs[domain.FORWARD_DAYS][1]
-    if not (start_nav and end_nav and start_nav > 0):
-        return None
-    return end_nav / start_nav - 1.0
+    return forward_return_from_navs([v for _, v in navs], 0, domain.FORWARD_DAYS)

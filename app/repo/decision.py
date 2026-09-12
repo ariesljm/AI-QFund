@@ -38,19 +38,32 @@ def exit_position(code: str, sell_reason: str, return_rate: float | None, status
     with db_conn() as conn:
         conn.execute(f"UPDATE recommend_log SET status='EXIT', sell_reason=?, exit_date=?, return_rate=? WHERE code=? AND status IN ({placeholders})", (sell_reason, today, return_rate, code, *statuses))
 
-def get_active_insights(limit: int = 8, exclude_ranking: bool = True) -> list[tuple[int, str]]:
+def get_active_insights(limit: int = 8, exclude_ranking: bool = True,
+                        regime_label: str | None = None) -> list[tuple[int, str]]:
     """活跃进化洞察（推荐终选定论用），返回 (id, insight) 列表。
 
     exclude_ranking=True（默认）：过滤排分自纠偏报告——量化诊断文本不混入
     LLM 定论 prompt 的"历史教训"（Q7 共识：诊断与投资教训语义分离）。
+    regime_label（如"牛市"/"熊市"/"中性"，ticket 13）：当前市场状态——condition
+    或教训文本提及该状态者优先注入（自我认知回流），其余按新近度补足。
     """
     sql = ("SELECT id, insight FROM evolution_insights "
            "WHERE active = 1 AND confidence > 0.3")
+    params: list = []
     if exclude_ranking:
         sql += " AND insight_type != 'ranking'"
-    sql += " ORDER BY created_date DESC LIMIT ?"
+    if regime_label:
+        # 提及当前市场状态的洞察优先（COALESCE 兼容 condition 为 NULL）
+        sql += (" ORDER BY CASE WHEN COALESCE(condition, '') LIKE ? "
+                "OR insight LIKE ? THEN 0 ELSE 1 END, created_date DESC")
+        like = f"%{regime_label}%"
+        params += [like, like]
+    else:
+        sql += " ORDER BY created_date DESC"
+    sql += " LIMIT ?"
+    params.append(limit)
     with db_conn() as conn:
-        rows = conn.execute(sql, (limit,)).fetchall()
+        rows = conn.execute(sql, params).fetchall()
     return [(r[0], r[1]) for r in rows]
 
 def get_all_insights() -> list[str]:
@@ -654,6 +667,68 @@ def save_sector_snapshot(date_str: str, sectors: list[dict]) -> None:
             'sector_name = excluded.sector_name, pct_chg = excluded.pct_chg, net_flow = excluded.net_flow',
             rows)
 
+
+def save_sector_history_batch(rows: list[tuple[str, str, str, float]]) -> int:
+    """批量写入板块历史日线（成分股合成回填，ticket 02）。
+
+    rows: [(date, sector_code, sector_name, pct_chg)]；net_flow 历史无可用源留空，
+    不覆盖已有实时快照的 net_flow（ON CONFLICT 只更新 pct_chg/sector_name）。
+    返回写入行数。
+    """
+    if not rows:
+        return 0
+    with db_conn() as conn:
+        conn.executemany(
+            'INSERT INTO sector_daily_snapshot (date, sector_code, sector_name, pct_chg, net_flow) '
+            'VALUES (?, ?, ?, ?, NULL) '
+            'ON CONFLICT(date, sector_code) DO UPDATE SET '
+            'sector_name = excluded.sector_name, pct_chg = excluded.pct_chg',
+            rows)
+    return len(rows)
+
+
+def get_sector_pct_series(start: str, end: str) -> list[tuple[str, str, str, float]]:
+    """区间内板块日涨跌幅 [(date, sector_code, sector_name, pct_chg)]，供风格反推构造矩阵。"""
+    with db_conn() as conn:
+        rows = conn.execute(
+            'SELECT date, sector_code, sector_name, pct_chg FROM sector_daily_snapshot '
+            'WHERE date >= ? AND date <= ? AND pct_chg IS NOT NULL ORDER BY date ASC',
+            (start, end)).fetchall()
+    return [(r[0], r[1], r[2], float(r[3])) for r in rows]
+
+
+def save_fund_style(fund_code: str, trade_date: str, top: list[tuple[str, float]],
+                    r_squared: float) -> None:
+    """写入净值反推风格暴露（Top-2 行业 + 拟合优度），同 (fund_code, trade_date) 覆盖。"""
+    i1, w1 = top[0] if len(top) > 0 else (None, None)
+    i2, w2 = top[1] if len(top) > 1 else (None, None)
+    with db_conn() as conn:
+        conn.execute(
+            'INSERT INTO fund_style_track '
+            '(fund_code, trade_date, industry_1, weight_1, industry_2, weight_2, r_squared) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(fund_code, trade_date) DO UPDATE SET '
+            'industry_1 = excluded.industry_1, weight_1 = excluded.weight_1, '
+            'industry_2 = excluded.industry_2, weight_2 = excluded.weight_2, '
+            'r_squared = excluded.r_squared',
+            (fund_code, trade_date, i1, w1, i2, w2, r_squared))
+
+
+def get_fund_style(fund_code: str, limit: int = 1,
+                   as_of: str | None = None) -> list[dict]:
+    """最近 N 条风格反推结果（最新在前）；as_of 限定 trade_date <= as_of（取截至该日的最近一条）。"""
+    sql = ('SELECT trade_date, industry_1, weight_1, industry_2, weight_2, r_squared '
+           'FROM fund_style_track WHERE fund_code = ?')
+    params: list = [fund_code]
+    if as_of:
+        sql += ' AND trade_date <= ?'
+        params.append(as_of)
+    sql += ' ORDER BY trade_date DESC LIMIT ?'
+    params.append(limit)
+    with db_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [{"trade_date": r[0], "industry_1": r[1], "weight_1": r[2],
+             "industry_2": r[3], "weight_2": r[4], "r_squared": r[5]} for r in rows]
+
 def save_macro_news(date_str: str, news: str, top_gainers: str, top_losers: str, etf_net_flow: str,
                     news_date: str = "") -> None:
     """写入当日宏观摘要（新闻/领涨领跌/资金流，推荐决策域的一部分）。
@@ -671,7 +746,7 @@ def save_quality_metrics(m: dict) -> None:
     by_score_bucket_json = _json.dumps(m.get('by_score_bucket', {}), ensure_ascii=False)
     e2e_points_json = _json.dumps(m.get('e2e_points', []), ensure_ascii=False)
     with db_conn() as conn:
-        conn.execute('INSERT INTO quality_metrics (computed_date, period_start, period_end, ic, excess_win_rate, mean_excess, cum_excess, profit_rate, mean_abs_ret, payoff_ratio, sample_count, decision_loss, decision_gap_best, points_json, by_path_json, by_score_bucket_json, e2e_profit_rate, e2e_mean_ret, e2e_payoff_ratio, timing_contribution, e2e_sample_count, e2e_points_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(period_start, period_end) DO UPDATE SET computed_date = excluded.computed_date, ic = excluded.ic, excess_win_rate = excluded.excess_win_rate, mean_excess = excluded.mean_excess, cum_excess = excluded.cum_excess, profit_rate = excluded.profit_rate, mean_abs_ret = excluded.mean_abs_ret, payoff_ratio = excluded.payoff_ratio, sample_count = excluded.sample_count, decision_loss = excluded.decision_loss, decision_gap_best = excluded.decision_gap_best, points_json = excluded.points_json, by_path_json = excluded.by_path_json, by_score_bucket_json = excluded.by_score_bucket_json, e2e_profit_rate = excluded.e2e_profit_rate, e2e_mean_ret = excluded.e2e_mean_ret, e2e_payoff_ratio = excluded.e2e_payoff_ratio, timing_contribution = excluded.timing_contribution, e2e_sample_count = excluded.e2e_sample_count, e2e_points_json = excluded.e2e_points_json', (m['computed_date'], m.get('period_start'), m.get('period_end'), m.get('ic'), m.get('excess_win_rate'), m.get('mean_excess'), m.get('cum_excess'), m.get('profit_rate'), m.get('mean_abs_ret'), m.get('payoff_ratio'), m.get('sample_count', 0), m.get('decision_loss'), m.get('decision_gap_best'), points_json, by_path_json, by_score_bucket_json, m.get('e2e_profit_rate'), m.get('e2e_mean_ret'), m.get('e2e_payoff_ratio'), m.get('timing_contribution'), m.get('e2e_sample_count', 0), e2e_points_json))
+        conn.execute('INSERT INTO quality_metrics (computed_date, period_start, period_end, ic, excess_win_rate, mean_excess, cum_excess, profit_rate, mean_abs_ret, payoff_ratio, sample_count, decision_loss, decision_gap_best, points_json, by_path_json, by_score_bucket_json, e2e_profit_rate, e2e_mean_ret, e2e_payoff_ratio, timing_contribution, e2e_sample_count, e2e_points_json, e2e_mean_hold_days, e2e_mean_max_drawdown) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(period_start, period_end) DO UPDATE SET computed_date = excluded.computed_date, ic = excluded.ic, excess_win_rate = excluded.excess_win_rate, mean_excess = excluded.mean_excess, cum_excess = excluded.cum_excess, profit_rate = excluded.profit_rate, mean_abs_ret = excluded.mean_abs_ret, payoff_ratio = excluded.payoff_ratio, sample_count = excluded.sample_count, decision_loss = excluded.decision_loss, decision_gap_best = excluded.decision_gap_best, points_json = excluded.points_json, by_path_json = excluded.by_path_json, by_score_bucket_json = excluded.by_score_bucket_json, e2e_profit_rate = excluded.e2e_profit_rate, e2e_mean_ret = excluded.e2e_mean_ret, e2e_payoff_ratio = excluded.e2e_payoff_ratio, timing_contribution = excluded.timing_contribution, e2e_sample_count = excluded.e2e_sample_count, e2e_points_json = excluded.e2e_points_json, e2e_mean_hold_days = excluded.e2e_mean_hold_days, e2e_mean_max_drawdown = excluded.e2e_mean_max_drawdown', (m['computed_date'], m.get('period_start'), m.get('period_end'), m.get('ic'), m.get('excess_win_rate'), m.get('mean_excess'), m.get('cum_excess'), m.get('profit_rate'), m.get('mean_abs_ret'), m.get('payoff_ratio'), m.get('sample_count', 0), m.get('decision_loss'), m.get('decision_gap_best'), points_json, by_path_json, by_score_bucket_json, m.get('e2e_profit_rate'), m.get('e2e_mean_ret'), m.get('e2e_payoff_ratio'), m.get('timing_contribution'), m.get('e2e_sample_count', 0), e2e_points_json, m.get('e2e_mean_hold_days'), m.get('e2e_mean_max_drawdown')))
 
 def save_ranking_cfg(weights: dict) -> None:
     """写入排序权重（进化自纠偏用）。"""
@@ -746,4 +821,4 @@ def get_candidate_nav_summaries(items: list[tuple[str, str]]) -> dict[str, dict]
 
 
 
-__all__ = ["clear_recommendations", "clear_empty_recommendation", "count_recommendation_domain", "exit_position", "get_active_insights", "get_all_insights", "get_empty_recommendation", "get_e2e_sample_rows", "get_entry", "get_entry_nav", "get_entry_score", "get_first_reco_date", "get_fund_detail", "get_holding_codes", "get_holding_log_id", "get_entry_feature_snapshot", "get_entry_sector_anchor", "get_latest_macro_news", "get_recent_macro_news", "get_latest_monitor_event", "get_latest_reco_id", "get_latest_recommendations", "get_settled_cases_after", "get_pending_sector_selections", "get_pool_outcomes_rows", "get_purchase_status", "get_purchase_statuses", "get_candidate_nav_summaries", "save_purchase_restriction", "get_quality_metrics", "get_quality_sample_rows", "get_ranking_cfg", "get_reco_date_of", "get_recommendation_by_id", "get_sector_insights", "get_sector_insights_dated", "get_tracking_list", "get_vetoed_audit_rows", "insert_insight", "insert_llm_audit", "insert_monitor_event", "insert_monitor_score", "get_recent_scores", "get_recent_monitor_signals", "insert_recommendation", "insert_sector_selection", "get_empty_reco_dates", "get_reco_dates", "list_active_insights", "record_empty_recommendation", "save_flow_data", "save_macro_news", "save_quality_metrics", "save_context", "save_ranking_cfg", "save_sector_snapshot", "update_highest_nav", "update_insight_confidence", "update_sector_selection_outcome", "update_status", "mark_insights_applied", "adjust_insight_confidence"]
+__all__ = ["clear_recommendations", "clear_empty_recommendation", "count_recommendation_domain", "exit_position", "get_active_insights", "get_all_insights", "get_empty_recommendation", "get_e2e_sample_rows", "get_entry", "get_entry_nav", "get_entry_score", "get_first_reco_date", "get_fund_detail", "get_holding_codes", "get_holding_log_id", "get_entry_feature_snapshot", "get_entry_sector_anchor", "get_latest_macro_news", "get_recent_macro_news", "get_latest_monitor_event", "get_latest_reco_id", "get_latest_recommendations", "get_settled_cases_after", "get_pending_sector_selections", "get_pool_outcomes_rows", "get_purchase_status", "get_purchase_statuses", "get_candidate_nav_summaries", "save_purchase_restriction", "get_quality_metrics", "get_quality_sample_rows", "get_ranking_cfg", "get_reco_date_of", "get_recommendation_by_id", "get_sector_insights", "get_sector_insights_dated", "get_tracking_list", "get_vetoed_audit_rows", "insert_insight", "insert_llm_audit", "insert_monitor_event", "insert_monitor_score", "get_recent_scores", "get_recent_monitor_signals", "insert_recommendation", "insert_sector_selection", "get_empty_reco_dates", "get_reco_dates", "list_active_insights", "record_empty_recommendation", "save_flow_data", "save_macro_news", "save_quality_metrics", "save_context", "save_ranking_cfg", "save_sector_snapshot", "save_sector_history_batch", "get_sector_pct_series", "save_fund_style", "get_fund_style", "update_highest_nav", "update_insight_confidence", "update_sector_selection_outcome", "update_status", "mark_insights_applied", "adjust_insight_confidence"]

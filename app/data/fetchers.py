@@ -410,7 +410,11 @@ def _fetch_push2_curl_exe(url: str, hdrs: dict, timeout: float) -> tuple[Any, in
     import subprocess
     try:
         quoted = url.replace('"', '\\"')
-        cmd = f'curl.exe -4 -s -m {int(timeout)} -H "User-Agent: {hdrs["User-Agent"]}" "{quoted}"'
+        # --noproxy "*"：curl 默认读 HTTP(S)_PROXY 环境变量走代理；本项目访问
+        # 全为国内站点（直连更快且不受本机代理工具开关影响），与 httpx 的
+        # trust_env=False 行为保持一致。
+        cmd = (f'curl.exe -4 -s --noproxy "*" -m {int(timeout)} '
+               f'-H "User-Agent: {hdrs["User-Agent"]}" "{quoted}"')
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 2)
         if result.returncode == 0:
             return httpx.Response(200, content=result.stdout.encode("utf-8")), None

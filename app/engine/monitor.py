@@ -5,7 +5,7 @@
   R3b   风格漂移：买入时RBSA第一行业权重 - 当前 > 15% 或行业切换
   R3a   赛道锚点：当前 RBSA 行业 vs 推荐时 LLM 赛道判断（sector_selections 持久化值）
   R5    赛道优势：基金动量落后赛道中位数 → WARNING
-  R2c   模型信号：预测 40 日绝对收益转负 → WARNING（阶段二升级为序列 EXIT）
+  R2c   模型信号：预测风险调整收益转负 → WARNING（阶段二升级为序列 EXIT）
 复核层:
   R4    逻辑证伪：LLM 综合判断赛道方向+持仓匹配是否破裂（仅复核，不能推翻规则）
 
@@ -23,6 +23,7 @@ import numpy as np
 
 from app import domain
 from app.features.calculator import EMA_WARMUP_NAVS, ema60_exit  # R1 判定单一来源（回测模拟共用）
+from app.features.sector import sector_return_series  # R1.5 板块收益对齐深模块
 from app.llm.client import LLMError, call_llm_json
 from app.llm.context import anchor_holdings_text, build_holdings_text, rbsa_distribution
 from app.llm.prompts import monitor_logic_prompt
@@ -36,6 +37,7 @@ from app.repo import (
     get_entry_score,
     get_entry_sector_anchor,
     get_first_rbsa_after,
+    get_fund_style,
     get_holding_codes,
     get_holding_log_id,
     get_index_rows,
@@ -45,6 +47,7 @@ from app.repo import (
     get_recent_monitor_signals,
     get_recent_scores,
     get_sector_momentum_median,
+    get_sector_pct_series,
     insert_monitor_event,
     insert_monitor_score,
     nav,
@@ -55,11 +58,20 @@ from app.utils.log import get_logger
 logger = get_logger("monitor")
 
 _DRIFT_THRESHOLD = 15.0
+# 风格漂移误报防护：反推 r2 低于此值 → 反推不可信，跳过；
+# 季报主行业权重低于此值（百分数）→ 基金行业分散，无可靠锚点，跳过
+_MIN_STYLE_R2 = 0.4
+_MIN_ANCHOR_WEIGHT = 20.0
+# 双检 1（行业切换）置信门槛：当前反推主行业权重低于此值（百分数）→
+# 弱暴露，主行业在共线板块间不稳定，切换信号不可信（反推噪声）
+_MIN_CURRENT_WEIGHT = 25.0
 _NAV_STALE_TRADE_DAYS = 3  # 净值落后最近交易日超过该数视为陈旧
 _MODEL_EXIT_CONFIRM = 3    # R2c 模型序列：连续 N 个交易日 score<0 才 EXIT（跨过 7 日惩罚赎回费率带）
 _MODEL_SERIES_N = 5        # 确认期查询的序列长度上限
 _WARNING_ESCALATE_DAYS = 20  # 阶段三：WARNING 持续 N 个监控日未缓解 → 升级 EXIT
 _UPSIDE_RATE_LIMIT_SIGNALS = 10  # R2d 加仓候选限频：近期已发 BUY_MORE 则不重复提出
+_REL_ALPHA_DAYS = 3              # R1.5 相对超额观测窗口（交易日）
+_REL_ALPHA_THRESHOLD = 0.04      # R1.5 累计跑输阈值（4%）
 _R4_VALID_VERDICTS = {"维持", "断裂"}
 _R4_VALID_HINTS = {domain.SIGNAL_HOLD, domain.SIGNAL_BUY_MORE, domain.SIGNAL_WARNING}
 _HOLD_STATES = domain.HOLDING_STATES
@@ -77,9 +89,31 @@ _HARD_STOP_VOL_WINDOW = 20     # 波动估计窗口（净值条数）
 _HARD_STOP_EXEMPT_NAVS = 7       # 入场 7 自然日内豁免（≤7 条净值保守不触发，避开惩罚赎回费）
 
 
-def _first_industry(feat: dict) -> str:
-    """特征中 RBSA 第一行业名（去掉首尾空白）；无则空串。"""
+def _first_industry(feat: dict, style_track: dict | None = None) -> str:
+    """当前第一行业：优先日频风格反推（ticket 06），回退季度 RBSA 特征。
+
+    日频反推几天内即可捕捉行业漂移；季度 RBSA（rbsa_industry_1）要等报告期更新。
+    两者皆无则返回空串（调用方据此跳过）。
+    """
+    if style_track:
+        ind = (style_track.get("industry_1") or "").strip()
+        if ind:
+            return ind
     return (feat.get("rbsa_industry_1") or "").strip()
+
+
+def _same_industry(a: str, b: str) -> bool:
+    """两个行业名是否指同一行业（精确/别名/子串匹配，复用 resolve_sector_name 判定）。
+
+    跨体系命名差异——季报 RBSA 用 EM2016 名（如“煤炭”），净值反推用板块名
+    （如“煤炭开采”）——不应误判为行业切换（否则全持仓被风格漂移清仓）。
+    """
+    if not a or not b:
+        return False
+    if a.strip() == b.strip():
+        return True
+    return (domain.resolve_sector_name(a, [b]) is not None
+            or domain.resolve_sector_name(b, [a]) is not None)
 
 
 # ───────────────────────────────────────────
@@ -118,7 +152,10 @@ class DefenseContext:
                  available_sectors: list[str] | None = None,
                  latest_report_date: str | None = None,
                  r4_no_new_data: bool = False,
-                 recent_signals: list[tuple] | None = None):
+                 recent_signals: list[tuple] | None = None,
+                 style_track: dict | None = None,
+                 sector_returns: list[float | None] | None = None,
+                 entry_style: tuple | None = None):
         self.code = code
         self.buy_reason = buy_reason
         self.sector = sector
@@ -132,6 +169,7 @@ class DefenseContext:
         # 预装配快照：防线判定只读这些字段，不再直读 DB
         self.cur_feat = cur_feat or {}          # 最新特征（含 rbsa_industry_1/weight_1、momentum_20d 等）
         self.entry_rbsa = entry_rbsa            # (买入时第一行业, 权重)，_entry_rbsa 三级回退结果
+        self.entry_style = entry_style          # (建仓日反推行业1, 权重1, 行业2, r2)，同体系锚点（ticket 06）
         self.anchor = anchor                    # (recommended, risk, reasoning) 推荐时赛道锚点
         self.entry_score = entry_score          # 买入时模型分
         self.scores_series = scores_series or []  # 最近 N 日 (date, score, version) 序列（倒序）
@@ -152,6 +190,11 @@ class DefenseContext:
         # R2d 加仓候选限频数据源：近期监控信号 (date, signal) 序列（run_monitor 装配；
         # None=未装配，规则跳过限频检查——单规则测试/旧构造不受影响）
         self.recent_signals = recent_signals
+        # ticket 06：日频风格反推结果（fund_style_track 最新一条）——R2/R3 优先用它；
+        # None=未装配（单规则测试/旧构造不受影响），自动回退季度 RBSA。
+        self.style_track = style_track
+        # ticket 07：反推主行业近端日收益率（与 navs 尾部对齐，缺日 None）
+        self.sector_returns = sector_returns
 
     def attach_r4_result(self, logic: dict | None) -> None:
         """后装配 R4 预计算结果（P2-9 并发批量：构造后、链执行前一次性写入）。
@@ -198,11 +241,56 @@ class EmaTrendRule(DefenseRule):
         return DefenseResult(signal=domain.SIGNAL_EXIT, reason=reason, trailing=True) if exit_triggered else None
 
 
+class RelativeAlphaRule(DefenseRule):
+    """R1.5：相对超额止损（ticket 07）——未破 EMA60，但相对反推主行业持续跑输。
+
+    基金 vs 反推 industry_1 板块的日收益差，连续 _REL_ALPHA_DAYS 个交易日累计
+    低于 -_REL_ALPHA_THRESHOLD → EXIT。区别于 R1（绝对趋势破坏）：
+    本规则捕捉"赛道还在涨、标的自己却在跌"的选基恶化场景。
+
+    优先级 17：R1(15) 之后、R2(20) 风格漂移之前——趋势破坏最紧急。
+    数据不足（无日频反推/板块收益缺失）时静默跳过。
+    """
+
+    severity = 17
+    short_circuit = True
+
+    def check(self, ctx: DefenseContext) -> DefenseResult | None:
+        navs = ctx.navs
+        sec_rets = ctx.sector_returns
+        if not sec_rets or len(navs) < 2:
+            return None
+        ind = _first_industry(ctx.cur_feat, ctx.style_track)
+        if not ind:
+            return None
+        fund_rets = [navs[i] / navs[i - 1] - 1.0
+                     for i in range(1, len(navs)) if navs[i - 1]]
+        # 按位对齐后过滤缺日，保留可比样本
+        pairs = [(f, s) for f, s in zip(fund_rets, sec_rets, strict=False)
+                 if s is not None]
+        n = _REL_ALPHA_DAYS
+        if len(pairs) < n:
+            return None
+        cum = sum(f - s for f, s in pairs[-n:])
+        if cum < -_REL_ALPHA_THRESHOLD:
+            return DefenseResult(
+                signal=domain.SIGNAL_EXIT, drift=False,
+                reason=(f"相对超额止损: 近{n}日相对[{ind}]累计跑输{cum:.2%}，"
+                        f"超过阈值{_REL_ALPHA_THRESHOLD:.0%}"),
+            )
+        return None
+
+
 class StyleDriftRule(DefenseRule):
     """防线2a：风格漂移——买入第一行业 ≠ 当前第一行业（行业切换）OR 买入权重下降 > 15%。
 
     行业切换检测修复：旧逻辑只比权重差，基金整体更换第一行业（权重不变）会漏检；
     买入基准三级回退由装配层 _entry_rbsa 完成，此处只消费 ctx 预装配结果。
+
+    误报防护（跨体系对比噪声）：
+    - 锚点优先用**建仓日反推**（同体系：反推 vs 反推，权重同口径百分数），回退季报 RBSA；
+    - 反推 r2 过低（< _MIN_STYLE_R2）→ 净值无法被板块因子解释，反推行业/权重不可信，跳过；
+    - 季报锚点主行业权重过低（< _MIN_ANCHOR_WEIGHT）→ 基金本身行业分散，无可靠锚点可比，跳过。
     """
 
     severity = 20
@@ -210,14 +298,43 @@ class StyleDriftRule(DefenseRule):
 
     def check(self, ctx: DefenseContext) -> DefenseResult | None:
         cur_feat = ctx.cur_feat
-        cur_ind = _first_industry(cur_feat)
-        cur_w = cur_feat.get("rbsa_weight_1")
-        init_ind, init_w = ctx.entry_rbsa or (None, None)
+        cur_ind = _first_industry(cur_feat, ctx.style_track)
+        # 日频反推权重优先（ticket 06）；缺失回退季度 RBSA 权重
+        cur_w = (ctx.style_track or {}).get("weight_1")
+        if cur_w is None:
+            cur_w = cur_feat.get("rbsa_weight_1")
+        # 锚点：优先建仓日反推（同体系，ticket 06 原意），回退季报 RBSA
+        es = ctx.entry_style
+        if es and (es[0] or es[1] is not None):
+            init_ind, init_w, init_ind2, _entry_r2 = es
+            inferred_anchor = True
+        else:
+            init_ind, init_w, init_ind2 = (*(ctx.entry_rbsa or (None, None)), None)
+            inferred_anchor = False
         if init_ind is None and init_w is None:
             return None
+        # 反推拟合太差（r2 低）→ 反推行业/权重不可信，跳过（避免基于噪声误报清仓）
+        r2 = (ctx.style_track or {}).get("r_squared")
+        if r2 is not None and r2 < _MIN_STYLE_R2:
+            return None
+        # 季报锚点权重过低 → 基金行业分散，无可靠锚点可比，跳过（反推锚点不适用）
+        if not inferred_anchor and init_w is not None and init_w < _MIN_ANCHOR_WEIGHT:
+            return None
+        # 双检 1 置信门槛：当前主行业权重过低 → 弱暴露，反推主行业在共线板块间
+        # 不稳定，切换信号不可信（实测 011845/007306 弱暴露 12~16% 的切换全是噪声）
+        switching = bool(init_ind and cur_ind and not _same_industry(init_ind, cur_ind))
+        if switching and cur_w is not None and cur_w < _MIN_CURRENT_WEIGHT:
+            return None
+        # 双检 1：Top-2 集合相同 → 同一组板块的权重平移（共线假切换，如
+        # 石油石化↔化学原料、燃气↔有色金属互换），非真实行业变轨 → 跳过
+        if switching and init_ind2:
+            cur_ind2 = (ctx.style_track or {}).get("industry_2")
+            if cur_ind2 and {init_ind, init_ind2} == {cur_ind, cur_ind2}:
+                return None
         # 双检 1：行业切换（权重相同但第一行业更换）——即使当前权重缺失也检测，
-        # 防止 rbsa_weight_1 短暂缺失时漏掉行业切换（修复：旧逻辑先判 cur_w None 早退）
-        if init_ind and cur_ind and init_ind != cur_ind:
+        # 防止 rbsa_weight_1 短暂缺失时漏掉行业切换（修复：旧逻辑先判 cur_w None 早退）。
+        # 用 _same_industry 归一化命名（“煤炭” vs “煤炭开采”是同行业，不算切换）
+        if switching:
             return DefenseResult(
                 signal=domain.SIGNAL_EXIT, drift=True,
                 reason=f"风格漂移: 第一行业 {init_ind} → {cur_ind}"
@@ -253,7 +370,11 @@ class SectorAnchorRule(DefenseRule):
         recommended, risk, _reasoning = anchor
         if not recommended and not risk:
             return None
-        cur_ind = _first_industry(ctx.cur_feat)
+        # R3 保持**季报 RBSA 行业**（rbsa_industry_1）做锚点对比：推荐赛道是
+        # 推荐时 LLM 按行业体系选的，与反推（板块名）跨体系；日频反推行业会让
+        # 同体系基金被误判“离开赛道”（煤炭开采 vs 石油天然气同属能源却判离开）。
+        # R2（风格漂移）用日频反推，R3 用季报 RBSA——各自守住各自的口径。
+        cur_ind = (ctx.cur_feat.get("rbsa_industry_1") or "").strip()
         if not cur_ind:
             return None
         # 赛道解析与锚定收敛为 domain.SectorPolicy（推荐/监控共用单一来源）：
@@ -384,7 +505,7 @@ class ModelUpsideRule(DefenseRule):
 
 
 class ModelSignalRule(DefenseRule):
-    """R2c：模型信号序列退出（阶段二）——预测 40 日绝对收益转负确认后 EXIT。
+    """R2c：模型信号序列退出（阶段二）——预测风险调整收益转负确认后 EXIT。
 
     与推荐闭环：推荐时硬条件 score>0；监控每日用模型重打分并落库 monitor_scores。
     确认期（monitor_scores 序列，跨日状态）:
@@ -499,25 +620,30 @@ def _nav_pre_entry(code: str, until_date: str, limit: int) -> list[tuple]:
     return nav.series(code, until=until_date, limit=limit)
 
 
-def _nav_for_trend(code: str, reco_date: str) -> tuple[list[float], list[float]]:
-    """趋势判定序列 + 入场后序列。返回 (navs_trend, navs_post)：
+def _nav_for_trend(code: str, reco_date: str) -> tuple[list[str], list[float], list[float]]:
+    """趋势判定序列 + 入场后序列（架构审查候选 1：返回带日期，修复 R1.5 日期错位）。
 
+    返回 (nav_dates, navs_trend, navs_post)——nav_dates 与 navs_trend 等长，供 R1.5
+    板块收益按基金实际净值日对齐（此前按交易日历尾部位置配对，停牌/缺净值日会错位）。
     - navs_trend：入场后净值 + 入场前历史预热补齐至 EMA_WARMUP_NAVS 条（R1/R2d 用）。
-      预热消除"纯入场后序列导致约 3 个月趋势防线空窗"（典型持仓周期仅 20 交易日量级）；
+      预热消除“纯入场后序列导致约 3 个月趋势防线空窗”（典型持仓周期仅 20 交易日量级）；
       代价：买入时已处于 EMA60 下方 → 入场 2 日内即 EXIT（风控优先，可接受）。
       候选池门槛保证基金至少有 EMA_WARMUP_NAVS 条净值。
     - navs_post：仅入场后净值（R5 硬止损用）。P0（2026-09 审计定案）：硬止损的峰值与
       7 日豁免必须只基于入场后序列，否则预热段历史高点会污染峰值，零回撤持仓被误判
-      回撤超阈值输出 EXIT——违反"不代客交易但准确提供信息"契约。
+      回撤超阈值输出 EXIT——违反“不代客交易但准确提供信息”契约。
     """
-    post = _nav_since(code, reco_date)
+    post_rows = nav.series(code, since=reco_date)
+    post = [v for _, v in post_rows]
+    post_dates = [d for d, _ in post_rows]
     missing = EMA_WARMUP_NAVS - len(post)
     if missing <= 0:
-        return post, post
+        return post_dates, post, post
     # 边界行可能与入场日重叠（series 的 until 含 reco_date 当日），多取一条后按日期去重
     pre = [(d, v) for d, v in _nav_pre_entry(code, reco_date, missing + 1)
            if d < reco_date][-missing:]
-    return [v for _, v in pre] + post, post
+    return ([d for d, _ in pre] + post_dates,
+            [v for _, v in pre] + post, post)
 
 
 # ── 净值新鲜度护栏 ──
@@ -545,7 +671,7 @@ def _check_nav_freshness(code: str, trade_dates: list[str]) -> tuple[bool, str]:
 # ── 模型信号防线 ──
 
 def _current_model_score(feat: dict | None) -> float | None:
-    """用当前模型对基金最新特征打分，返回预测 40 日绝对收益；无特征/无模型返回 None。
+    """用当前模型对基金最新特征打分，返回预测风险调整收益；无特征/无模型返回 None。
 
     特征由装配层传入（run_monitor 已取 get_latest_features），避免重复查询；
     市场状态列由调用方显式注入（最新指数状态），score 保持纯函数。
@@ -696,6 +822,7 @@ def _apply_defense_chain(ctx: DefenseContext,
     if rules is None:
         rules = [
             EmaTrendRule(),
+            RelativeAlphaRule(),
             StyleDriftRule(),
             SectorAnchorRule(),
             SectorAdvantageRule(),
@@ -802,7 +929,7 @@ def _build_defense_context(row: dict, date_str: str, trade_dates: list[str],
         logger.warning("  %s（数据告警，不改持仓状态，不计入信号升级）", stale_reason)
         return None
 
-    navs, navs_post = _nav_for_trend(code_str, reco_date)
+    nav_dates, navs, navs_post = _nav_for_trend(code_str, reco_date)
     # 一次性装配基金快照：防线 check 只消费 ctx（真纯函数），不再各自直读 DB
     cur_feat = get_latest_features(code_str)
     entry_snapshot = get_entry_feature_snapshot(code_str)
@@ -815,6 +942,40 @@ def _build_defense_context(row: dict, date_str: str, trade_dates: list[str],
                           and latest_report_date == anchor_report_date)
     entry_rbsa = _entry_rbsa(code_str, reco_date, entry_snapshot)
     anchor = get_entry_sector_anchor(code_str, _HOLD_STATES)
+    # 建仓日风格反推（同体系锚点，ticket 06：对比 T 日与建仓日反推）——
+    # 季报 RBSA（entry_rbsa）与反推是跨体系（EM2016 行业 vs 板块名），权重口径
+    # 也不同（季报=持仓占比，反推=回归系数含共线性分摊）；同体系对比才可靠。
+    entry_style = None
+    if reco_date:
+        try:
+            es = get_fund_style(code_str, limit=1, as_of=reco_date)
+            if es:
+                entry_style = (es[0].get("industry_1") or None,
+                               es[0].get("weight_1"),
+                               es[0].get("industry_2") or None,
+                               es[0].get("r_squared"))
+        except Exception as e:
+            logger.debug("建仓日反推读取失败 %s: %s", code_str, str(e)[:60])
+    # ticket 06/07：日频风格反推（主行业 + 权重）与该行业近端日收益
+    # （按 navs 尾部交易日对齐；任一步缺失时 R1.5/R2/R3 自动回退或跳过）
+    style_track = None
+    sector_returns = None
+    try:
+        st_rows = get_fund_style(code_str, limit=1)
+    except Exception as e:
+        logger.debug("风格反推读取失败 %s: %s", code_str, str(e)[:60])
+        st_rows = []
+    if st_rows:
+        style_track = st_rows[0]
+        ind = (style_track.get("industry_1") or "").strip()
+        if ind and nav_dates and len(nav_dates) >= 2:
+            # 按基金实际净值日对齐（修复此前 trade_dates 尾部位置配对错位，
+            # 停牌/缺净值日会把板块收益配到错误的日期）；单位 ÷100 收敛于
+            # features/sector 深模块（sector_return_series）。
+            by_sector: dict[str, dict[str, float]] = {}
+            for d, _c, n, pct in get_sector_pct_series(nav_dates[0], nav_dates[-1]):
+                by_sector.setdefault(n, {})[d] = pct
+            sector_returns = sector_return_series(nav_dates[1:], by_sector, ind)
     entry_score = get_entry_score(code_str)
     sector_median = None
     if sector and cur_feat:
@@ -834,6 +995,7 @@ def _build_defense_context(row: dict, date_str: str, trade_dates: list[str],
         navs=navs, navs_post=navs_post, cur_feat=cur_feat, entry_rbsa=entry_rbsa, anchor=anchor,
         entry_score=entry_score, scores_series=scores_series,
         entry_snapshot=entry_snapshot, sector_median=sector_median,
+        style_track=style_track, sector_returns=sector_returns, entry_style=entry_style,
         holdings_text=build_holdings_text(code_str, 10),
         rbsa_distribution=_rbsa_distribution(cur_feat),
         available_sectors=available,

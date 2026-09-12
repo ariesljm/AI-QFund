@@ -72,10 +72,18 @@ class TestRelStrengthUsesMom5d:
         assert df.iloc[0]["rel_strength"] == 3.0
 
 
-class TestModelStillDominant:
-    def test_model_weight_unchanged(self):
-        """模型分仍为主导权重（0.7，Q7 共识不回归）。"""
-        assert domain.RankingConfig().model_weight == 0.7
+class TestRiskAdjustedPriority:
+    def test_risk_adjusted_indicators_outweigh_model(self):
+        """风险调整三指标（夏普/索提诺/TTR）合计权重高于模型分——业务要求“优先考虑”。"""
+        c = domain.RankingConfig()
+        assert c.sharpe_weight + c.sortino_weight + c.ttr_weight > c.model_weight
+
+    def test_weights_sum_to_one(self):
+        """全部 combo 权重合计为 1（避免整体缩放改变 combo 量级）。"""
+        c = domain.RankingConfig()
+        total = (c.model_weight + c.rel_strength_weight + c.calmar_weight
+                 + c.hurst_weight + c.sharpe_weight + c.sortino_weight + c.ttr_weight)
+        assert abs(total - 1.0) < 1e-9
 
     def test_no_volatility_main_factor(self):
         """低波动不再作为组合分主因子（多窗口验证无区分度）。"""

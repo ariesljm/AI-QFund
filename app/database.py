@@ -76,6 +76,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # 镜像内 /app/schema.sql 备份不被 data 卷遮蔽，兜底造成双真相（加列需双写）。
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
 
+    if "fund_features" in tables:
+        ff_cols = {row[1] for row in conn.execute("PRAGMA table_info(fund_features)").fetchall()}
+        if "style_r2" not in ff_cols:
+            conn.execute("ALTER TABLE fund_features ADD COLUMN style_r2 REAL DEFAULT 0")
+            conn.commit()
+
     if "recommend_log" in tables:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(recommend_log)").fetchall()}
         for col, typ in [("return_rate", "REAL"), ("feature_snapshot", "TEXT"), ("entry_nav", "REAL"), ("candidate_codes", "TEXT"), ("rec_count", "INTEGER DEFAULT 1"), ("vetoed_json", "TEXT"), ("reco_path", "TEXT DEFAULT 'sector'"), ("decision_logic", "TEXT")]:
@@ -157,7 +163,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         for col, typ in [("rbsa_industry_2", "TEXT"), ("rbsa_weight_2", "REAL DEFAULT 0"),
                          ("rbsa_industry_3", "TEXT"), ("rbsa_weight_3", "REAL DEFAULT 0"),
                          ("drawdown_60d", "REAL"), ("reversal_20d", "REAL"),
-                         ("mom_5d", "REAL"), ("mom_60d", "REAL"), ("vol_20d", "REAL")]:
+                         ("mom_5d", "REAL"), ("mom_60d", "REAL"), ("vol_20d", "REAL"),
+                         ("sharpe_60d", "REAL"), ("sortino_60d", "REAL"), ("ttr_60d", "REAL")]:
             if col not in ff_cols:
                 conn.execute(f"ALTER TABLE fund_features ADD COLUMN {col} {typ}")
                 conn.commit()
@@ -189,6 +196,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         for col, typ in (("e2e_profit_rate", "REAL"), ("e2e_mean_ret", "REAL"),
                          ("e2e_payoff_ratio", "REAL"), ("timing_contribution", "REAL"),
                          ("e2e_sample_count", "INTEGER"), ("e2e_points_json", "TEXT")):
+            if col not in qm_cols:
+                conn.execute(f"ALTER TABLE quality_metrics ADD COLUMN {col} {typ}")
+                conn.commit()
+        # 体验指标（ticket 12）：推荐至退出的平均持仓天数与平均最大回撤
+        for col, typ in (("e2e_mean_hold_days", "REAL"), ("e2e_mean_max_drawdown", "REAL")):
             if col not in qm_cols:
                 conn.execute(f"ALTER TABLE quality_metrics ADD COLUMN {col} {typ}")
                 conn.commit()

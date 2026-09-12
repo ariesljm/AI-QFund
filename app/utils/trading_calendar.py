@@ -75,6 +75,34 @@ def _save_to_meta(days: list[str]) -> None:
     save_meta(_META_KEY, json.dumps(days))
 
 
+def trade_dates() -> set[str] | None:
+    """交易日集合（进程内缓存 + meta 单次解析；无缓存/解析失败 → None）。
+
+    架构审查候选 5 的单一来源入口：foundation 指数新鲜度 / recommend 特征
+    新鲜度 / 单基金闸门共用，不再各自 get_meta + json.loads。与 is_trading_day
+    共享模块级 _cache。
+    """
+    global _cache
+    if _cache is None:
+        _cache = _load_from_meta()
+    return _cache
+
+
+def expected_trade_date(today: str | None = None) -> str | None:
+    """期望交易日：今天在日历内 → 昨交易日（盘前任务拉 T-1 净值），否则最近交易日。
+
+    单一来源（架构审查候选 5）：replace foundation._check_index_freshness 与
+    recommend._expected_feature_date 的两份同构分支；无日历缓存 → None。
+    """
+    days = trade_dates()
+    if not days:
+        return None
+    today = today or date.today().isoformat()
+    if today in days:
+        return max((d for d in days if d < today), default=None)
+    return max((d for d in days if d <= today), default=None)
+
+
 def _refresh_cache(day: date) -> bool:
     """刷新交易日缓存（拉取 akshare 日历并落库），返回 day 是否为交易日。
 

@@ -17,6 +17,11 @@ FORWARD_DAYS = 40
 # 赚钱口径：绝对收益 > 1% 视为扣费后真赚钱（quality 度量 / GA fitness / 回测 / 结算共用）
 PROFIT_THRESHOLD = 0.01
 
+# 风险调整收益标签的惩罚系数：训练目标 = 40 日绝对收益 − λ × 40 日最大回撤。
+# 强迫模型排序时淘汰"涨幅大但回撤极端"的假牛基。λ=0 退化为纯绝对收益，
+# λ 越大越惩罚回撤；初值 0.5 为稳健折中（精确值应走 walk-forward 标定）。
+RISK_ADJ_DD_LAMBDA = 1.0
+
 # 单基金特征新鲜度闸门（2026-09 审计 P1-1）：候选基金特征日滞后决策日超过
 # 该交易日数即剔除。全局最新特征日护栏只拦"数据基座整体失败"；单基金因停牌/
 # 接口局部失败可滞后最多 10 交易日（_STALE_NAV_LAG_DAYS）仍以旧快照入池，与实时
@@ -31,6 +36,11 @@ FEATURE_COLS = [
     "capture_up", "capture_down",
     "drawdown_60d", "reversal_20d",
     "mom_5d", "mom_60d", "vol_20d",
+    # 风险调整指标（业务要求“优先考虑”的核心三项，见 RankingConfig 权重）
+    "sharpe_60d", "sortino_60d", "ttr_60d",
+    # 风格清晰度（ticket 05 + walk-forward 回测 P5）：净值被板块可解释程度，
+    # 回测证实对 40 日收益有独立正贡献（+0.045, p<0.001）；主线权重无增益不进。
+    "style_r2",
 ]
 
 # ── 市场状态列（R1 绝对收益目标配套） ──────────────────────
@@ -39,7 +49,7 @@ FEATURE_COLS = [
 # bias_60d（指数偏离60日均线）是市场层面特征（顺带发现）：从基金特征移入此处，
 # 打分时实时注入，修复"训练用实时、打分用 fund_features 快照"的口径不一致；
 # importance 验证移位后仍被模型重度使用（gain 13.7%）。
-MARKET_COLS = ["idx_mom_20d", "idx_vol_20d", "bias_60d"]
+MARKET_COLS = ["idx_mom_20d", "idx_vol_20d", "bias_60d", "sector_heat_5d"]
 
 # ── LLM 行业名 → RBSA 行业名 映射（推荐/监控共用单一来源） ──
 # LLM 选赛道输出自由行业名（如"光伏"），RBSA 行业名为映射后名（如"电源设备"）；
@@ -148,15 +158,14 @@ SIGNAL_PRIORITY = {
 HOLDING_STATES = (SIGNAL_HOLD, SIGNAL_BUY_MORE, SIGNAL_WARNING)
 
 # ── 模型预测门槛 ─────────────
-# 「模型看好」= 模型预测未来 FORWARD_DAYS 日绝对收益为正（口径纠正：
-# 训练标签为绝对收益 abs_ret_40d，非超额；原名曾误标'超额'）。
+# 「模型看好」= 模型预测未来 FORWARD_DAYS 日风险调整收益为正（ticket 09：
+# 训练标签从纯绝对收益 abs_ret_40d 改为 risk_adj_40d = 收益 − λ×最大回撤）。
 # 监控引擎据此判断信号是否转负（score < 0 = 负期望）。
 MIN_PREDICTED_ALPHA = 0.0
 
-# 推荐入场门槛（D 冲突修复）：预测绝对收益必须 > PROFIT_THRESHOLD(1%)
-# 才算「扣费后可赚钱」，与结算/质量度量的赚钱口径一致。原实现与监控共用
-# MIN_PREDICTED_ALPHA=0，导致预测落在 0~1% 区间的基金照常入场、扣赎回费后
-# 必亏且结算判「负」——入场门槛与赚钱口径脱节。
+# 推荐入场门槛（D 冲突修复）：预测风险调整收益必须 > PROFIT_THRESHOLD(1%)
+# 才算「扣费后可赚钱」。注意：标签改为风险调整收益后，同一门槛实际更严
+# （风险调整值 ≤ 纯收益），阈值取值应随 λ 标定复核。
 # 与监控「转负」边界（0）是不同语义，勿混用。
 MIN_ENTRY_ALPHA = PROFIT_THRESHOLD
 
@@ -270,10 +279,16 @@ class RankingConfig:
     动量护栏与候选质量门槛以显式方法/常量表达，各调用点消费同一判定。
     """
 
-    model_weight: float = 0.7
-    rel_strength_weight: float = 0.1
-    calmar_weight: float = 0.08
-    hurst_weight: float = 0.08
+    model_weight: float = 0.30
+    rel_strength_weight: float = 0.10
+    calmar_weight: float = 0.05
+    hurst_weight: float = 0.05
+    # 风险调整三指标（业务要求“必须优先考虑”）：夏普 / 索提诺 / 最大回撤恢复时间。
+    # 合计 0.50 > model 0.30，确保排序由风险调整表现主导而非模型分。
+    # calmar 从 0.08 降至 0.05：与 sharpe/sortino 同为风险调整口径，避免重复计价。
+    sharpe_weight: float = 0.20
+    sortino_weight: float = 0.20
+    ttr_weight: float = 0.10
     momentum_guard_pct: float = -15.0
 
     # 候选质量门槛：赛道内候选相对全局最优组合分的比例阈值（LLM 定论兑底用）
@@ -301,6 +316,9 @@ class RankingConfig:
             "rel_strength_weight": self.rel_strength_weight,
             "calmar_weight": self.calmar_weight,
             "hurst_weight": self.hurst_weight,
+            "sharpe_weight": self.sharpe_weight,
+            "sortino_weight": self.sortino_weight,
+            "ttr_weight": self.ttr_weight,
             "momentum_guard_pct": self.momentum_guard_pct,
         }
 

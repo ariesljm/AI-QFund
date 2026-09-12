@@ -7,7 +7,8 @@ IC（预测分与实现收益的秩相关）保留为排序能力辅助指标。
 窗口：与 FORWARD_DAYS（40 交易日）单一来源对齐，
 推荐后 41 条净值（含入场日），取第 0 与第 40 条。
 
-IC 的 Spearman 秩相关用 numpy 手写（含并列平均秩），不依赖 scipy。
+IC 的 Spearman 秩相关性收敛于 features/stats 深模块（架构审查候选 2：
+统计原语单一实现，引擎层不直接 import scipy）。
 """
 
 import json
@@ -18,34 +19,16 @@ import numpy as np
 
 from app import domain, repo
 from app.features.fees import redemption_fee_pct
+from app.features.stats import spearman as stats_spearman
 from app.utils.log import get_logger
 
 logger = get_logger("quality")
 
 
-def _rankdata(x: np.ndarray) -> np.ndarray:
-    """计算平均秩（tie 取平均），与 scipy.stats.rankdata(average) 一致。"""
-    x = np.asarray(x, dtype=float)
-    n = x.size
-    sorter = np.argsort(x, kind="stable")
-    inv: np.ndarray = np.empty(n, dtype=np.intp)
-    inv[sorter] = np.arange(n)
-    sx = x[sorter]
-    obs = np.concatenate(([True], sx[1:] != sx[:-1]))
-    dense = obs.cumsum()[inv]
-    group_idx = np.flatnonzero(obs)
-    counts = np.diff(np.concatenate((group_idx, [n])))
-    avg_rank = group_idx + 1 + 0.5 * (counts - 1)
-    return avg_rank[dense - 1]
-
-
 def spearman(x: list[float], y: list[float]) -> float | None:
-    """Spearman 秩相关；常数序列（无秩差异）返回 None。"""
-    rx = _rankdata(np.asarray(x, dtype=float))
-    ry = _rankdata(np.asarray(y, dtype=float))
-    with np.errstate(invalid="ignore", divide="ignore"):
-        corr = np.corrcoef(rx, ry)[0, 1]
-    return float(corr) if not np.isnan(corr) else None
+    """Spearman 秩相关（rho；常数序列返回 None）。委托 features/stats 深模块。"""
+    res = stats_spearman(x, y)
+    return res[0] if res is not None else None
 
 
 def profit_stats(rets: Sequence[float | None], threshold: float = domain.PROFIT_THRESHOLD) -> dict:
@@ -211,6 +194,21 @@ def _hold_days(start: str, end: str) -> int:
         return 30
 
 
+def _max_drawdown(code: str, reco_date: str, end_day: str) -> float | None:
+    """推荐至退出的实际最大回撤（相对历史峰值，负值）。路径不足 2 点返回 None。"""
+    navs = repo.nav.series(code, since=reco_date, until=end_day)
+    vals = [v for _, v in navs if v and v > 0]
+    if len(vals) < 2:
+        return None
+    peak = vals[0]
+    mdd = 0.0
+    for v in vals:
+        if v > peak:
+            peak = v
+        mdd = min(mdd, v / peak - 1.0)
+    return mdd
+
+
 def compute_e2e_metrics(period_start: str, period_end: str) -> dict:
     """端到端 P&L 度量（#2）：按实际退出日期算净收益（扣赎回费），对比 40 日理论收益。
 
@@ -227,6 +225,8 @@ def compute_e2e_metrics(period_start: str, period_end: str) -> dict:
     e2e_rets: list[float] = []
     theo_rets: list[float] = []
     points: list[dict] = []
+    hold_days_list: list[int] = []
+    drawdowns: list[float] = []
     today = datetime.now().strftime("%Y-%m-%d")
 
     for code, reco_date, entry_nav, status, exit_date, return_rate in rows:
@@ -250,9 +250,14 @@ def compute_e2e_metrics(period_start: str, period_end: str) -> dict:
         e2e = gross - redemption_fee_pct(hold_days) / 100.0
         e2e_rets.append(e2e)
         theo_rets.append(theo)
+        hold_days_list.append(hold_days)
+        mdd = _max_drawdown(code, reco_date, end_day)
+        if mdd is not None:
+            drawdowns.append(mdd)
         points.append({"code": code, "reco_date": reco_date, "status": status,
                        "e2e_ret": round(e2e, 6), "theo_ret": round(theo, 6),
-                       "hold_days": hold_days})
+                       "hold_days": hold_days,
+                       "max_drawdown": round(mdd, 6) if mdd is not None else None})
 
     ps = profit_stats(e2e_rets)
     timing = ((sum(e2e_rets) / len(e2e_rets)) - (sum(theo_rets) / len(theo_rets))
@@ -264,4 +269,9 @@ def compute_e2e_metrics(period_start: str, period_end: str) -> dict:
         "timing_contribution": round(timing, 6) if timing is not None else None,
         "e2e_sample_count": len(e2e_rets),
         "e2e_points": points,
+        # 体验指标（ticket 12）：平均持仓自然日数与平均最大回撤
+        "e2e_mean_hold_days": (round(sum(hold_days_list) / len(hold_days_list), 1)
+                               if hold_days_list else None),
+        "e2e_mean_max_drawdown": (round(sum(drawdowns) / len(drawdowns), 6)
+                                  if drawdowns else None),
     }

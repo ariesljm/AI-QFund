@@ -76,3 +76,18 @@ _Avoid_: 胜率
 **素材装配**：
 把结构化数据（持仓/锚点/RBSA 分布/候选池/技术面）转成 LLM 可读中文段落的单一归属（llm/context）。
 _Avoid_: 提示词拼接（仅指文案格式化部分）
+**板块收益矩阵**（style_returns_matrix）：
+把板块日涨幅（pct 百分数）收敛为小数收益矩阵的深模块——÷100 单位换算、全日期覆盖过滤、净值窗口精确对齐单点实现，生产反推（style_track）/回测（walk_forward）/R1.5 装配（monitor）/特征反推（calculator）消费；R1.5 的板块收益序列另经 sector_return_series 按基金实际净值日对齐。
+_Avoid_: 板块涨幅、行业收益序列
+
+**统计原语**（features/stats）：
+features 域内的秩相关/线性相关/显著性检验命名函数（内部 scipy，ADR-0007 豁免边界内）；引擎层只消费命名函数、不直接 import scipy（test_stats_primitives 守边界）。
+_Avoid_: scipy 直连
+
+**面板采样**（panel_samples）：
+生产训练（prepare_training_data）与研究回测（backtest_model）共用的样本构建深函数：净值→预热→步进采样→特征现算（含 style_r2 反推与市场状态注入）→多标签（实际收益 y_abs + λ 风险调整标签集）。
+_Avoid_: 采样循环拷贝
+
+**期望交易日**：
+今日在交易日历内→昨交易日（盘前拉 T-1），否则最近交易日；收敛于 trading_calendar.expected_trade_date，指数/特征新鲜度共用。
+_Avoid_: 期望日期（多实现）

@@ -15,9 +15,9 @@ from app.repo import meta_keys as META
 
 
 class TestLabelVersion:
-    def test_current_version_is_40d(self):
-        """当前代码标签版本常量 = abs_ret_40d（与训练标签单一来源对齐）。"""
-        assert model_mod.LABEL_VERSION == "abs_ret_40d_v2"
+    def test_current_version_is_risk_adjusted(self):
+        """当前代码标签版本 = risk_adj_40d_v2（λ 标定 0.5→1.0 后递增，与训练标签单一来源对齐）。"""
+        assert model_mod.LABEL_VERSION == "risk_adj_40d_v2"
 
     def test_mismatch_detected(self, monkeypatch):
         """meta 记录旧标签 → 判定需重训。"""
@@ -41,6 +41,9 @@ class TestGetOrTrain:
         """构造"模型文件存在、未到期"的环境；返回训练调用记录。"""
         monkeypatch.setattr(model_mod, "MODEL_PATH", Path("models/lgb_model.txt"))
         monkeypatch.setattr(model_mod, "retrain_due", lambda *a, **k: False)
+        # 特征维度校验本组恒定为"匹配"：本组聚焦标签版本逻辑，且真实
+        # models/lgb_model.txt 可能是旧维度，会让用例意外走重训分支
+        monkeypatch.setattr(model_mod, "feature_dim_mismatch", lambda: False)
         monkeypatch.setattr(model_mod.repo, "set_model_last_trained", lambda d: None)
         monkeypatch.setattr(model_mod.repo, "set_model_label_version", lambda v: None)
         called = {}
@@ -91,7 +94,7 @@ class TestGetOrTrain:
         monkeypatch.setattr(model_mod.lgb, "Dataset", lambda *a, **k: object())
         monkeypatch.setattr(model_mod.lgb, "train", lambda *a, **k: _FakeBooster())
         model_mod.train(object(), object(), None)
-        assert seen.get("version") == "abs_ret_40d_v2"
+        assert seen.get("version") == "risk_adj_40d_v2"
         assert seen.get("saved") is not None
 
 

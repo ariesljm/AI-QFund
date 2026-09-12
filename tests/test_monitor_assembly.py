@@ -26,7 +26,9 @@ class TestAssembleContext:
 
     def test_basic_assembly(self, monkeypatch):
         monkeypatch.setattr(mon, "_check_nav_freshness", lambda c, d: (False, ""))
-        monkeypatch.setattr(mon, "_nav_since", lambda c, s: [1.0, 1.1])
+        monkeypatch.setattr(mon.nav, "series",
+                            lambda c, since=None, **kw:
+                            [("2026-08-0{:d}".format(i + 1), 1.0 + i * 0.1) for i in range(2)])
         monkeypatch.setattr(mon, "_nav_pre_entry", lambda c, d, n: [])
         monkeypatch.setattr(mon, "get_latest_features", lambda c: {"date": "2026-08-10", "rbsa_industry_1": "半导体"})
         monkeypatch.setattr(mon, "get_entry_feature_snapshot", lambda c: {"sector": "半导体"})
@@ -144,18 +146,23 @@ class TestNavForTrend:
     def test_sufficient_post_rows_no_prefetch(self, monkeypatch):
         """入场后净值已 ≥ 预热条数 → 不查入场前历史。"""
         called = []
-        monkeypatch.setattr(mon, "_nav_since", lambda c, s: [1.0] * mon.EMA_WARMUP_NAVS)
+        def fake_series(code, since=None, **kw):
+            return [(f"2026-08-0{i + 1}", 1.0) for i in range(mon.EMA_WARMUP_NAVS)]
+        monkeypatch.setattr(mon.nav, "series", fake_series)
         monkeypatch.setattr(mon, "_nav_pre_entry",
-                            lambda c, d, n: called.append((c, d, n)))
-        navs_trend, navs_post = mon._nav_for_trend("A", "2026-08-01")
+                            lambda c, d, n: called.append((c, d, n)) or [])
+        nav_dates, navs_trend, navs_post = mon._nav_for_trend("A", "2026-08-01")
         assert len(navs_trend) == mon.EMA_WARMUP_NAVS
         assert navs_trend == navs_post  # 入场后已足：趋势序列与入场后序列一致
+        assert len(nav_dates) == len(navs_trend)
         assert called == []
 
     def test_prepends_pre_entry_history(self, monkeypatch):
         """入场后不足 → 用入场前历史补齐，且排除与入场日重叠的边界行。"""
         post = [2.0, 2.1]
-        monkeypatch.setattr(mon, "_nav_since", lambda c, s: list(post))
+        monkeypatch.setattr(mon.nav, "series",
+                            lambda c, since=None, **kw:
+                            [("2026-07-30", 2.0), ("2026-07-31", 2.1)])
 
         from datetime import date, timedelta
         start = date(2026, 5, 1)
@@ -169,20 +176,23 @@ class TestNavForTrend:
             return pre_rows[-(limit):]
         monkeypatch.setattr(mon, "_nav_pre_entry", fake_pre)
 
-        navs_trend, navs_post = mon._nav_for_trend("A", "2026-07-31")
+        nav_dates, navs_trend, navs_post = mon._nav_for_trend("A", "2026-07-31")
         assert fetched == [mon.EMA_WARMUP_NAVS - len(post) + 1]  # 多取一条用于去重
         assert len(navs_trend) == mon.EMA_WARMUP_NAVS
         assert navs_trend[-len(post):] == post  # 入场后序列完整保留在尾部
         assert navs_post == post  # 硬止损专用序列 = 纯入场后，无预热污染
+        assert nav_dates[-len(post):] == ["2026-07-30", "2026-07-31"]
 
     def test_fund_with_short_total_history_returns_all(self, monkeypatch):
         """总历史都不足预热条数 → 返回全部可得净值（R1 保持不判定，不报错）。"""
-        monkeypatch.setattr(mon, "_nav_since", lambda c, s: [2.0])
+        monkeypatch.setattr(mon.nav, "series",
+                            lambda c, since=None, **kw: [("2026-07-31", 2.0)])
         monkeypatch.setattr(mon, "_nav_pre_entry",
                             lambda c, d, n: [("2026-07-30", 1.9)])
-        navs_trend, navs_post = mon._nav_for_trend("A", "2026-07-31")
+        nav_dates, navs_trend, navs_post = mon._nav_for_trend("A", "2026-07-31")
         assert navs_trend == [1.9, 2.0]
         assert navs_post == [2.0]  # 入场后仅 1 条（<2 条防御由 hard stop 处理）
+        assert nav_dates == ["2026-07-30", "2026-07-31"]
 
     def test_r1_armed_from_entry_day(self):
         """端到端：买入即处于 EMA60 下方 → R1 首日触发（原逻辑需等 62 个交易日）。"""

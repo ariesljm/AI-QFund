@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from app.data.fetchers import fetch
-from app.data.holdings import async_download_all_holdings
+from app.data.holdings import async_download_all_holdings, backfill_holdings_history
 from app.data.industry_map import update_industry_map
 from app.data.nav import async_download_all_nav, async_update_nav_incremental
 from app.data.store import (
@@ -34,7 +34,7 @@ from app.repo.base import (
     save_meta,
 )
 from app.utils.log import get_logger
-from app.utils.trading_calendar import trading_day_lag  # 滞后交易日数单一来源
+from app.utils.trading_calendar import expected_trade_date, trading_day_lag  # 日历/滞后单一来源（候选 5）
 
 logger = get_logger(__name__)
 
@@ -286,18 +286,8 @@ def _check_index_freshness(threshold: int = 3) -> None:
                      "全部失真，请运行 python -m app.data.foundation --index-backfill")
         return
     latest = rows[-1][0]
-    raw = get_meta(META.TRADE_DATES_CACHE)
-    if not raw:
-        return
-    try:
-        days = set(json.loads(raw))
-    except (json.JSONDecodeError, TypeError):
-        return
-    today = datetime.now().date().isoformat()
-    if today in days:
-        expected = max((d for d in days if d < today), default=None)
-    else:
-        expected = max((d for d in days if d <= today), default=None)
+    # 期望交易日单一来源（架构审查候选 5）：与推荐侧特征新鲜度同口径
+    expected = expected_trade_date()
     if expected is None or latest >= expected:
         return
     lag = trading_day_lag(latest, expected, days=days)
@@ -417,6 +407,10 @@ if __name__ == "__main__":
     elif len(sys.argv) > 1 and sys.argv[1] == "--holdings":
         concurrency = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2].isdigit() else 6
         asyncio.run(async_download_all_holdings(concurrency=concurrency))
+    elif len(sys.argv) > 1 and sys.argv[1] == "--holdings-backfill":
+        years = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2].isdigit() else 3
+        n = backfill_holdings_history(years=years)
+        logger.info("历史持仓回填: 新增 %d 行", n)
     elif len(sys.argv) > 1 and sys.argv[1] == "--features":
         _features.calc_all_features()
     elif len(sys.argv) > 1 and sys.argv[1] == "--industry-map":

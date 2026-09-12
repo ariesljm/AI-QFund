@@ -323,3 +323,109 @@ class TestRankingRowsLatestSnapshotOnly:
         rows = base_mod.get_sector_candidates(["煤炭开采"])
         assert len(rows) == 1
         assert rows[0]["momentum_20d"] == 12.7
+
+
+class TestMigrateLegacyUpgrade:
+    """migrate 历史补列全分支测试（架构审查候选 7）。
+
+    此前测试库总是新建 schema，永远走不到「旧库缺列 → 补列」分支——_migrate
+    的 ALTER 与 NULL 回填只在生产库首次升级才真实运行。本测试手工构造旧版
+    缺列表 + 旧数据，经 get_db() 触发 _migrate 后断言列补齐与回填。
+    """
+
+    @staticmethod
+    def _build_legacy(path):
+        """构造 schema 升级前旧库（全部缺 migrate 目标列）。"""
+        conn = sqlite3.connect(str(path))
+        conn.executescript("""
+            CREATE TABLE fund_features (code TEXT NOT NULL, date TEXT NOT NULL, regime TEXT,
+                hurst_60d REAL, momentum_20d REAL, calmar REAL, downside_vol REAL,
+                capture_up REAL, capture_down REAL, drawdown_60d REAL, reversal_20d REAL,
+                mom_5d REAL, mom_60d REAL, vol_20d REAL, sharpe_60d REAL, sortino_60d REAL,
+                ttr_60d REAL, rbsa_industry_1 TEXT, rbsa_weight_1 REAL, rbsa_industry_2 TEXT,
+                rbsa_weight_2 REAL DEFAULT 0, rbsa_industry_3 TEXT, rbsa_weight_3 REAL DEFAULT 0,
+                PRIMARY KEY (code, date));
+            CREATE TABLE recommend_log (id INTEGER PRIMARY KEY, code TEXT, date TEXT,
+                status TEXT, rec_count INTEGER, return_rate REAL);
+            CREATE TABLE sector_selections (id INTEGER PRIMARY KEY, name TEXT);
+            CREATE TABLE monitor_events (id INTEGER PRIMARY KEY, code TEXT, signal TEXT);
+            CREATE TABLE evolution_insights (id INTEGER PRIMARY KEY, content TEXT);
+            CREATE TABLE empty_recommendations (id INTEGER PRIMARY KEY, date TEXT);
+            CREATE TABLE macro_news (id INTEGER PRIMARY KEY, title TEXT);
+            INSERT INTO recommend_log (code, date, status, rec_count) VALUES
+                ('000001', '2026-01-01', 'BUY', NULL),
+                ('000002', '2026-01-02', 'BUY', 3);
+            INSERT INTO sector_selections (name) VALUES ('半导体');
+        """)
+        conn.commit()
+        conn.close()
+
+    def _migrate_db(self, tmp_path, monkeypatch):
+        path = tmp_path / "legacy.db"
+        self._build_legacy(path)
+        monkeypatch.setattr(db_mod, "DB_PATH", path)
+        monkeypatch.setattr(db_mod, "_INITIALIZED_PATHS", set())
+        return path
+
+    def test_fund_features_gains_style_r2(self, tmp_path, monkeypatch):
+        self._migrate_db(tmp_path, monkeypatch)
+        with db_mod.db_conn() as conn:
+            cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(fund_features)").fetchall()}
+        assert "style_r2" in cols
+
+    def test_recommend_log_null_rec_count_backfilled(self, tmp_path, monkeypatch):
+        self._migrate_db(tmp_path, monkeypatch)
+        with db_mod.db_conn() as conn:
+            rows = conn.execute(
+                "SELECT code, rec_count FROM recommend_log ORDER BY id").fetchall()
+        # NULL → 1 回填；非 NULL（3）保持不动
+        assert rows == [("000001", 1), ("000002", 3)]
+
+    def test_sector_selections_gains_pool_columns(self, tmp_path, monkeypatch):
+        self._migrate_db(tmp_path, monkeypatch)
+        with db_mod.db_conn() as conn:
+            cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(sector_selections)").fetchall()}
+        assert {"used_insight_ids", "pool_sectors", "pool_outcomes"} <= cols
+
+    def test_monitor_events_gains_is_stale(self, tmp_path, monkeypatch):
+        self._migrate_db(tmp_path, monkeypatch)
+        with db_mod.db_conn() as conn:
+            cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(monitor_events)").fetchall()}
+        assert "is_stale" in cols
+
+    def test_evolution_insights_gains_condition(self, tmp_path, monkeypatch):
+        self._migrate_db(tmp_path, monkeypatch)
+        with db_mod.db_conn() as conn:
+            cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(evolution_insights)").fetchall()}
+        assert "condition" in cols
+
+    def test_empty_recommendations_gains_reason_type(self, tmp_path, monkeypatch):
+        self._migrate_db(tmp_path, monkeypatch)
+        with db_mod.db_conn() as conn:
+            cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(empty_recommendations)").fetchall()}
+        assert "reason_type" in cols
+
+    def test_macro_news_gains_flow_columns(self, tmp_path, monkeypatch):
+        self._migrate_db(tmp_path, monkeypatch)
+        with db_mod.db_conn() as conn:
+            cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(macro_news)").fetchall()}
+        assert {"flow_json", "context_json", "news_date"} <= cols
+
+    def test_migrate_idempotent_on_reopen(self, tmp_path, monkeypatch):
+        """同一旧库二次迁移不抛错（_INITIALIZED_PATHS 幂等 + ALTER IF 守卫）。"""
+        self._migrate_db(tmp_path, monkeypatch)
+        with db_mod.db_conn() as conn:
+            conn.execute("SELECT 1").fetchone()
+        monkeypatch.setattr(db_mod, "_INITIALIZED_PATHS", set())
+        with db_mod.db_conn() as conn:  # 二次 get_db 再触发 _migrate
+            conn.execute("SELECT 1").fetchone()
+        with db_mod.db_conn() as conn:
+            cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(fund_features)").fetchall()}
+        assert "style_r2" in cols

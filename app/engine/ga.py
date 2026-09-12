@@ -14,6 +14,7 @@ import numpy as np
 
 import app.repo as repo
 from app import domain
+from app.model import evaluate_lgb_params, get_lgb_params, prepare_training_data
 from app.utils.log import get_logger
 from backtest.backtest import run_backtest
 
@@ -23,10 +24,17 @@ logger = get_logger("ga")
 # 注意：momentum_guard_pct 是风控防线，不作为 GA 优化基因——
 # 放开 guard 会因候选池扩大而虚高 IC fitness，GA 会把它往负方向推坏（线上曾调到 -28.7%）。
 _BOUNDS = {
-    "model_weight": (0.3, 0.8),
+    # 上界 0.30 = 结构性保证“风险调整三指标优先”：
+    # 三项下界合计 0.35 > model 上界 0.30，故 GA 无论怎么搜都不能把三项压到 model 之下。
+    "model_weight": (0.0, 0.30),
     "rel_strength_weight": (0.0, 0.3),
     "calmar_weight": (0.0, 0.3),
     "hurst_weight": (0.0, 0.3),
+    # 风险调整三指标：下界守住“优先考虑”的业务约束（GA 不得把权重压掉），
+    # 上界限制过度集中——三项都是一年期风险调整口径，过高会让排序押单一指标。
+    "sharpe_weight": (0.15, 0.35),
+    "sortino_weight": (0.15, 0.35),
+    "ttr_weight": (0.05, 0.20),
 }
 _GENE_KEYS = list(_BOUNDS.keys())
 _MUT_SIGMA = 0.15
@@ -147,6 +155,81 @@ def ga_optimize_ranking(population: int = 4, generations: int = 2,
     best_cfg["momentum_guard_pct"] = cur["momentum_guard_pct"]
     logger.info("GA 寻优完成: 最优配置 %s, fitness=%.3f (原配置 %s)", best_cfg, best_f, cur)
     return best_cfg, best_f
+
+
+# ── 树结构超参 GA（ticket 10）──
+# 与排序权重 GA 分离：排序权重的 fitness 走回测（模型固定，重排序即可）；
+# 树结构超参改变必须重训模型才能评估，故 fitness 用 walk-forward 验证集 L1 loss
+# （复用 prepare_training_data 的前 80%/后 20% 切分），而非回测。
+_LGB_BOUNDS = {
+    "learning_rate": (0.01, 0.1),
+    "num_leaves": (8, 64),
+    "max_depth": (3, 12),
+}
+_LGB_KEYS = list(_LGB_BOUNDS.keys())
+_LGB_INT_KEYS = ("num_leaves", "max_depth")
+
+
+def _encode_lgb(params: dict) -> np.ndarray:
+    v = np.zeros(len(_LGB_KEYS))
+    for i, k in enumerate(_LGB_KEYS):
+        lo, hi = _LGB_BOUNDS[k]
+        cur = params.get(k, (lo + hi) / 2)
+        v[i] = np.clip((cur - lo) / (hi - lo), 0.0, 1.0)
+    return v
+
+
+def _decode_lgb(v: np.ndarray) -> dict:
+    out: dict = {}
+    for i, k in enumerate(_LGB_KEYS):
+        lo, hi = _LGB_BOUNDS[k]
+        val = lo + float(v[i]) * (hi - lo)
+        out[k] = int(round(val)) if k in _LGB_INT_KEYS else round(val, 4)
+    return out
+
+
+def ga_optimize_lgb_params(population: int = 4, generations: int = 2,
+                           seed: int | None = None,
+                           data: tuple | None = None) -> tuple[dict, float]:
+    """遗传算法寻优 LightGBM 树结构超参，返回 (最优参数, 最优 fitness)。
+
+    fitness = 负验证集 L1 loss（越大越好）。种群含当前参数作精英种子，
+    保证结果不劣于现状。data 可由调用方传入复用（避免与当前参数评估重复准备）。
+    """
+    if data is None:
+        data = prepare_training_data()
+    if not data or len(data[1]) == 0:
+        logger.warning("训练样本不足，跳过超参寻优")
+        return {}, -1e9
+
+    rng = np.random.default_rng(seed)
+    logger.info("超参 GA 启动: population=%d, generations=%d, seed=%s",
+                population, generations, seed)
+
+    seed_vec = _encode_lgb(get_lgb_params())
+    pop_fit = [(seed_vec, evaluate_lgb_params(_decode_lgb(seed_vec), data))]
+    for _ in range(population - 1):
+        v = rng.random(len(_LGB_KEYS))
+        pop_fit.append((v, evaluate_lgb_params(_decode_lgb(v), data)))
+
+    for gen in range(generations):
+        pop_fit.sort(key=lambda t: t[1], reverse=True)
+        elites = pop_fit[:_ELITE]
+        children = []
+        while len(children) < population - _ELITE:
+            p1 = _tournament(pop_fit, rng)
+            p2 = _tournament(pop_fit, rng)
+            child = _mutate(_crossover(p1, p2, rng), rng)
+            children.append((child, evaluate_lgb_params(_decode_lgb(child), data)))
+        pop_fit = elites + children
+        logger.info("超参 GA 第 %d 代完成: 最优 fitness=%.6f", gen + 1, pop_fit[0][1])
+
+    pop_fit.sort(key=lambda t: t[1], reverse=True)
+    best_vec, best_fit = pop_fit[0]
+    best = _decode_lgb(best_vec)
+    logger.info("超参 GA 寻优完成: 最优参数 %s, fitness=%.6f (原参数 %s)",
+                best, best_fit, get_lgb_params())
+    return best, float(best_fit)
 
 
 if __name__ == "__main__":

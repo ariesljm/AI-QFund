@@ -121,13 +121,15 @@ class TestGeneticAlgorithm:
         monkeypatch.setattr(ga, "repo", repo)
         monkeypatch.setattr(ga, "run_backtest", fake_backtest)
         monkeypatch.setattr(ga.repo, "get_ranking_cfg", lambda: {
-            "model_weight": 0.5, "rel_strength_weight": 0.15,
+            "model_weight": 0.2, "rel_strength_weight": 0.15,
             "calmar_weight": 0.1, "hurst_weight": 0.1, "momentum_guard_pct": -15.0,
         })
 
         best_cfg, best_f = ga.ga_optimize_ranking(population=6, generations=3, seed=42)
-        assert best_cfg["model_weight"] > 0.5
-        assert best_f > 0.5 * 50 * 2 + 0.5 * 2.0  # 初始 fitness（profit=50%, abs=1%）
+        # fake fitness 随 model_weight 单调递增 → GA 应把它推向上界 0.30
+        # （上界 = 风险调整三指标下界合计 0.35 之下，结构性保证“三指标优先”）
+        assert 0.2 < best_cfg["model_weight"] <= 0.30
+        assert best_f > 0.2 * 50 * 2 + 0.2 * 2.0  # 严格优于初始 fitness
 
     def test_ga_respects_bounds(self, monkeypatch):
         monkeypatch.setattr(ga, "repo", repo)

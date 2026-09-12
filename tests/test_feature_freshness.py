@@ -27,12 +27,14 @@ TRADE_DAYS = [
 
 class TestDropStaleFeatureRows:
     @pytest.fixture(autouse=True)
-    def _trade_dates(self, monkeypatch):
-        def fake_get_meta(key):
-            if key == META.TRADE_DATES_CACHE:
-                return json.dumps(TRADE_DAYS)
-            return None
-        monkeypatch.setattr(recommend.repo, "get_meta", fake_get_meta)
+    def _stub_trade_dates(self, monkeypatch):
+        """stub 交易日历缓存（候选 5 后统一入口 trading_calendar）。"""
+        import app.utils.trading_calendar as _tc
+        monkeypatch.setattr(
+            _tc, "get_meta",
+            lambda key: (json.dumps(TRADE_DAYS)
+                         if key == META.TRADE_DATES_CACHE else None))
+        monkeypatch.setattr(_tc, "_cache", None)
 
     def _df(self, feature_dates):
         rows = [{"code": f"f{i}", "feature_date": d,

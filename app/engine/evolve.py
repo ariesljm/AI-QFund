@@ -179,6 +179,47 @@ def _ga_adjust(force: bool = False) -> str | None:
     return None
 
 
+_LGB_TUNE_MIN_GAIN = 0.0005
+"""超参寻优应用门槛：验证集 L1 loss 改善需 > 此值才写 meta 快照。
+
+验证 L1 量级约 0.05~0.15（40 日收益绝对误差）；0.0005 ≈ 0.05pp 预测误差改善，
+低于此视为 GA 随机波动，不覆盖当前参数。
+"""
+
+
+def _lgb_params_tune() -> str | None:
+    """月度树结构超参寻优：GA 寻优后显著优于当前才写 meta 快照。
+
+    与排序权重 GA 分离执行：超参改变需重训模型评估，fitness 用 walk-forward
+    验证集 L1 loss（见 model.evaluate_lgb_params），不走回测。
+    返回应用说明；无改善/不可用返回 None。
+    """
+    try:
+        from app import model as model_mod
+        from app.engine.ga import ga_optimize_lgb_params
+    except Exception as e:
+        logger.warning("超参寻优模块不可用，跳过: %s", str(e)[:120])
+        return None
+    try:
+        data = model_mod.prepare_training_data()
+        cur = {k: model_mod.get_lgb_params()[k] for k in model_mod.LGB_TUNABLE_KEYS}
+        cur_f = model_mod.evaluate_lgb_params(cur, data)
+        best, best_f = ga_optimize_lgb_params(data=data)
+    except Exception as e:
+        logger.warning("超参寻优失败: %s", str(e)[:120], exc_info=True)
+        return None
+    if not best:
+        return None
+    if best_f - cur_f > _LGB_TUNE_MIN_GAIN:
+        repo.save_meta(META.LGB_PARAMS_SNAPSHOT, json.dumps(best, ensure_ascii=False))
+        msg = f"超参寻优应用: 验证L1 {(-cur_f):.6f}→{(-best_f):.6f}, 参数 {best}"
+        _save_self_fix(msg)
+        logger.info("%s", msg)
+        return msg
+    logger.info("超参寻优无显著改善 (Δ=%.6f)，保留当前参数", best_f - cur_f)
+    return None
+
+
 # ── 月度结算 ───────────────────────────────────────────────
 
 
@@ -594,9 +635,12 @@ def run_evolve(month: str | None = None) -> None:
                 logger.info("推荐质量度量无样本，跳过入库: 区间 %s~%s", start, end)
             else:
                 repo.save_quality_metrics(metrics)
-                logger.info("推荐质量度量已入库: 区间 %s~%s, IC=%s, 赚钱胜率=%s, 裁决损耗=%s",
+                logger.info("推荐质量度量已入库: 区间 %s~%s, IC=%s, 赚钱胜率=%s, 裁决损耗=%s, "
+                            "平均持仓 %.1f 日, 平均最大回撤 %.2f%%",
                             start, end, metrics.get("ic"), metrics.get("profit_rate"),
-                            metrics.get("decision_loss"))
+                            metrics.get("decision_loss"),
+                            metrics.get("e2e_mean_hold_days") or 0.0,
+                            (metrics.get("e2e_mean_max_drawdown") or 0.0) * 100)
                 adjustment = plan_param_adjustment(metrics)
                 degraded = adjustment is not None
                 if adjustment:
@@ -625,6 +669,14 @@ def run_evolve(month: str | None = None) -> None:
                     logger.info("GA 寻优已应用: %s", ga_note)
             except Exception as e:
                 logger.warning("GA 寻优失败: %s", str(e)[:120], exc_info=True)
+
+            # 3b2. LightGBM 树结构超参寻优（ticket 10；验证集 L1 loss 口径，与 3b 分离）
+            try:
+                tune_note = _lgb_params_tune()
+                if tune_note:
+                    logger.info("超参寻优已应用: %s", tune_note)
+            except Exception as e:
+                logger.warning("超参寻优失败: %s", str(e)[:120], exc_info=True)
 
             # 3c. 批量 LLM 元分析（增量游标；质量下行时新洞察以非活跃态入库待审）
             _run_meta_analysis(metrics, degraded)

@@ -487,6 +487,7 @@ class TestRankWithinSectors:
             "downside_vol": 1.0, "capture_up": 1.0, "capture_down": 1.0,
             "drawdown_60d": -5.0, "reversal_20d": 1.0,
             "mom_5d": mom, "mom_60d": mom, "vol_20d": 10.0,
+            "sharpe_60d": 1.0, "sortino_60d": 1.5, "ttr_60d": 10.0,
         }
 
     def test_llm_top_sectors_not_dropped_from_candidates(self, monkeypatch):
@@ -626,9 +627,11 @@ class TestSectorCandidatesDedupe:
     """
 
     def _row(self, code, sector, ind1):
-        return {"code": code, "name": f"基金{code}", "sector": sector,
-                "rbsa_industry_1": ind1, "combo": 5.0, "score": 0.05,
-                "momentum_20d": 5.0, "hurst_60d": 0.6, "calmar": 2.0}
+        row = {c: 1.0 for c in repo.FEATURE_COLS}
+        row.update({"code": code, "name": f"基金{code}", "sector": sector,
+                    "rbsa_industry_1": ind1, "combo": 5.0, "score": 0.05,
+                    "momentum_20d": 5.0, "hurst_60d": 0.6, "calmar": 2.0})
+        return row
 
     def test_same_fund_in_two_sectors_deduped_per_sector(self):
         """012428 场景：同一基金以多个 sector 展开，赛道候选只保留一条且赛道归属一致。"""
@@ -790,9 +793,11 @@ class TestRankingConfig:
 
     def test_defaults(self):
         cfg = _domain.RankingConfig()
-        assert cfg.model_weight == 0.7
+        assert cfg.model_weight == 0.30
+        # 风险调整三指标（夏普/索提诺/TTR）合计权重高于模型分：业务要求“优先考虑”
+        assert cfg.sharpe_weight + cfg.sortino_weight + cfg.ttr_weight > cfg.model_weight
         assert cfg.momentum_guard_pct == -15.0
-        assert cfg["model_weight"] == 0.7  # dict 风格下标兼容
+        assert cfg["model_weight"] == 0.30  # dict 风格下标兼容
 
     def test_passes_momentum_guard(self):
         cfg = _domain.RankingConfig(momentum_guard_pct=-15.0)

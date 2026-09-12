@@ -66,17 +66,29 @@ def _is_pseudo_sector(name: str) -> bool:
     return name.startswith(_PSEUDO_PREFIXES)
 
 
+_CONCEPT_KEYWORDS = ("概念", "重仓", "风格")
+
+
 def _is_concept_name(name: str, code: str = "") -> bool:
-    """判断板块是否为概念/风格/指数类（精确BK代码列表）。"""
+    """判断板块是否为概念/风格/指数类（精确 BK 代码黑名单 + 名称关键词）。
+
+    黑名单只覆盖 33 个已知代码，但东财板块里还有大量名称带"概念/重仓/风格"的
+    非行业板块（黄金概念、QFII重仓、医保重仓…）。这些若混入反推因子宇宙，会让
+    净值回归选出概念板块，风格漂移防线对比季报行业名时误判“行业切换”。
+    """
     if code and code in _CONCEPT_CODES:
         return True
     if not name:
         return True
-    return False
+    return any(kw in name for kw in _CONCEPT_KEYWORDS)
 
 
 def load_board_sectors() -> list[dict]:
-    """加载东方财富板块行情数据，返回过滤后的有效行业板块列表。"""
+    """加载东方财富板块行情数据，返回过滤后的有效行业板块列表（排除概念/伪板块）。
+
+    概念板块（QFII重仓/煤化工概念等）与季报 RBSA 的行业体系不同，若混入
+    反推因子宇宙会让净值回归选出概念板块，风格漂移防线误判“行业切换”。
+    """
     txt = _http_get(_BOARD_URL)
     data = json.loads(txt)
     allbk = (data.get("data") or {}).get("allbk", [])
@@ -84,6 +96,7 @@ def load_board_sectors() -> list[dict]:
         b for b in allbk
         if not _is_pseudo_sector(b.get('n', '') or '')
         and is_industry_code(b.get('c', '') or '')
+        and not _is_concept_name(b.get('n', '') or '', b.get('c', '') or '')
         and bool((b.get('n') or '').strip())
     ]
 

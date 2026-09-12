@@ -22,6 +22,7 @@ from app.engine.macro_agent import MacroContext, build_macro_context
 from app.features.calculator import (
     apply_momentum_guard,
     latest_below_ema60,
+    latest_sector_heat,
     market_state_features,
     score_frame,
 )
@@ -30,11 +31,21 @@ from app.llm.prompts import final_pick_prompt, final_pick_system_prompt
 from app.model import get_or_train, model_version
 from app.repo import meta_keys as META
 from app.utils.log import get_logger
-from app.utils.trading_calendar import trading_day_lag  # 滞后交易日数单一来源
+from app.utils.trading_calendar import expected_trade_date, trade_dates, trading_day_lag  # 交易日历/滞后单一来源
 
 logger = get_logger("recommend")
 
 FEATURE_COLS = repo.FEATURE_COLS
+
+
+def _dropna_features(df: pd.DataFrame) -> pd.DataFrame:
+    """对 FEATURE_COLS 缺列容错的 dropna（列尚未就绪时不因缺列崩溃，逐列校验）。
+
+    pandas 4.x 对 dropna(subset=不存在列) 抛 KeyError；feature schema 升级期间
+    旧快照缺新列是正常过渡态，缺列按“无校验要求”处理，值为 NaN 时仍过滤。
+    """
+    cols = [c for c in FEATURE_COLS if c in df.columns]
+    return df.dropna(subset=cols) if cols else df
 _FORWARD_WINDOW = repo.FORWARD_WINDOW
 
 
@@ -59,7 +70,8 @@ def _inject_market_cols(df: pd.DataFrame) -> pd.DataFrame:
     if idx_rows:
         closes = np.array([r[1] for r in idx_rows], dtype=float)
         vols = np.array([r[2] for r in idx_rows], dtype=float)
-        mkt = market_state_features(closes, vols)
+        mkt = market_state_features(closes, vols,
+                                    sector_heat=latest_sector_heat())
         for c, v in mkt.items():
             df[c] = v
     else:
@@ -124,7 +136,7 @@ def _filter_sector_candidates(df: pd.DataFrame, sectors: list[str],
 
     返回过滤后 df（可能 empty，调用方判断降级）。sector 锚定 rbsa_industry_1。
     """
-    df = df.dropna(subset=FEATURE_COLS)
+    df = _dropna_features(df)
     if df.empty:
         return df
     # C4 赛道纯度门槛：第一行业暴露 <10% 的基金不视为赛道基金（口径见 domain）。
@@ -301,7 +313,7 @@ def rank_funds(model: lgb.Booster) -> list[dict]:
     if df.empty:
         logger.info("全市场候选特征陈旧/缺失，返回空（空推荐日）")
         return []
-    df = df.dropna(subset=FEATURE_COLS)
+    df = _dropna_features(df)
     if df.empty:
         return []
     df = apply_momentum_guard(df, cfg)
@@ -337,9 +349,13 @@ def rank_funds(model: lgb.Booster) -> list[dict]:
 
 # ========== LLM 最终定论 ==========
 
-def _load_insights() -> list[str]:
-    """读取活跃洞察（定论 prompt 用）并标记 apply（Q4：进入 prompt 即 apply_count+1）。"""
-    rows = repo.get_active_insights(8)
+def _load_insights(regime_label: str | None = None) -> list[str]:
+    """读取活跃洞察（定论 prompt 用）并标记 apply（Q4：进入 prompt 即 apply_count+1）。
+
+    ticket 13：按当前市场状态优选——提及当前 regime 的教训优先注入；
+    无匹配时按新近度补足（优雅降级，不影响原 prompt）。
+    """
+    rows = repo.get_active_insights(8, regime_label=regime_label)
     if rows:
         repo.mark_insights_applied([i for i, _ in rows], datetime.now().strftime("%Y-%m-%d"))
     return [t for _, t in rows]
@@ -487,6 +503,53 @@ def _validate_final_pick(parsed: Any, valid_codes: dict) -> dict | None:
 
 # ========== 推荐入库 ==========
 
+# ── 量化降级兜底（ticket 11）─────────────────────────────
+# LLM 理由不自洽或所选基金量化排位过低时，静默改采赛道 LightGBM 得分 Top1。
+# 触发仅为保底，正常 LLM 决策不受影响（Q8 曾整体否定"自动纯量化降级"——
+# 本实现限定为"仅异常情形兜底"，非"LLM 旁路常开"）。
+QUANT_FALLBACK_RANK_RATIO = 0.3
+"""排位阈值：LLM 选中基金在赛道候选（按 combo 降序）中的百分位 > 此值即降级。"""
+
+QUANT_FALLBACK_MIN_REASON_CHARS = 8
+"""理由阈值：buy_reason 去空白后少于此字符数视为"无法产生逻辑自洽理由"。"""
+
+
+def _maybe_quant_fallback(result: dict, sector_candidates: list[dict]) -> dict | None:
+    """LLM 终选异常时降级为赛道 LightGBM Top1；正常返回 None（ticket 11）。
+
+    触发（任一）：
+    1) buy_reason 缺失/过短 → LLM 未产生逻辑自洽理由；
+    2) 选中基金按赛道内 LightGBM 得分（combo）排序落在前 30% 之外。
+    返回降级后的 result（沿用 LLM 的 vetoed）；不触发返回 None。
+    """
+    if not sector_candidates:
+        return None
+    ranked = sorted(sector_candidates, key=lambda c: c["combo"], reverse=True)
+    top = ranked[0]
+    sel_code = result["selected_code"]
+    if top["code"] == sel_code:
+        return None  # 已是最优，无需降级
+
+    cause = ""
+    if len(str(result.get("reason") or "").strip()) < QUANT_FALLBACK_MIN_REASON_CHARS:
+        cause = "buy_reason 缺失或过短"
+    else:
+        codes = [c["code"] for c in ranked]
+        rank = codes.index(sel_code) + 1 if sel_code in codes else len(codes)
+        if rank / len(codes) > QUANT_FALLBACK_RANK_RATIO:
+            cause = f"排位 {rank}/{len(codes)} 低于前 {QUANT_FALLBACK_RANK_RATIO:.0%}"
+    if not cause:
+        return None
+    return {
+        "selected_code": top["code"],
+        "selected_name": top["name"],
+        "reason": f"[量化兜底] {cause}；改采赛道 LightGBM 得分 Top1（combo={top['combo']:.3f}）",
+        "vetoed": result.get("vetoed", []),
+        "quant_fallback": True,
+        "fallback_cause": cause,
+    }
+
+
 def _save_recommendation(date_str: str, selected: dict, candidates: list[dict],
                            vetoed: list, regime: str, feature_snapshot: str = "",
                            reco_path: str = "sector") -> int:
@@ -521,32 +584,18 @@ def _save_recommendation(date_str: str, selected: dict, candidates: list[dict],
 
 
 def _trade_calendar() -> set[str] | None:
-    """交易日历缓存（meta 单次解析）；无缓存/解析失败返回 None（调用方不误伤）。
-
-    滞后口径三处（期望日期/全局新鲜度/单基金闸门）共用，替代各自重复
-    get_meta + json.loads（原 _drop_stale_feature_rows 逐行重复解析）。
-    """
-    raw = repo.get_meta(META.TRADE_DATES_CACHE)
-    if not raw:
-        return None
-    try:
-        return set(json.loads(raw))
-    except (json.JSONDecodeError, TypeError):
-        return None
+    """交易日历集合（单一来源，架构审查候选 5）：委托 trading_calendar 统一缓存读取。"""
+    return trade_dates()
 
 
 def _expected_feature_date() -> str | None:
     """期望特征日期：今天交易日→昨交易日（数据任务盘前拉 T-1 净值）；否则最近交易日。
 
-    无交易日历缓存返回 None（调用方不误报/不误伤）。
+    单一来源（架构审查候选 5）：收敛于 trading_calendar.expected_trade_date，
+    与数据基座指数新鲜度同口径；无交易日历缓存返回 None（调用方不误报/不误伤）。
+    入参 today 由本模块 datetime.now() 提供（保持 datetime 可注入的测试 seam）。
     """
-    days = _trade_calendar()
-    if not days:
-        return None
-    today = datetime.now().date().isoformat()
-    if today in days:
-        return max((d for d in days if d < today), default=None)  # 今交易，期望 T-1
-    return max((d for d in days if d <= today), default=None)  # 非交易日，期望最近交易日
+    return expected_trade_date(datetime.now().date().isoformat())
 
 
 def _feature_freshness(feat_date: str | None) -> int:
@@ -664,8 +713,6 @@ def run_recommendation(retrain: bool = False) -> None:
         logger.error("特征新鲜度：最新特征日期 %s 滞后 %d 个交易日——数据基座连续失败，推荐将基于严重陈旧特征",
                      feat_date, lag)
 
-    insights = _load_insights()
-
     model = get_or_train(retrain)
     if model is None:
         return
@@ -673,6 +720,8 @@ def run_recommendation(retrain: bool = False) -> None:
     logger.info("=== LLM 宏观分析 + 选赛道 ===")
     ctx = build_macro_context(date_str)
     llm_regime = domain.normalize_regime_label(ctx.regime_label)
+    # ticket 13：洞察按当前市场状态优选（需 ctx 先构建）；提及当前 regime 的教训优先
+    insights = _load_insights(domain.REGIME_LABELS.get(llm_regime))
     logger.info("选定赛道: %s | 回避: %s | 大盘: %s",
                 ctx.recommended_sectors, ctx.risk_sectors, ctx.regime_label)
 
@@ -730,9 +779,19 @@ def run_recommendation(retrain: bool = False) -> None:
         logger.info("=== LLM 最终定论 [%d/2 %s] (%d 只候选) ===",
                     idx + 1, sector, len(sector_candidates))
         # 终选定论恒由 LLM 执行：发挥宏观/持仓/新闻综合判断优势。
-        # 裁决损耗观测（选中 vs 候选池均值）只回流元分析自省，不做"纯量化降级"
-        # ——自动降级会让系统突然失去 LLM 判断，违背设计初衷（Q8 曾讨论后否定）。
+        # ticket 11：仅在 LLM 理由不自洽或量化排位明显背离时兜底为赛道 Top1
+        # （见 _maybe_quant_fallback）；正常 LLM 决策不受影响。Q8 否定的是"纯量化降级
+        # 常开/旁路 LLM"，此处限定为异常情形保底，不与之冲突。
+        # 裁决损耗观测（选中 vs 候选池均值）仍回流元分析自省。
         result = _llm_final_pick(sector_candidates, ctx, insights)
+        # ticket 11：LLM 理由不自洽或量化排位过低 → 静默降级为赛道 Top1
+        fallback = _maybe_quant_fallback(result, sector_candidates)
+        sector_reco_path = reco_path
+        if fallback is not None:
+            logger.warning("量化兜底 [%s]: %s（LLM 选 %s）",
+                           sector, fallback["fallback_cause"], result["selected_code"])
+            result = fallback
+            sector_reco_path = "quant_fallback"
         # 一旦被某赛道选定，后续赛道不再重复推荐该基金（同日去重）
         selected_codes.add(result["selected_code"])
 
@@ -795,7 +854,7 @@ def run_recommendation(retrain: bool = False) -> None:
 
         saved_id = _save_recommendation(
             date_str, selected, sector_candidates, vetoed, llm_regime, feature_snapshot,
-            reco_path=reco_path,
+            reco_path=sector_reco_path,
         )
         _write_sector_selection(date_str, ctx, saved_id)
         count += 1

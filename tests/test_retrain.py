@@ -54,7 +54,12 @@ class TestModelLastTrainedMeta:
 
 
 class _FakeBooster:
-    pass
+    """假 Booster：加载路径会校验特征维度（model.feature_dim_mismatch），
+    故需提供 num_feature()，返回值与当前代码特征列一致。"""
+
+    def num_feature(self):
+        from app.domain import FEATURE_COLS, MARKET_COLS
+        return len(FEATURE_COLS + MARKET_COLS)
 
 
 class TestGetOrTrainModel:

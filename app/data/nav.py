@@ -336,14 +336,13 @@ async def _fundmobapi_incremental(session, codes: list[str], headers: dict) -> t
 
 
 async def async_update_nav_incremental(concurrency: int = 5) -> int:
-    with db_conn() as conn:
-        all_codes = [
-            r[0] for r in conn.execute("SELECT code FROM fund_basic WHERE is_buyable = 1").fetchall()
-        ]
-        local_max = dict(
-            conn.execute("SELECT code, MAX(date) FROM fund_nav GROUP BY code").fetchall()
-        )
-        global_latest = conn.execute("SELECT MAX(date) FROM fund_nav").fetchone()[0]
+    import app.repo as repo
+    # 净值时间状态单一归属（架构审查候选 4）：消费 repo 语义服务，
+    # 不再内联 GROUP BY（与打标/陈旧侧同口径，改一处即可）。
+    all_codes = repo.get_buyable_codes()
+    ranges, _ = repo.get_nav_time_state()
+    local_max = {code: end for code, (_start, end) in ranges.items()}
+    global_latest = max((end for _, end in ranges.values()), default=None)
 
     all_codes = filter_cooldown_targets(
         "nav_incr", all_codes, "净值增量",
@@ -473,10 +472,8 @@ async def async_update_nav_incremental(concurrency: int = 5) -> int:
 
 
 async def async_download_all_nav(concurrency: int = 15) -> int:
-    with db_conn() as conn:
-        all_codes = [
-            r[0] for r in conn.execute("SELECT code FROM fund_basic WHERE is_buyable = 1").fetchall()
-        ]
+    import app.repo as repo
+    all_codes = repo.get_buyable_codes()
     all_codes = filter_cooldown_targets(
         "nav_full", all_codes, "全量净值",
         stage_cooldown_days={STAGE_NO_UPDATE: 7},

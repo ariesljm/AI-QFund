@@ -34,7 +34,7 @@ class TestNextRunFor:
         assert runner.next_run_for() is None
 
     def test_future_run_today(self, monkeypatch):
-        """未到触发时刻 → 该时刻所在日（晚 22 点后 +2h 跨天则次日，与实现同一推算规则自洽）。"""
+        """未到触发时刻 → 该时刻所在日（实现语义：已过点且当日未跑 → 显示为即将执行，不顺延）。"""
         now = datetime.now()
         future = (now + timedelta(hours=2)).strftime("%H:%M")
         h, m = future.split(":")
@@ -42,10 +42,8 @@ class TestNextRunFor:
                             lambda: {"scheduler": {"hour": h, "minute": m}})
         nxt = runner.next_run_for("全流程")
         assert nxt is not None
-        expect = now.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
-        expected_day = ((expect + timedelta(days=1)).strftime("%Y-%m-%d")
-                        if expect <= now else expect.strftime("%Y-%m-%d"))
-        assert nxt.startswith(expected_day)
+        # 当日未跑（测试环境）→ 已过点也显示为当日即将执行，不因跨天顺延
+        assert nxt.startswith(now.strftime("%Y-%m-%d"))
 
     def test_past_run_tomorrow(self, monkeypatch):
         """已过触发时刻且当日已跑 → 该时刻顺延一天（与实现同一推算规则自洽验证）。"""
