@@ -406,21 +406,26 @@ def _fetch_push2_tls_client(url: str, hdrs: dict, timeout: float) -> tuple[Any, 
 
 
 def _fetch_push2_curl_exe(url: str, hdrs: dict, timeout: float) -> tuple[Any, int | None]:
-    """push2 降级策略 3：系统 curl.exe -4 子进程（TLS 指纹最弱，最后兜底）。"""
+    """push2 降级策略 3：系统 curl -4 子进程（TLS 指纹最弱，最后兜底）。
+
+    参数列表形式（非字符串 + shell）：Linux 容器与 Windows 均正确解析，
+    curl.exe 的 Windows 命令名在容器不存在（修复跨平台部署）。
+    """
     import subprocess
     try:
-        quoted = url.replace('"', '\\"')
         # --noproxy "*"：curl 默认读 HTTP(S)_PROXY 环境变量走代理；本项目访问
         # 全为国内站点（直连更快且不受本机代理工具开关影响），与 httpx 的
         # trust_env=False 行为保持一致。
-        cmd = (f'curl.exe -4 -s --noproxy "*" -m {int(timeout)} '
-               f'-H "User-Agent: {hdrs["User-Agent"]}" "{quoted}"')
+        cmd = ["curl", "-4", "-s", "--noproxy", "*",
+               "-m", str(int(timeout)),
+               "-H", f'User-Agent: {hdrs["User-Agent"]}',
+               url]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 2)
         if result.returncode == 0:
             return httpx.Response(200, content=result.stdout.encode("utf-8")), None
-        logger.warning("curl.exe -4 push2 返回码 %d, 重试", result.returncode)
+        logger.warning("curl -4 push2 返回码 %d, 重试", result.returncode)
     except Exception as e:
-        logger.warning("curl.exe -4 push2 也失败: %s", str(e)[:80])
+        logger.warning("curl -4 push2 也失败: %s", str(e)[:80])
     return None, None
 
 
