@@ -155,16 +155,11 @@ def retrain_due(last_trained: str | None, today: date | None = None) -> bool:
     return (today - last).days >= _RETRAIN_INTERVAL_DAYS
 
 
-def panel_samples(fund_codes: list[str], window_end: str | None = None,
-                  window_days: int = 365,
-                  lambdas: tuple[float, ...] | None = None) -> list:
-    """面板采样（单一来源，架构审查候选 6）：生产训练与研究回测共用同一循环。
+def _panel_context(window_end: str | None, window_days: int) -> dict:
+    """面板采样只读上下文（指数/板块矩阵/窗口边界），可跨进程 pickle 传递。
 
-    逐基金净值 → 60 日预热 → 每 20 步采样 → 特征现算（含 style_r2 反推与市场
-    状态注入）→ 样本 (date, feat, y_abs, y_adj)。口径变更只改此处：
-    - y_abs：未来 FORWARD 日实际收益（主标尺 forward_return_from_navs，研究评估用）
-    - y_adj：λ→风险调整标签；lambdas 省略时仅含默认 λ（键 None，生产训练用）
-    window_end: 回测按决策日截断（严格无前视）；window_days: 滚动窗口天数。
+    并行化（架构优化）：样本构建为自然可并行（基金间零耦合），上下文在主进程
+    加载一次，子进程只消费（不重复查 DB/板块矩阵）。
     """
     idx_rows = repo.get_index_series("sh000300", ("date", "close", "volume"))
     if not idx_rows:
@@ -192,13 +187,28 @@ def panel_samples(fund_codes: list[str], window_end: str | None = None,
     logger.info("训练滚动窗口: %s 起（%d 个可用决策日）",
                 window_start.date() if hasattr(window_start, "date") else window_start,
                 len(valid_dates))
+    return {"idx_close": idx_close, "idx_vol": idx_vol, "we": we,
+            "idx_ret_fwd": idx_ret_fwd, "window_start": window_start,
+            "sector_frame": load_sector_pct_frame()}
 
-    # 板块日涨幅宽表（一次加载，供逐决策日算赛道热度/反推；避免样本级 N+1 查询）
+
+def _panel_chunk(args: tuple) -> list:
+    """单基金子集的样本构建（顶层 worker，multiprocessing 可 pickle）。
+
+    与串行循环逐位一致（纯函数、基金间独立）：相同基金/上下文 → 相同样本。
+    args = (codes, ctx, lam_list)。
+    """
+    codes, ctx, lam_list = args
     _STEP = 20
-    sector_frame = load_sector_pct_frame()
-    lam_list = tuple(lambdas) if lambdas else (None,)
+    idx_close = ctx["idx_close"]
+    idx_vol = ctx["idx_vol"]
+    we = ctx["we"]
+    idx_ret_fwd = ctx["idx_ret_fwd"]
+    window_start = ctx["window_start"]
+    sector_frame = ctx["sector_frame"]
+    window_end = we.strftime("%Y-%m-%d") if we is not None else None
     samples: list = []
-    for code in fund_codes:
+    for code in codes:
         rows = repo.nav.series(code)
         dates = [pd.Timestamp(r[0]) for r in rows]
         navs = [r[1] for r in rows]
@@ -239,6 +249,38 @@ def panel_samples(fund_codes: list[str], window_end: str | None = None,
                 continue
             samples.append((d, feat, y_abs, y_adj))
     return samples
+
+
+def panel_samples(fund_codes: list[str], window_end: str | None = None,
+                  window_days: int = 365,
+                  lambdas: tuple[float, ...] | None = None,
+                  workers: int | None = None) -> list:
+    """面板采样（单一来源，架构审查候选 6 + 并行化）：生产与研究共用同一循环。
+
+    逐基金净值 → 60 日预热 → 每 20 步采样 → 特征现算（含 style_r2 反推与市场
+    状态注入）→ 样本 (date, feat, y_abs, y_adj)。口径变更只改此处：
+    - y_abs：未来 FORWARD 日实际收益（主标尺 forward_return_from_navs，研究评估用）
+    - y_adj：λ→风险调整标签；lambdas 省略时仅含默认 λ（键 None，生产训练用）
+    - workers：并行进程数（默认 min(4, CPU)）；样本构建为自然可并行（基金间
+      零耦合），并行合并排序后与串行**逐位一致**（模型效果零差异）；基金池
+      过小（<64 只）自动退化为单进程。
+    window_end: 回测按决策日截断（严格无前视）；window_days: 滚动窗口天数。
+    """
+    ctx = _panel_context(window_end, window_days)
+    lam_list = tuple(lambdas) if lambdas else (None,)
+    import os
+    if workers is None:
+        workers = min(4, os.cpu_count() or 1)
+    if workers <= 1 or len(fund_codes) < 64:
+        return _panel_chunk((list(fund_codes), ctx, lam_list))
+    # 并行：分基金池 → Pool.map（保序）→ 合并。调用方（prepare_training_data /
+    # backtest_model）按 date 排序消费，样本集与串行一致（训练零差异）。
+    chunks = [c for c in (fund_codes[i::workers] for i in range(workers)) if c]
+    import multiprocessing as mp
+    mp_ctx = mp.get_context("spawn")  # spawn 跨平台（Linux/Windows 语义一致）
+    with mp_ctx.Pool(len(chunks)) as pool:
+        parts = pool.map(_panel_chunk, [(c, ctx, lam_list) for c in chunks])
+    return [s for part in parts for s in part]
 
 
 def prepare_training_data(window_end: str | None = None,
