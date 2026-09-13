@@ -278,10 +278,16 @@ def panel_samples(fund_codes: list[str], window_end: str | None = None,
     # backtest_model）按 date 排序消费，样本集与串行一致（训练零差异）。
     chunks = [c for c in (fund_codes[i::workers] for i in range(workers)) if c]
     import multiprocessing as mp
-    mp_ctx = mp.get_context("spawn")  # spawn 跨平台（Linux/Windows 语义一致）
-    with mp_ctx.Pool(len(chunks)) as pool:
-        parts = pool.map(_panel_chunk, [(c, ctx, lam_list) for c in chunks])
-    return [s for part in parts for s in part]
+    try:
+        mp_ctx = mp.get_context("spawn")  # spawn 跨平台（Linux/Windows 语义一致）
+        with mp_ctx.Pool(len(chunks)) as pool:
+            parts = pool.map(_panel_chunk, [(c, ctx, lam_list) for c in chunks])
+        return [s for part in parts for s in part]
+    except Exception as e:
+        # 并行兜底：子进程异常（环境/DB 竞态）不得炸断训练/推荐——降级串行，
+        # 结果与并行逐位一致（同一 worker）。
+        logger.warning("面板采样并行失败（%s: %s）——降级串行", type(e).__name__, str(e)[:80])
+        return _panel_chunk((list(fund_codes), ctx, lam_list))
 
 
 def prepare_training_data(window_end: str | None = None,

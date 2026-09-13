@@ -84,6 +84,11 @@ _Avoid_: 板块涨幅、行业收益序列
 features 域内的秩相关/线性相关/显著性检验命名函数（内部 scipy，ADR-0007 豁免边界内）；引擎层只消费命名函数、不直接 import scipy（test_stats_primitives 守边界）。
 _Avoid_: scipy 直连
 
+**带约束回归求解器**（features/style_solve）：
+RBSA 反推的求解核心（非负 Σw=1 约束最小二乘 + 投影梯度），纯 numpy 零依赖，
+归 features 域（ADR-0007 豁免边界内）；引擎层 style_track 只做取数/落库编排。
+_Avoid_: 回归求解（指引擎层实现）
+
 **面板采样**（panel_samples）：
 生产训练（prepare_training_data）与研究回测（backtest_model）共用的样本构建深函数：净值→预热→步进采样→特征现算（含 style_r2 反推与市场状态注入）→多标签（实际收益 y_abs + λ 风险调整标签集）。
 _Avoid_: 采样循环拷贝
