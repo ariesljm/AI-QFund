@@ -2,6 +2,7 @@
 
 import numpy as np
 
+import app.domain as domain
 from app.engine.walk_forward import (
     _slice_window, _quantile_layers, _layer_winrate, _ols, report,
     WINDOW, FORWARD,
@@ -57,8 +58,9 @@ class TestLayerWinrate:
 
     def test_exact_threshold_not_win(self):
         """恰好 1% 不算赢（is_profit 严格 > PROFIT_THRESHOLD，扣费后持平即亏）。"""
-        recs = [{"weight_1": 1.0, "fwd_ret": 0.01}]
-        assert _layer_winrate(recs, "weight_1")[0]["winrate"] == 0.0
+        assert domain.is_profit(0.01) is False
+        assert domain.is_profit(0.011) is True
+        assert domain.is_profit(-0.05) is False
 
 
 class TestOls:
