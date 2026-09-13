@@ -290,7 +290,7 @@ def _check_index_freshness(threshold: int = 3) -> None:
     expected = expected_trade_date()
     if expected is None or latest >= expected:
         return
-    lag = trading_day_lag(latest, expected, days=days)
+    lag = trading_day_lag(latest, expected)
     if lag < threshold:
         return
     logger.error("指数新鲜度: 本地最新 %s 滞后 %d 个交易日(>%d)——EMA60/regime/市场状态列"
