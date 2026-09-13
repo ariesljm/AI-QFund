@@ -252,9 +252,10 @@ def final_pick_prompt(
     for i, c in enumerate(candidates, 1):
         sector = c.get("sector") or c.get("rbsa_industry_1", "")
         lines.append(
-            f"第{i}名: {c['code']} {c['name']} | 赛道: {sector} | "
-            f"卡玛: {c['calmar']:.2f} | "
-            f"Hurst: {c['hurst_60d']:.2f} | 组合分: {c['combo']:.3f}"
+            f"第{i}名: {c.get('code', '?')} {c.get('name', '?')} | 赛道: {sector} | "
+            f"卡玛: {float(c.get('calmar', 0) or 0):.2f} | "
+            f"Hurst: {float(c.get('hurst_60d', 0) or 0):.2f} | "
+            f"组合分: {float(c.get('combo', 0) or 0):.3f}"
         )
         # 抗跌性白话展示（每个裸数字必须带口径与好坏方向，参考 fund-guy-skill 方法论）
         cu = c.get("capture_up")

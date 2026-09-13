@@ -210,18 +210,24 @@ class TestFinalPickMissingFieldTolerance:
         assert "第1名" in text2
         assert "000001" in text2
 
-    def test_required_fields_missing_pins_current_contract(self):
-        """现状记录：calmar/hurst_60d/combo/code/name 为直接索引（c['x']），缺失抛 KeyError。
+    def test_required_fields_missing_no_keyerror(self):
+        """核心字段（code/name/calmar/hurst_60d/combo）缺失 → 不抛 KeyError。
 
-        已实测确认：生产代码对 calmar 等字段直接索引，缺字段确实炸（KeyError）。
-        本测试只固化现有行为（不改 app/ 代码）；若后续生产改为 .get 容错，
-        本断言需同步改为"不抛异常"。
+        原契约：直接索引（c['x']）缺字段炸 KeyError，导致推荐在发请求前整体
+        失败；已改为 .get 容错（占位 0/？）——候选构造 bug 不再炸断推荐。
         """
         base = _base_candidate()
         for key in ("code", "name", "calmar", "hurst_60d", "combo"):
             cand = {k: v for k, v in base.items() if k != key}
-            with pytest.raises(KeyError):
-                final_pick_prompt([cand], _ctx(), [])
+            text = final_pick_prompt([cand], _ctx(), [])
+            assert "第1名" in text  # 容错占位渲染，不抛异常
+
+    def test_all_core_fields_missing_still_renders(self):
+        """全部核心字段缺失 → 全占位输出（0.00/？）仍渲染候选行。"""
+        text = final_pick_prompt([{}], _ctx(), [])
+        assert "第1名: ? ?" in text
+        assert "卡玛: 0.00" in text
+        assert "组合分: 0.000" in text
 
 
 # ---------- 其余主要 prompt：节锚点顺序 + schema 回显 ----------
