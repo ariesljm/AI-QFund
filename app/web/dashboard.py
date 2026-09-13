@@ -16,7 +16,7 @@ from app.engine.valuation import (
     portfolio_series,
     sharpe_ratio,
 )
-from app.model import latest_market_state
+from app.features.calculator import latest_market_state
 from app.web.charts import make_dual_svg, smooth_svg_path
 from app.web.charts import quality_curve_svg as chart_quality_curve
 

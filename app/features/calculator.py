@@ -335,6 +335,33 @@ def latest_sector_heat() -> float:
     return float(_latest_heat_cache["value"])
 
 
+_mkt_state_cache: dict | None = None
+_mkt_state_cache_date: str = ""
+
+
+def latest_market_state() -> dict:
+    """最新市场状态列（指数 20 日动量/波动率），按天缓存。
+
+    归属 features 域（market_state_features 的最新态包装，架构深化 A5：web 与
+    model 统一从此消费，web 不再直摸 model 层）；调用方显式传入 model.score。
+    """
+    global _mkt_state_cache, _mkt_state_cache_date
+    today = datetime.now().strftime("%Y-%m-%d")
+    if _mkt_state_cache is None or _mkt_state_cache_date != today:
+        idx_rows = repo.get_index_series("sh000300", ("date", "close", "volume"))
+        if idx_rows:
+            closes = np.array([r[1] for r in idx_rows], dtype=float)
+            vols = np.array([r[2] for r in idx_rows], dtype=float)
+            _mkt_state_cache = market_state_features(closes, vols,
+                                                     sector_heat=latest_sector_heat())
+        else:
+            # 审计 P2-4：指数缺失显式告警（不静默 0）——模型在分布外输入打分
+            logger.warning("指数数据缺失（sh000300 无行）：市场状态列填 0，模型打分失真风险")
+            _mkt_state_cache = {c: 0.0 for c in domain.MARKET_COLS}
+        _mkt_state_cache_date = today
+    return _mkt_state_cache
+
+
 def market_state_features(idx_close: np.ndarray, idx_vol: np.ndarray,
                           sector_heat: float = 0.0) -> dict:
     """市场状态列（单一来源）：指数 20 日动量/波动率、60 日偏离、赛道热度。

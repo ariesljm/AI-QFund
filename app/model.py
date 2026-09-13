@@ -16,6 +16,7 @@ import app.repo as repo
 from app import domain
 from app.features.calculator import (
     compute_fund_features,
+    latest_market_state,
     latest_sector_heat,
     load_sector_pct_frame,
     market_state_features,
@@ -394,28 +395,6 @@ def load() -> lgb.Booster | None:
 
 # 监控打分用的市场状态列缓存：同一时刻全市场共享，避免逐持仓重复拉指数
 _mkt_state_cache: dict | None = None
-_mkt_state_cache_date: str = ""
-
-
-def latest_market_state() -> dict:
-    """最新市场状态列（指数 20 日动量/波动率），按天缓存。调用方显式传入 score()。"""
-    global _mkt_state_cache, _mkt_state_cache_date
-    today = datetime.now().strftime("%Y-%m-%d")
-    if _mkt_state_cache is None or _mkt_state_cache_date != today:
-        idx_rows = repo.get_index_series("sh000300", ("date", "close", "volume"))
-        if idx_rows:
-            closes = np.array([r[1] for r in idx_rows], dtype=float)
-            vols = np.array([r[2] for r in idx_rows], dtype=float)
-            _mkt_state_cache = market_state_features(closes, vols,
-                                                     sector_heat=latest_sector_heat())
-        else:
-            # 审计 P2-4：指数缺失显式告警（不静默 0）——模型在分布外输入打分
-            logger.warning("指数数据缺失（sh000300 无行）：市场状态列填 0，模型打分失真风险")
-            _mkt_state_cache = {c: 0.0 for c in MARKET_COLS}
-        _mkt_state_cache_date = today
-    return _mkt_state_cache
-
-
 def score(features: dict, market_state: dict | None = None) -> float | None:
     """用模型对特征 dict 打分，返回预测风险调整收益；无模型/特征不全/异常返回 None。
 
