@@ -46,14 +46,19 @@ class TestLayerWinrate:
             {"weight_1": 1.0, "fwd_ret": 0.02},
             {"weight_1": 2.0, "fwd_ret": -0.01},
             {"weight_1": 3.0, "fwd_ret": 0.03},
-            {"weight_1": 50.0, "fwd_ret": 0.01},
+            {"weight_1": 50.0, "fwd_ret": 0.011},  # >1% 才算赢（新口径）
         ]
         layers = _layer_winrate(recs, "weight_1")
         # Q1 只含 weight_1=1.0 的一条（fwd_ret=+0.02 赢 → 100%）
         q1 = layers[0]
         assert q1["n"] == 1 and q1["winrate"] == 1.0
-        # Q4 只含 weight_1=50.0 的一条（fwd_ret=+0.01 赢 → 100%）
+        # Q4 只含 weight_1=50.0 的一条（fwd_ret=+0.011 >1% 赢 → 100%）
         assert layers[-1]["n"] == 1 and layers[-1]["winrate"] == 1.0
+
+    def test_exact_threshold_not_win(self):
+        """恰好 1% 不算赢（is_profit 严格 > PROFIT_THRESHOLD，扣费后持平即亏）。"""
+        recs = [{"weight_1": 1.0, "fwd_ret": 0.01}]
+        assert _layer_winrate(recs, "weight_1")[0]["winrate"] == 0.0
 
 
 class TestOls:

@@ -19,6 +19,7 @@ import random
 
 import numpy as np
 
+import app.domain as domain
 import app.repo as repo
 from app.database import db_conn
 from app.features.style_solve import solve_style_weights
@@ -208,7 +209,7 @@ def _layer_winrate(recs: list[dict], field: str) -> list[dict]:
         if not group:
             out.append({"layer": name, "n": 0, "winrate": None, "mean_ret": None})
             continue
-        wins = sum(1 for r in group if r["fwd_ret"] > 0)
+        wins = sum(1 for r in group if domain.is_profit(r["fwd_ret"]))
         out.append({"layer": name, "n": len(group),
                     "winrate": wins / len(group),
                     "mean_ret": float(np.mean([r["fwd_ret"] for r in group]))})
@@ -222,7 +223,7 @@ def report(recs: list[dict]) -> str:
     n = len(recs)
     lines = [f"=== 风格跟踪 walk-forward 回测报告 ===",
              f"样本: {n} 条（T × 基金） | 前瞻: {FORWARD} 交易日 | 反推窗口: {WINDOW} 日",
-             f"整体 40 日赚钱胜率: {sum(1 for r in recs if r['fwd_ret'] > 0) / n:.1%}",
+             f"整体 40 日赚钱胜率: {sum(1 for r in recs if domain.is_profit(r['fwd_ret'])) / n:.1%}",
              f"整体平均收益: {np.mean([r['fwd_ret'] for r in recs]):.2%}"]
 
     for field, label in (("weight_1", "反推主线权重 weight_1"),

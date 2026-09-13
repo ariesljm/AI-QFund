@@ -17,6 +17,15 @@ FORWARD_DAYS = 40
 # 赚钱口径：绝对收益 > 1% 视为扣费后真赚钱（quality 度量 / GA fitness / 回测 / 结算共用）
 PROFIT_THRESHOLD = 0.01
 
+
+def is_profit(ret: float) -> bool:
+    """赚钱口径纯谓词（单一来源）：绝对收益 > 1% 覆盖申赎成本。
+
+    生产结算（quality/evolve/ga）与研究回测（walk_forward/backtest_model）
+    共用——研究工具的"赚钱胜率"必须与生产可比，不得自写 >0 名义口径。
+    """
+    return ret > PROFIT_THRESHOLD
+
 # 风险调整收益标签的惩罚系数：训练目标 = 40 日绝对收益 − λ × 40 日最大回撤。
 # 强迫模型排序时淘汰"涨幅大但回撤极端"的假牛基。λ=0 退化为纯绝对收益，
 # λ 越大越惩罚回撤；初值 0.5 为稳健折中（精确值应走 walk-forward 标定）。

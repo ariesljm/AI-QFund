@@ -37,8 +37,8 @@ def _metrics(scores: np.ndarray, y_abs: np.ndarray) -> dict:
     y = np.asarray(y_abs, dtype=float)
     med = float(np.median(s))
     hi, lo = y[s >= med], y[s < med]
-    hi_wr = float((hi > 0).mean()) if hi.size else float("nan")
-    lo_wr = float((lo > 0).mean()) if lo.size else float("nan")
+    hi_wr = (sum(1 for yy in hi if domain.is_profit(yy)) / hi.size) if hi.size else float("nan")
+    lo_wr = (sum(1 for yy in lo if domain.is_profit(yy)) / lo.size) if lo.size else float("nan")
     res = stats_spearman(s, y)
     ic = res[0] if res is not None else float("nan")
     return {"n": int(s.size), "高分组胜率": hi_wr, "低分组胜率": lo_wr,
