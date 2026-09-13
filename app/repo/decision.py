@@ -697,6 +697,18 @@ def get_sector_pct_series(start: str, end: str) -> list[tuple[str, str, str, flo
     return [(r[0], r[1], r[2], float(r[3])) for r in rows]
 
 
+def get_sector_pct_map(start: str, end: str) -> dict[str, dict[str, float]]:
+    """区间内板块日涨跌幅按板块名分组 {sector_name: {date: pct}}（风格反推入参形态）。
+
+    收敛引擎三处手写循环（style_track / monitor / walk_forward）的单一归属；
+    消费方配合 features/sector 深模块做 ÷100 与全日期覆盖过滤。
+    """
+    by_sector: dict[str, dict[str, float]] = {}
+    for d, _code, name, pct in get_sector_pct_series(start, end):
+        by_sector.setdefault(name, {})[d] = pct
+    return by_sector
+
+
 def save_fund_style(fund_code: str, trade_date: str, top: list[tuple[str, float]],
                     r_squared: float) -> None:
     """写入净值反推风格暴露（Top-2 行业 + 拟合优度），同 (fund_code, trade_date) 覆盖。"""

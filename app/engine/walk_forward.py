@@ -21,7 +21,7 @@ import numpy as np
 
 import app.repo as repo
 from app.database import db_conn
-from app.engine.style_track import solve_style_weights
+from app.features.style_solve import solve_style_weights
 from app.features.sector import style_returns_matrix
 from app.features.stats import pearson, t_tail_p
 
@@ -55,9 +55,7 @@ def _style_at(code: str, as_of: str, window: int = WINDOW,
     if sector_cache is not None and key in sector_cache:
         by_sector = sector_cache[key]
     else:
-        by_sector: dict[str, dict[str, float]] = {}
-        for d, c, _name, pct in repo.get_sector_pct_series(ret_dates[0], ret_dates[-1]):
-            by_sector.setdefault(c, {})[d] = pct
+        by_sector = repo.get_sector_pct_map(ret_dates[0], ret_dates[-1])
         if sector_cache is not None:
             sector_cache[key] = by_sector
     # 深模块：÷100（pct 百分数→小数）、全日期覆盖过滤单点收敛（与生产同口径）

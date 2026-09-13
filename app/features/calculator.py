@@ -418,7 +418,7 @@ def _style_r2_from_frame(nav_dates: list[str], nav_vals: np.ndarray,
     数据不足/不可解释时返回 None（调用方降级为 0.0，避免 None 打崩候选池）。
     sector_frame：date × sector 宽表（pct 百分数），index 须为有序字符串日期。
     """
-    from app.engine.style_track import solve_style_weights
+    from app.features.style_solve import solve_style_weights
     from app.features.sector import style_returns_matrix
     if sector_frame is None or len(nav_vals) < window + 1:
         return None

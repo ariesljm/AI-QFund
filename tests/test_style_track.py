@@ -119,7 +119,8 @@ class TestComputeFundStyleUnitAlignment:
             rows.append((d, "BK0002", "板块B", b_ret[i] * 100.0))
         monkeypatch.setattr(repo.nav, "series",
                             lambda code, limit=None, until=None: navs)
-        monkeypatch.setattr(repo, "get_sector_pct_series", lambda a, b: rows)
+        monkeypatch.setattr("app.repo.decision.get_sector_pct_series",
+                            lambda a, b: rows)
         saved: dict = {}
         monkeypatch.setattr(repo, "save_fund_style",
                             lambda c, d, top, r2: saved.update(code=c, top=top, r2=r2))

@@ -47,7 +47,6 @@ from app.repo import (
     get_recent_monitor_signals,
     get_recent_scores,
     get_sector_momentum_median,
-    get_sector_pct_series,
     insert_monitor_event,
     insert_monitor_score,
     nav,
@@ -972,9 +971,7 @@ def _build_defense_context(row: dict, date_str: str, trade_dates: list[str],
             # 按基金实际净值日对齐（修复此前 trade_dates 尾部位置配对错位，
             # 停牌/缺净值日会把板块收益配到错误的日期）；单位 ÷100 收敛于
             # features/sector 深模块（sector_return_series）。
-            by_sector: dict[str, dict[str, float]] = {}
-            for d, _c, n, pct in get_sector_pct_series(nav_dates[0], nav_dates[-1]):
-                by_sector.setdefault(n, {})[d] = pct
+            by_sector = get_sector_pct_map(nav_dates[0], nav_dates[-1])
             sector_returns = sector_return_series(nav_dates[1:], by_sector, ind)
     entry_score = get_entry_score(code_str)
     sector_median = None
