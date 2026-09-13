@@ -190,17 +190,6 @@ def get_industry_map() -> dict[str, str]:
         rows = conn.execute('SELECT stock_code, industry_name FROM stock_industry_map').fetchall()
     return dict(rows)
 
-def _percentile(values: list[float], pct: float) -> float:
-    """线性插值分位数（pct ∈ [0,100]），与 sector_pool 同口径，避免截面分位判断漂移。"""
-    if not values:
-        return 0.0
-    s = sorted(values)
-    pos = (len(s) - 1) * pct / 100.0
-    lo = int(pos)
-    hi = min(lo + 1, len(s) - 1)
-    return s[lo] + (s[hi] - s[lo]) * (pos - lo)
-
-
 def get_sector_trend_features(date: str, flow_days: int = 5) -> dict[str, dict]:
     """赛道多周期趋势特征（聚合层，量化定池/LLM 素材共用单一来源）。
 
@@ -245,7 +234,7 @@ def get_sector_trend_features(date: str, flow_days: int = 5) -> dict[str, dict]:
         }
         if out[sector]["mom_20d"] is not None:
             mom20_vals.append(out[sector]["mom_20d"])
-    p75 = _percentile(mom20_vals, 75.0) if len(mom20_vals) >= 2 else None
+    p75 = domain.percentile(mom20_vals, 75.0) if len(mom20_vals) >= 2 else None
     for t in out.values():
         if t["flow_5d"] is not None and t["flow_5d"] < 0:
             t["label"] = "资金流出"

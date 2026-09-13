@@ -15,6 +15,7 @@
 
 from dataclasses import dataclass, field
 
+from app import domain
 from app.repo import base as repo
 
 # 候选池目标大小（D5 定案：10-15 个）
@@ -75,17 +76,6 @@ class SectorPool:
         return [c.sector for c in self.candidates]
 
 
-def _percentile(values: list[float], pct: float) -> float:
-    """线性插值分位数（pct ∈ [0,100]），与 numpy 的 percentile 口径一致。"""
-    if not values:
-        return 0.0
-    s = sorted(values)
-    pos = (len(s) - 1) * pct / 100.0
-    lo = int(pos)
-    hi = min(lo + 1, len(s) - 1)
-    return s[lo] + (s[hi] - s[lo]) * (pos - lo)
-
-
 def _signal_of(sector: str, stats: dict) -> SectorSignal:
     return SectorSignal(
         sector=sector,
@@ -134,13 +124,13 @@ def build_sector_pool(date_str: str, available: list[str] | None = None) -> Sect
     # Ticket 04：极端高波动剔除（vol_20d 截面 P90+）——低波动主因子已撤销
     # （多窗口验证无区分度），仅保留极端波动作为风控过滤。
     vols = [float(t["vol_20d"]) for t in trend.values() if t.get("vol_20d") is not None]
-    vol_p90 = _percentile(vols, EXTREME_VOL_PCT) if len(vols) >= 4 else None
+    vol_p90 = domain.percentile(vols, EXTREME_VOL_PCT) if len(vols) >= 4 else None
     # T06 熊市分支：高波动降权阈值（vol_20d 截面 P70）
-    vol_bear_th = _percentile(vols, BEAR_HIGH_VOL_PCT) if len(vols) >= 4 else None
+    vol_bear_th = domain.percentile(vols, BEAR_HIGH_VOL_PCT) if len(vols) >= 4 else None
     # 中长高位（60 日 P75）：由整池剔除改为温和降权（2026-09 多窗口验证：
     # 40/60 日持有视野下反转显著减弱，硬剔除会错杀刚启动的强势赛道）
     mom60 = [s.mom_60d for s in signals]
-    overheat_th = _percentile(mom60, OVERHEAT_60D_PCT)
+    overheat_th = domain.percentile(mom60, OVERHEAT_60D_PCT)
     keep: list[SectorSignal] = []
     for s in signals:
         tf = trend.get(s.sector) or {}
@@ -169,9 +159,9 @@ def build_sector_pool(date_str: str, available: list[str] | None = None) -> Sect
     if keep:
         mom5 = [s.mom_5d for s in keep]
         mom20 = [s.mom_20d for s in keep]
-        chase_th5 = _percentile(mom5, CHASE_5D_PCT)
-        chase_th20 = _percentile(mom20, CHASE_20D_PCT)
-        hot_th5 = _percentile(mom5, HOT_5D_PCT)
+        chase_th5 = domain.percentile(mom5, CHASE_5D_PCT)
+        chase_th20 = domain.percentile(mom20, CHASE_20D_PCT)
+        hot_th5 = domain.percentile(mom5, HOT_5D_PCT)
         for s in keep:
             if s.mom_5d >= chase_th5 and s.mom_20d >= chase_th20:
                 s.score *= CHASE_DOWNWEIGHT

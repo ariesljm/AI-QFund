@@ -26,6 +26,21 @@ def is_profit(ret: float) -> bool:
     """
     return ret > PROFIT_THRESHOLD
 
+
+def percentile(values: list[float], pct: float) -> float:
+    """线性插值分位数（pct ∈ [0,100]），与 numpy.percentile 同口径，单一来源。
+
+    收敛 repo/base 与 sector_pool 的逐字拷贝（截面分位判断必须同口径）；
+    空列表返回 0.0（调用方自行判空/样本量门槛）。
+    """
+    if not values:
+        return 0.0
+    s = sorted(values)
+    pos = (len(s) - 1) * pct / 100.0
+    lo = int(pos)
+    hi = min(lo + 1, len(s) - 1)
+    return s[lo] + (s[hi] - s[lo]) * (pos - lo)
+
 # 风险调整收益标签的惩罚系数：训练目标 = 40 日绝对收益 − λ × 40 日最大回撤。
 # 强迫模型排序时淘汰"涨幅大但回撤极端"的假牛基。λ=0 退化为纯绝对收益，
 # λ 越大越惩罚回撤；初值 0.5 为稳健折中（精确值应走 walk-forward 标定）。
