@@ -1,0 +1,3 @@
+id,insight,insight_type,source_ids,confidence,created_date,last_applied_date,apply_count,active,condition
+1,calmar与动量负相关(-0.033)，回撤质量信号失效,ranking,,0.45125,2026-08-14,,0,1,
+2,"GA寻优应用: fitness 103.610→120.530, 配置 {'model_weight': 0.533, 'rel_strength_weight': 0.242, 'calmar_weight': 0.195, 'hurst_weight': 0.012, 'momentum_guard_pct': -15.0}",ranking,,0.45125,2026-08-18,,0,1,

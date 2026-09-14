@@ -1,0 +1,1 @@
+id,computed_date,period_start,period_end,ic,excess_win_rate,mean_excess,cum_excess,profit_rate,mean_abs_ret,payoff_ratio,sample_count,decision_loss,decision_gap_best,points_json,by_path_json,e2e_profit_rate,e2e_mean_ret,e2e_payoff_ratio,timing_contribution,e2e_sample_count,e2e_points_json,by_score_bucket_json,e2e_mean_hold_days,e2e_mean_max_drawdown
