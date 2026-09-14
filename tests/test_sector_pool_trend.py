@@ -61,7 +61,31 @@ class TestFlowTrendSignal:
         assert "中长高位降权" in a.flags
 
     def test_extreme_vol_removed(self, monkeypatch):
-        """极端高波动（vol 截面 P90+）赛道剔除。"""
+        """极端高波动（vol 截面 P90+）赛道在牛市剔除（风控过滤）。"""
+        sectors = ["A", "B", "C", "D"]
+        medians = {s: _mom(s, 2.0, 3.0, 10.0) for s in sectors}
+        trend = {
+            "A": {"mom_5d": 2.0, "mom_20d": 3.0, "vol_20d": 0.9, "flow_5d": 100.0,
+                  "flow_days": 5, "label": "趋势健康"},
+            "B": {"mom_5d": 2.0, "mom_20d": 3.0, "vol_20d": 0.1, "flow_5d": 100.0,
+                  "flow_days": 5, "label": "趋势健康"},
+            "C": {"mom_5d": 2.0, "mom_20d": 3.0, "vol_20d": 0.2, "flow_5d": 100.0,
+                  "flow_days": 5, "label": "趋势健康"},
+            "D": {"mom_5d": 2.0, "mom_20d": 3.0, "vol_20d": 0.3, "flow_5d": 100.0,
+                  "flow_days": 5, "label": "趋势健康"},
+        }
+        _base(monkeypatch, sectors, medians, trend, regime="BULL")
+
+        pool = sp.build_sector_pool("2026-09-03")
+        assert "A" not in {c.sector for c in pool.candidates}
+        assert any(e["sector"] == "A" for e in pool.excluded)
+
+    def test_extreme_vol_kept_in_bear(self, monkeypatch):
+        """熊市：极端高波动（vol P90+）赛道不硬剔除，仅熊市高波动降权。
+
+        9-14 空推荐回归点：熊市里正动量赛道往往伴随高波动，硬剔除会误杀
+        仅有的反弹动能赛道，导致候选池塌缩 → LLM 否决 → 空推荐。
+        """
         sectors = ["A", "B", "C", "D"]
         medians = {s: _mom(s, 2.0, 3.0, 10.0) for s in sectors}
         trend = {
@@ -77,8 +101,11 @@ class TestFlowTrendSignal:
         _base(monkeypatch, sectors, medians, trend)
 
         pool = sp.build_sector_pool("2026-09-03")
-        assert "A" not in {c.sector for c in pool.candidates}
-        assert any(e["sector"] == "A" for e in pool.excluded)
+        names = {c.sector for c in pool.candidates}
+        assert "A" in names  # 熊市不再剔除
+        assert all(e["sector"] != "A" for e in pool.excluded)
+        a = next(c for c in pool.candidates if c.sector == "A")
+        assert "熊市高波动降权" in a.flags
 
 
 class TestLegacyGatesPreserved:

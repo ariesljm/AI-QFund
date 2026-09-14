@@ -135,7 +135,12 @@ def build_sector_pool(date_str: str, available: list[str] | None = None) -> Sect
     for s in signals:
         tf = trend.get(s.sector) or {}
         vol = tf.get("vol_20d")
-        if vol_p90 is not None and vol is not None and vol > vol_p90:
+        if regime != "BEAR" and vol_p90 is not None and vol is not None and vol > vol_p90:
+            # 牛市/中性：极端高波动硬剔除（风控过滤）。熊市不硬剔除——vol>P90
+            # 的赛道必然命中下方 P70「熊市高波动降权」（P90>P70），硬剔除会误杀
+            # 熊市里仅有的短期反弹动能赛道（9-14 实证：通信设备 mom5d +1.33%、
+            # 电子元件 +0.91%、互联网技术 +2.38% 均因 vol>P90 被砍，候选池塌缩
+            # 到 1 个 → LLM 否决 → 空推荐），与「熊市反转入围」意图冲突。
             pool.excluded.append({"sector": s.sector, "reason": f"极端高波动(vol {vol:.2f} > P90 {vol_p90:.2f})"})
             continue
         if overheat_th is not None and s.mom_60d > overheat_th:
