@@ -161,6 +161,23 @@
             </h2>
             <span class="font-label-caps text-label-caps text-outline-strong">V.{{ latest.date if latest else today }}</span>
           </div>
+
+          {# 今日推荐状态：硬闸门拒绝产出时必须说出来，否则用户看着几天前的旧推荐
+             会以为那是今天的。data_failure（系统故障）与 no_opportunity（市场判断）
+             用不同样式区分，避免把真故障当正常。 #}
+          {% if reco_status.state != 'fresh' %}
+          <div class="flex items-start gap-3 px-4 py-3 rounded-xl border {% if reco_status.reason_type == 'data_failure' %}border-outline-strong bg-down-soft{% else %}border-dashed border-outline-strong bg-paper-raised{% endif %}">
+            <span class="material-symbols-outlined text-[20px] shrink-0 {% if reco_status.reason_type == 'data_failure' %}text-error{% else %}text-on-surface-variant{% endif %}">{% if reco_status.reason_type == 'data_failure' %}error{% else %}info{% endif %}</span>
+            <div class="flex flex-col gap-1">
+              <p class="font-body-md text-body-md text-on-surface">
+                {% if reco_status.state == 'pending' %}今日尚未产出推荐{% elif reco_status.reason_type == 'data_failure' %}数据基座停摆，已拒绝产出推荐{% else %}今日无合适机会{% endif %}{% if latest %}；下方为 {{ latest.date }} 的最近一次推荐{% endif %}
+              </p>
+              {% if reco_status.message %}
+              <p class="font-body-sm text-body-sm text-on-surface-variant">{{ reco_status.message }}</p>
+              {% endif %}
+            </div>
+          </div>
+          {% endif %}
           <div class="grid grid-cols-1 md:grid-cols-2 gap-stack-md items-stretch">
             {% if latest %}
             <div class="fund-card">

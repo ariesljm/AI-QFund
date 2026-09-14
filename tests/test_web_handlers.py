@@ -71,7 +71,7 @@ class TestIndexContext:
         for key in ("latest", "latest_list", "macro", "candidates", "fund_pool",
                     "sector_list", "regime_label", "fund_svg", "alpha_svg",
                     "portfolio_svg", "sharpe_ratio", "max_drawdown",
-                    "quality_curve_svg", "now", "today"):
+                    "quality_curve_svg", "now", "today", "reco_status"):
             assert key in ctx
 
 
@@ -301,6 +301,63 @@ class TestDisplayScore:
         assert domain.display_score(None, None) == 0
         assert domain.display_score(None, 0.0) == 0
         assert 0 <= domain.display_score(99.0, 0.0) <= 100
+
+
+class TestBuildRecoStatus:
+    """今日推荐状态：硬闸门拒绝产出必须能被看出来（ticket 25 的 UI 侧收口）。"""
+
+    def test_fresh_when_latest_is_today(self):
+        assert dashboard.build_reco_status("2026-09-15", None, "2026-09-15")["state"] == "fresh"
+
+    def test_data_failure_and_no_opportunity_are_not_conflated(self):
+        """data_failure（系统故障，要修）与 no_opportunity（市场判断，正常）必须分开。"""
+        fail = dashboard.build_reco_status(None, {
+            "date": "2026-09-15",
+            "reasoning": "特征停摆：最新特征日 2026-09-03 已滞后 6 个交易日",
+            "reason_type": "data_failure"}, "2026-09-15")
+        assert fail["state"] == "empty"
+        assert fail["reason_type"] == "data_failure"
+        assert "滞后" in fail["message"]
+
+        normal = dashboard.build_reco_status(None, {
+            "date": "2026-09-15", "reasoning": "今日无合适机会",
+            "reason_type": "no_opportunity"}, "2026-09-15")
+        assert normal["reason_type"] == "no_opportunity"
+
+    def test_pending_when_no_reco_and_no_record(self):
+        s = dashboard.build_reco_status(None, None, "2026-09-15")
+        assert s["state"] == "pending" and s["reason_type"] == ""
+
+    def test_stale_latest_is_never_reported_fresh(self):
+        """旧推荐（昨天或更早）绝不能被当作今日——否则就是“静默陈旧”的 UI 版。"""
+        assert dashboard.build_reco_status("2026-09-04", None, "2026-09-15")["state"] != "fresh"
+
+
+class TestRecoStatusReachesPage:
+    """模板与上下文的接线回归：状态没渲染出来就等于没有防护。"""
+
+    def test_data_failure_notice_is_visible(self, monkeypatch):
+        monkeypatch.setattr(webapp.repo, "get_latest_recommendations", lambda _n: [])
+        monkeypatch.setattr(webapp.repo, "get_empty_recommendation", lambda _d=None: {
+            "date": "2026-09-15", "reason_type": "data_failure",
+            "reasoning": "特征停摆：最新特征日 2026-09-03 已滞后 6 个交易日"})
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "数据基座停摆" in resp.text
+        assert "特征停摆" in resp.text
+
+    def test_fresh_day_shows_no_notice(self, monkeypatch):
+        """今日已有推荐时不得多一条提示（避免永远挂个“无推荐”）。"""
+        today = __import__("datetime").datetime.now().strftime("%Y-%m-%d")
+        monkeypatch.setattr(webapp.repo, "get_latest_recommendations", lambda _n: [{
+            "id": 1, "code": "000001", "name": "测试基金", "score": 0.1,
+            "reason": "", "status": "HOLD", "date": today, "return": None, "type": "混合型",
+            "regime": "NEUTRAL"}])
+        monkeypatch.setattr(webapp.repo, "get_empty_recommendation", lambda _d=None: None)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "数据基座停摆" not in resp.text
+        assert "今日无合适机会" not in resp.text
 
 
 class TestBasicHandlers:
