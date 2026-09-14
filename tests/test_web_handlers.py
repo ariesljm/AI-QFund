@@ -71,7 +71,7 @@ class TestIndexContext:
         for key in ("latest", "latest_list", "macro", "candidates", "fund_pool",
                     "sector_list", "regime_label", "fund_svg", "alpha_svg",
                     "portfolio_svg", "sharpe_ratio", "max_drawdown",
-                    "quality_curve_svg", "empty_today", "now", "today"):
+                    "quality_curve_svg", "now", "today"):
             assert key in ctx
 
 
@@ -80,11 +80,9 @@ class TestIndexContextBlocks:
 
     def test_macro_block_empty(self, monkeypatch):
         monkeypatch.setattr(webapp.repo, "get_latest_macro_news", lambda: None)
-        monkeypatch.setattr(webapp.repo, "get_empty_recommendation", lambda d: None)
         (macro, gainers, losers, inflow, outflow, max_in,
-         max_out, reasoning, regime, empty, flow_net, macro_date, news_date) = dashboard.macro_block("2026-08-08")
+         max_out, reasoning, regime, flow_net, macro_date, news_date) = dashboard.macro_block()
         assert regime == domain.REGIME_NEUTRAL
-        assert empty is None
         assert max_in == 0 and max_out == 0
         assert flow_net is None
         assert macro_date == ""
@@ -98,8 +96,7 @@ class TestIndexContextBlocks:
             "flow_net_total": None, "sector_reasoning": "", "regime_label": "NEUTRAL",
             "date": "2026-08-11", "news_date": "2026-08-10",
         })
-        monkeypatch.setattr(webapp.repo, "get_empty_recommendation", lambda d: None)
-        result = dashboard.macro_block("2026-08-11")
+        result = dashboard.macro_block()
         assert result[-1] == "2026-08-10"   # news_date
         assert result[-2] == "2026-08-11"   # macro_date
 

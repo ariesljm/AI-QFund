@@ -161,7 +161,6 @@ class MacroBlock(NamedTuple):
     max_outflow: float
     sector_reasoning: str
     regime_label: str
-    empty_today: object  # repo.get_empty_recommendation 返回，可能 dict|None
     flow_net_total: float | None
     macro_date: str
     news_date: str
@@ -186,15 +185,14 @@ class PortfolioBlock(NamedTuple):
     max_drawdown: float | None
 
 
-def macro_block(today: str) -> MacroBlock:
-    """宏观摘要块：macro_news 行 → 展示结构 + 空推荐日标记（模板上下文用）。"""
+def macro_block() -> MacroBlock:
+    """宏观摘要块：macro_news 行 → 展示结构（模板上下文用）。"""
     mn = repo.get_latest_macro_news()
     macro = domain.parse_macro_summary(mn)
-    empty_today = repo.get_empty_recommendation(today)
     return MacroBlock(macro["macro"], macro["sector_gainers"], macro["sector_losers"],
                       macro["flow_inflows"], macro["flow_outflows"], macro["max_inflow"],
                       macro["max_outflow"], macro["sector_reasoning"], macro["regime_label"],
-                      empty_today, macro["flow_net_total"], macro["macro_date"],
+                      macro["flow_net_total"], macro["macro_date"],
                       macro["news_date"])
 
 
@@ -260,10 +258,10 @@ def index_context() -> dict[str, object]:
     recs = repo.get_latest_recommendations(2)
     latest, latest_list, latest_rec_id = build_latest_recos(recs, today)
 
-    # 宏观摘要 + 空推荐日标记
+    # 宏观摘要
     (macro_data, sector_gainers, sector_losers, flow_inflows, flow_outflows,
-     max_inflow, max_outflow, sector_reasoning, regime_label, empty_today,
-     flow_net_total, macro_date, news_date) = macro_block(today)
+     max_inflow, max_outflow, sector_reasoning, regime_label,
+     flow_net_total, macro_date, news_date) = macro_block()
 
     # 质量度量 + 累计超额曲线 + 最新一期指标
     (quality_metrics, quality_curve_svg, quality_curve_baseline,
@@ -339,7 +337,6 @@ def index_context() -> dict[str, object]:
         "flow_net_total": flow_net_total,
         "max_inflow": max_inflow,
         "max_outflow": max_outflow,
-        "empty_today": empty_today,
         "macro_date": macro_date,
         "news_date": news_date,
         "quality_metrics": quality_metrics,
