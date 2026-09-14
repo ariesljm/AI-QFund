@@ -103,25 +103,46 @@ def get_fund_pool_stats() -> tuple[int, list[dict]]:
         by_type = conn.execute('SELECT type, COUNT(*) FROM fund_basic WHERE is_buyable = 1 GROUP BY type ORDER BY COUNT(*) DESC').fetchall()
     return (total, [{'type': t[0] or '其他', 'count': t[1]} for t in by_type])
 
-def get_holdings(code: str, limit: int=10) -> list[dict]:
+def get_holdings(code: str, limit: int=10, as_of: str | None = None) -> list[dict]:
+    """持仓 top-N。as_of（决策日）非空时按 PIT 口径取期次：只认公告日 <= as_of 的
+    报告期（共识 Q15）；否则取库内最新一期。
+    """
+    if as_of:
+        sql = ('SELECT h.stock_code, h.stock_name, h.weight, i.industry_name FROM fund_holdings h '
+               'LEFT JOIN stock_industry_map i ON h.stock_code = i.stock_code '
+               'WHERE h.code = ? AND h.report_date = (SELECT MAX(report_date) FROM fund_holdings '
+               'WHERE code = ? AND disclosure_date <= ?) ORDER BY h.weight DESC LIMIT ?')
+        args: tuple = (code, code, as_of, limit)
+    else:
+        sql = ('SELECT h.stock_code, h.stock_name, h.weight, i.industry_name FROM fund_holdings h '
+               'LEFT JOIN stock_industry_map i ON h.stock_code = i.stock_code '
+               'WHERE h.code = ? AND h.report_date = (SELECT MAX(report_date) FROM fund_holdings '
+               'WHERE code = ?) ORDER BY h.weight DESC LIMIT ?')
+        args: tuple = (code, code, limit)
     with db_conn() as conn:
-        rows = conn.execute('SELECT h.stock_code, h.stock_name, h.weight, i.industry_name FROM fund_holdings h LEFT JOIN stock_industry_map i ON h.stock_code = i.stock_code WHERE h.code = ? AND h.report_date = (  SELECT MAX(report_date) FROM fund_holdings WHERE code = ?) ORDER BY h.weight DESC LIMIT ?', (code, code, limit)).fetchall()
+        rows = conn.execute(sql, args).fetchall()
     return [{'stock_code': r[0], 'stock_name': r[1], 'weight': r[2], 'industry': r[3] or ''} for r in rows]
 
-def get_holdings_summaries(codes: list[str], limit: int = 5) -> dict[str, dict]:
+def get_holdings_summaries(codes: list[str], limit: int = 5, as_of: str | None = None) -> dict[str, dict]:
     """候选批量持仓素材：{code: {"holdings": [top-N], "report_date": str|None}}。
 
     推荐 LLM 终选素材装配 N+1 收敛（批量先例 get_candidate_nav_summaries 同风格）：
     一次返回全部候选的最新报告期 + 该期前 limit 大持仓；无记录报告期/持仓为空。
+    as_of（决策日）非空时按 PIT 口径取期次：只认公告日 <= as_of 的报告期，
+    否则回测/训练会把尚未公告的季报持仓喂给当时的决策（共识 Q15）。
     """
     if not codes:
         return {}
     ph = ",".join("?" for _ in codes)
     out = {c: {"holdings": [], "report_date": None} for c in codes}
+    latest_sql = (f"SELECT code, MAX(report_date) FROM fund_holdings "
+                  f"WHERE code IN ({ph}) AND disclosure_date <= ? GROUP BY code")
+    latest_args: list = list(codes) + ([as_of] if as_of else [])
+    if not as_of:
+        latest_sql = (f"SELECT code, MAX(report_date) FROM fund_holdings "
+                      f"WHERE code IN ({ph}) GROUP BY code")
     with db_conn() as conn:
-        latest = dict(conn.execute(
-            f"SELECT code, MAX(report_date) FROM fund_holdings "
-            f"WHERE code IN ({ph}) GROUP BY code", codes).fetchall())
+        latest = dict(conn.execute(latest_sql, latest_args).fetchall())
         for c in codes:
             if c in latest:
                 out[c]["report_date"] = latest[c]

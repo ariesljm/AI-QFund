@@ -96,6 +96,34 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
     # ── 历史 ALTER 迁移：旧库补列（schema.sql 已含新列，新建库无需执行）──
 
+    if "fund_holdings" in tables:
+        fh_cols = {row[1] for row in conn.execute("PRAGMA table_info(fund_holdings)").fetchall()}
+        if "disclosure_date" not in fh_cols:
+            conn.execute("ALTER TABLE fund_holdings ADD COLUMN disclosure_date TEXT")
+            conn.commit()
+        # 存量回填（共识 Q15）：按不同报告期各算一次。不回填的话 NULL 在 PIT
+        # 过滤下等价于“永不可见”，持仓素材会静默变空。
+        # 日历从本 conn 直读（不能走 get_meta：那会 db_conn → get_db → _migrate 递归），
+        # 无缓存时退化为 +31 自然日上界。
+        from app.utils.trading_calendar import disclosure_date as _disclosure_date
+        try:
+            import json as _json
+
+            from app.repo import meta_keys as _META
+            _raw = conn.execute("SELECT value FROM meta WHERE key = ?",
+                                (_META.TRADE_DATES_HISTORY,)).fetchone()
+            _hist = set(_json.loads(_raw[0])) if _raw else set()
+        except (sqlite3.Error, ValueError, TypeError):
+            _hist = set()
+        pending = [r[0] for r in conn.execute(
+            "SELECT DISTINCT report_date FROM fund_holdings "
+            "WHERE disclosure_date IS NULL").fetchall()]
+        for report_date in pending:
+            conn.execute("UPDATE fund_holdings SET disclosure_date = ? WHERE report_date = ?",
+                         (_disclosure_date(report_date, days=_hist), report_date))
+        if pending:
+            conn.commit()
+
     if "sector_selections" in tables:
         ss_cols = {r[1] for r in conn.execute("PRAGMA table_info(sector_selections)").fetchall()}
         if "used_insight_ids" not in ss_cols:

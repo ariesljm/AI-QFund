@@ -38,6 +38,9 @@ CREATE TABLE IF NOT EXISTS index_daily (
 CREATE TABLE IF NOT EXISTS fund_holdings (
     code TEXT NOT NULL,
     report_date TEXT NOT NULL,
+    -- 公告日（共识 Q15 的 PIT 口径：样本只允许 disclosure_date <= d）。
+    -- 东财 jjcc 不含公告日期，故存的是保守估计（报告期 + 15 个工作日）
+    disclosure_date TEXT,
     stock_code TEXT NOT NULL,
     stock_name TEXT,
     weight REAL,

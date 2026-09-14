@@ -12,7 +12,7 @@ sina_calendar_decode.py），用嵌入式 JS 引擎 py_mini_racer 执行，避�
 
 import json
 import time
-from datetime import date
+from datetime import date, timedelta
 
 from app.repo import meta_keys as META
 from app.repo.base import get_meta, save_meta
@@ -22,9 +22,16 @@ logger = get_logger("trading_calendar")
 
 _SINA_CALENDAR_URL = "https://finance.sina.com.cn/realstock/company/klc_td_sh.txt"
 _META_KEY = META.TRADE_DATES_CACHE
+_META_KEY_HISTORY = META.TRADE_DATES_HISTORY
 _REFRESH_COOLDOWN_SECONDS = 1800  # 刷新失败后 30 分钟内不重复重试
 
+_DISCLOSURE_WORKDAYS = 15
+"""季报法定披露期限（工作日）：拿不到公告日时的保守滞后基数（共识 Q15）。"""
+_DISCLOSURE_FALLBACK_DAYS = 31
+"""离线退化上界（自然日）：15 个工作日即使跨春节/国庆长假也不超过 31 自然日。"""
+
 _cache: set[str] | None = None
+_history: set[str] | None = None
 _last_refresh_at = 0.0
 
 
@@ -158,3 +165,74 @@ def trading_day_lag(earlier: str, later: str, days: set[str] | None = None) -> i
     if not days or earlier >= later:
         return 0
     return sum(1 for d in days if earlier < d <= later)
+
+
+def _history_days() -> set[str]:
+    """全历史交易日（1990 起）。缓存优先，缺失时联网一次并落库。
+
+    与 trade_dates() 的近两年窗口刻意分开：公告日推算要覆盖历史报告期，
+    而近两年窗口的消费者（新鲜度/停机判定）不应因历史区间变大而变慢。
+    """
+    global _history
+    if _history is not None:
+        return _history
+    raw = get_meta(_META_KEY_HISTORY)
+    if raw:
+        try:
+            _history = set(json.loads(raw))
+            return _history
+        except (json.JSONDecodeError, TypeError):
+            pass
+    try:
+        days = _decode_sina_calendar(_fetch_sina_calendar_text())
+    except Exception as e:
+        logger.error("全历史交易日历拉取失败，公告日退化为自然日上界: %s", str(e)[:120])
+        return set()
+    if days:
+        _history = set(days)
+        save_meta(_META_KEY_HISTORY, json.dumps(days))
+    return _history or set()
+
+
+def add_trading_days(start: str, n: int, days: set[str] | None = None) -> str | None:
+    """start 之后第 n 个交易日（严格晚于 start）。
+
+    days 显式传入时不读缓存——供迁移等**不能开新数据库连接**的路径使用
+    （迁移在 DB 初始化内部，任何 db_conn 都会递归）。
+    日历未覆盖（区间不足 n 天）→ None。
+    """
+    if n < 1:
+        return None
+    if days is None:
+        days = _history_days()
+    later = sorted(d for d in days if d > start)
+    if len(later) < n:
+        return None
+    return later[n - 1]
+
+
+def disclosure_date(report_date: str, days: set[str] | None = None) -> str:
+    """公告日的保守估计：报告期 + 15 个工作日（共识 Q15）。
+
+    东财 jjcc 页面实测不含公告日期（只有报告期标签），故一律走保守滞后。
+    口径是「宁晚不早」：日历拿不到时退化为 +31 自然日上界——该上界只会
+    把可见时间往后推，不会把尚未公告的持仓算成可见（即不会泄漏）。
+    """
+    exact = add_trading_days(report_date, _DISCLOSURE_WORKDAYS, days=days)
+    if exact:
+        return exact
+    return (date.fromisoformat(report_date)
+            + timedelta(days=_DISCLOSURE_FALLBACK_DAYS)).isoformat()
+
+
+def cached_history_days() -> set[str]:
+    """已落库的全历史交易日（不联网、只读 meta）。无缓存/异常 → 空集。"""
+    from app.repo.base import get_meta
+
+    raw = get_meta(_META_KEY_HISTORY)
+    if not raw:
+        return set()
+    try:
+        return set(json.loads(raw))
+    except (json.JSONDecodeError, TypeError):
+        return set()

@@ -33,6 +33,8 @@ LAST_ANALYSIS_OUTCOME = "last_analysis_outcome"  # 元分析健康度（审计 P
 
 # 交易日历缓存 / 运行状态
 TRADE_DATES_CACHE = "trade_dates_cache"
+# 全历史交易日（1990 起）：公告日推算要覆盖历史报告期，与近两年窗口刻意分开
+TRADE_DATES_HISTORY = "trade_dates_history"
 UPTIME_START = "uptime_start"
 INDEX_FRESHNESS = "index_freshness"  # 指数新鲜度告警留痕（审计 P1-2：指数断档无显式告警）
 

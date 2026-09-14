@@ -164,13 +164,21 @@ def _recompute_ema60(conn, index_code: str) -> None:
 
 
 def save_holdings_batch(conn, rows: list[tuple]) -> int:
-    """批量写入重仓股（code, report_date, stock_code, stock_name, weight）。"""
+    """批量写入重仓股（code, report_date, stock_code, stock_name, weight）。
+
+    公告日（共识 Q15）在写入点统一按报告期推算，调用方不必各自处理：
+    漏写会让 disclosure_date 为 NULL，在 PIT 过滤下等价于“永不可见”。
+    """
     if not rows:
         return 0
+    from app.utils.trading_calendar import disclosure_date
+
+    by_date = {r[1]: disclosure_date(r[1]) for r in rows}
     conn.executemany(
         "INSERT OR REPLACE INTO fund_holdings "
-        "(code, report_date, stock_code, stock_name, weight) VALUES (?, ?, ?, ?, ?)",
-        rows,
+        "(code, report_date, disclosure_date, stock_code, stock_name, weight) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        [(r[0], r[1], by_date[r[1]], r[2], r[3], r[4]) for r in rows],
     )
     return len(rows)
 

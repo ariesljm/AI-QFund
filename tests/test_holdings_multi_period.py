@@ -71,8 +71,9 @@ class TestHoldingsMultiPeriodIdempotent:
         """两期共存；重复写同一期被 REPLACE 而非新增行。"""
         conn = sqlite3.connect(":memory:")
         conn.execute(
-            "CREATE TABLE fund_holdings (code TEXT, report_date TEXT, stock_code TEXT, "
-            "stock_name TEXT, weight REAL, PRIMARY KEY (code, report_date, stock_code))"
+            "CREATE TABLE fund_holdings (code TEXT, report_date TEXT, disclosure_date TEXT, "
+            "stock_code TEXT, stock_name TEXT, weight REAL, "
+            "PRIMARY KEY (code, report_date, stock_code))"
         )
         save_holdings_batch(conn, [("161725", "2025-12-31", "600519", "贵州茅台", 15.38)])
         save_holdings_batch(conn, [("161725", "2025-09-30", "600809", "山西汾酒", 15.84)])
