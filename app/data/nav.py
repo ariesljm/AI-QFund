@@ -376,15 +376,28 @@ def _fundmobapi_url(codes: list[str]) -> str:
     )
 
 
-async def _fundmobapi_fetch_group(session, codes: list[str], headers: dict,
-                                  timeout: float = 15) -> list[dict]:
-    """批量拉取一组基金的最新累计净值（fundmobapi，<=30 只/请求）。
+class FundmobapiError(RuntimeError):
+    """fundmobapi 返回错误信封（Success=false）——**接口故障**，不是“这些基金没有数据”。
 
-    返回 [{"code", "date", "cum_nav"}]；接口未返回的基金（停更/无净值/漏返）
-    由调用方回退到 lsjz 逐只补全，不在此处判失败。
+    两者必须分开，这是 2026-09-04 起那场故障的直接成因：接口持续返回
+    `ErrCode=61136403 网络繁忙`，而解析只读 `Datas`（为 null）→ 整组 30 只被当作
+    “接口未返回” → 6,411 只整体回退到逐只 lsjz（约 71 分钟）→ 跑到一半被截断
+    → 半个市场静默停在 09-03，而日志里“成功”写得漂漂亮亮。
     """
-    resp = await fetch_async(session, _fundmobapi_url(codes), timeout=timeout, headers=headers)
-    data = json.loads(resp.text)
+
+
+def parse_fundmobapi_payload(text: str) -> list[dict]:
+    """解析 fundmobapi 响应（纯函数，便于测试）。
+
+    `Success=false` → 抛 `FundmobapiError`（带 ErrCode/ErrMsg）；
+    `Success=true` 但 Datas 为空 → 返回 `[]`（合法的“无新数据”）。
+    这两条分支的区别就是本模块最重要的一个断言。
+    """
+    data = json.loads(text)
+    if data.get("Success") is False:
+        raise FundmobapiError(
+            f"fundmobapi 拒绝请求: ErrCode={data.get('ErrCode')} "
+            f"{str(data.get('ErrMsg'))[:60]}")
     out: list[dict] = []
     for d in data.get("Datas") or []:
         try:
@@ -394,20 +407,48 @@ async def _fundmobapi_fetch_group(session, codes: list[str], headers: dict,
     return out
 
 
-async def _fundmobapi_incremental(session, codes: list[str], headers: dict) -> tuple[list, list[str]]:
+async def _fundmobapi_fetch_group(session, codes: list[str], headers: dict,
+                                  timeout: float = 15) -> list[dict]:
+    """批量拉取一组基金的最新累计净值（fundmobapi，<=30 只/请求）。
+
+    返回 [{"code", "date", "cum_nav"}]；接口级错误抛 `FundmobapiError`（不再被
+    静默当成“无数据”），接口未返回的**个别**基金由调用方回退 lsjz 补全。
+    """
+    resp = await fetch_async(session, _fundmobapi_url(codes), timeout=timeout, headers=headers)
+    return parse_fundmobapi_payload(resp.text)
+
+
+# 连续这么多组接口级报错 → 判定批量接口不可用，停止继续发请求。
+# 实测（2026-09-14）该错误是确定性的（换 deviceid/单只都一样），不是瞬时限流；
+# 但保留计数式判定，以便接口恢复后自动回到快路径。
+_FUNDMOBAPI_ABORT_AFTER = 5
+
+
+async def _fundmobapi_incremental(session, codes: list[str], headers: dict) -> tuple[list, list[str], bool]:
     """fundmobapi 批量增量：30 只/请求，semaphore 限流，失败重试。
 
-    返回 (results, missing)：
+    返回 (results, missing, api_unavailable)：
     - results: [(code, [navs], False)] 成功项（navs 仅最新单日）
-    - missing: 批量拉取失败或接口未返回的基金代码（回退 lsjz 逐只补全）
+    - missing: 量级批量拉取失败或接口未返回的基金代码（回退 lsjz 逐只补全）
+    - api_unavailable: 批量接口已判定不可用（调用方应大声告知，不要静静掉进慢路径）
+
+    **为何需要第三个返回值**：接口整体挂掉时，6,411 只会全部掉进约 71 分钟的逐只
+    慢路径。这个代价本身可以接受（数据新鲜度优先），但必须**说出来**——实测那次
+    故障里它一声不吭，只留下一句“成功 0 只”。
     """
     results: list[tuple[str, list[dict], bool]] = []
     missing: list[str] = []
     sem = asyncio.Semaphore(3)  # 服务端 ~3 QPS，并发 3 已到上限
     groups = [codes[i:i + _FUNDMOBAPI_BATCH] for i in range(0, len(codes), _FUNDMOBAPI_BATCH)]
+    api_errors = 0
+    api_unavailable = False
 
     async def _one(group: list[str]) -> None:
+        nonlocal api_errors, api_unavailable
         async with sem:
+            if api_unavailable:
+                missing.extend(group)  # 已判定不可用：不再浪费请求
+                return
             for attempt in range(3):
                 try:
                     navs = await _fundmobapi_fetch_group(session, group, headers)
@@ -419,6 +460,18 @@ async def _fundmobapi_incremental(session, codes: list[str], headers: dict) -> t
                         if c not in returned:
                             missing.append(c)
                     return
+                except FundmobapiError as e:
+                    # 接口级错误：重试无意义（同一错误码），直接计数并交给慢路径
+                    api_errors += 1
+                    if api_errors >= _FUNDMOBAPI_ABORT_AFTER and not api_unavailable:
+                        api_unavailable = True
+                        logger.error(
+                            "fundmobapi 批量接口连续 %d 组报错（%s）——判定接口不可用，"
+                            "已停止发请求；%d 只基金将改走 lsjz 逐只回退（耗时显著增加）。"
+                            "若每日如此，说明这条快路径已失效，需要重新选定批量数据源",
+                            api_errors, str(e)[:80], len(codes))
+                    missing.extend(group)
+                    return
                 except Exception:
                     if attempt == 2:
                         missing.extend(group)
@@ -426,7 +479,7 @@ async def _fundmobapi_incremental(session, codes: list[str], headers: dict) -> t
                     await asyncio.sleep(0.6)
 
     await asyncio.gather(*(_one(g) for g in groups))
-    return results, missing
+    return results, missing, api_unavailable
 
 
 async def async_update_nav_incremental(concurrency: int = 5) -> int:
@@ -499,7 +552,8 @@ async def async_update_nav_incremental(concurrency: int = 5) -> int:
         if batch_codes:
             t0 = time.monotonic()
             logger.info("净值批量增量（fundmobapi 30只/请求）: %d 只（差 1 天）", len(batch_codes))
-            batch_results, batch_missing = await _fundmobapi_incremental(session, batch_codes, headers)
+            batch_results, batch_missing, batch_api_down = await _fundmobapi_incremental(
+                session, batch_codes, headers)
             with db_conn() as conn_:
                 for code, navs in batch_results:
                     n = save_nav_batch(conn_, code, navs)
@@ -531,8 +585,9 @@ async def async_update_nav_incremental(concurrency: int = 5) -> int:
             if batch_missing:
                 lag_tasks.extend((c, local_max.get(c, "")) for c in batch_missing)
                 logger.info("净值批量缺失 %d 只，回退 lsjz 逐只补全", len(batch_missing))
-            logger.info("净值批量增量完成: 成功 %d 只, 无新数据 %d 只, 缺失 %d 只, 耗时 %.1f 秒",
-                        len(success), len(no_update), len(batch_missing), time.monotonic() - t0)
+            logger.info("净值批量增量完成: 成功 %d 只, 无新数据 %d 只, 缺失 %d 只, 耗时 %.1f 秒%s",
+                        len(success), len(no_update), len(batch_missing), time.monotonic() - t0,
+                        "（批量接口不可用，已整体退入慢路径）" if batch_api_down else "")
 
         if lag_tasks or full_tasks:
             outcome = await run_batched_fetch(
