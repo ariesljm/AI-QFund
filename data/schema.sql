@@ -132,6 +132,16 @@ CREATE TABLE IF NOT EXISTS stock_industry_map (
     update_date TEXT
 );
 
+-- 个股估值日频（票 05）：重仓股加权 PE 分位 / PEG 匹配度的唯一数据源
+CREATE TABLE IF NOT EXISTS stock_valuation_daily (
+    stock_code TEXT NOT NULL,
+    date TEXT NOT NULL,
+    pe REAL,
+    pb REAL,
+    market_cap REAL,
+    PRIMARY KEY (stock_code, date)
+);
+
 -- 赛道选择记录（进化闭环用）
 CREATE TABLE IF NOT EXISTS sector_selections (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

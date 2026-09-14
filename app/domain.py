@@ -44,6 +44,43 @@ def percentile(values: list[float], pct: float) -> float:
     return s[lo] + (s[hi] - s[lo]) * (pos - lo)
 
 
+def percentile_of(values: list[float], x: float) -> float:
+    """x 在 values 中的分位（0~100），是 percentile 的同口径逆函数。
+
+    与 percentile 共用同一条线性插值公式（pos = (n-1)·p/100），只在方向相反：
+    这里固定 x 反解 pos。同源不另写分位实现——两者互为逆：
+    `percentile_of(v, percentile(v, p)) == p`（边界截断除外）。
+    空列表 → 0.0；x 越界截到 [0,100]。
+    """
+    if not values:
+        return 0.0
+    s = sorted(values)
+    n = len(s)
+    if n == 1:
+        return 0.0
+    if s[0] == s[-1]:
+        return 50.0          # 全等值 → 中性（既非最高也非最低）
+    if x <= s[0]:
+        return 0.0
+    if x >= s[-1]:
+        return 100.0
+    # x 落在 [s[i-1], s[i]] 或恰等于某个 s[k]（有重复值时取等值块中点）
+    i = 0
+    while i < n and s[i] < x:
+        i += 1
+    if s[i] == x:
+        lo = hi = i
+        while lo - 1 >= 0 and s[lo - 1] == x:
+            lo -= 1
+        while hi + 1 < n and s[hi + 1] == x:
+            hi += 1
+        pos = (lo + hi) / 2.0
+    else:
+        frac = (x - s[i - 1]) / (s[i] - s[i - 1])
+        pos = (i - 1) + frac
+    return pos / (n - 1) * 100.0
+
+
 def window_max_drawdown(navs: Sequence[float | None]) -> float | None:
     """窗口内最大回撤（**正幅值**）；点数不足或含非正/缺失值 → None。
 
