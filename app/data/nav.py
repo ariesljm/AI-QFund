@@ -202,7 +202,7 @@ def _split_tasks(tasks_meta: list[tuple[str, str]], global_latest: str | None
                  ) -> tuple[list[str], list[tuple[str, str]], list[tuple[str, str]]]:
     """三路拆分增量任务（纯函数便于测试）：
 
-    - batch：本地最新 == 全局最新（只差最新 1 天）→ fundmobapi 批量
+    - batch：本地最新 == 全局最新（只差最新 1 天）→ rankhandler 榜单快照（200 只/请求）
     - lag：本地最新 < 全局最新（差 2+ 天，QDII/停更）→ lsjz 逐只补全
     - full：本地无数据 → pingzhongdata 全量兜底
     """
@@ -360,126 +360,115 @@ def _backfill_one(code: str) -> None:
             save_nav_batch(conn_, code, navs)
 
 
-# ── 批量净值增量（fundmobapi 移动端接口，30 只/请求，2026-09 提速） ──
-# lsjz 逐只拉取受单 IP ~3 QPS 限速，全市场 1.2 万只每日增量需 70+ 分钟；
-# fundmobapi 一次返回最多 30 只的累计净值（口径与 lsjz LJJZ 一致），同样
-# ~3 QPS 但吞吐 30 倍，把“差 1 天”的主流增量从逐只降到批量。
-# 滞后基金（QDII/停更，差 2+ 天）仍走 lsjz 补全，本接口只覆盖最新单日。
-_FUNDMOBAPI_BATCH = 30
-_FUNDMOBAPI_URL = "https://fundmobapi.eastmoney.com/FundMNewApi/FundMNFInfo"
+# ── 批量净值快照（rankhandler 榜单，200 只/请求；2026-09-15 替换死掉的 fundmobapi） ──
+# 为什么换：fundmobapi 移动端接口已**确定性失效**——`ErrCode=61136403`，换
+# deviceid / 单只 / 多只全都同一错误码，生产日志连续多日"净值批量增量完成: 成功 0 只"。
+# 于是每天上万只整体退入逐只 lsjz，把 3 分钟的快相变成 69 分钟的慢相（ticket 26）。
+#
+# 为什么不是 pingzhongdata：实测两者都被限到同一个速率——
+#   lsjz           3.0 req/s（每请求 1 只）
+#   pingzhongdata  3.2 req/s（每请求 1 只，且要传/解析 2,371 行全量历史）
+# 瓶颈是"每请求只取一只"，换同维度的端点没有收益，pingzhongdata 反而多传约
+# 400 倍数据。要提速只能提高"每次请求覆盖的基金数"。
+#
+# rankhandler 榜单一次返回 200 只的代码/净值日期/累计净值：实测 102 页 36.8 秒
+# 覆盖 20,356 只（本股票池 12,900 只覆盖 91.3%），比逐只的 69 分钟快约 130 倍。
+# 榜单按区间收益排序、且要求有 1 年以上历史，故新基金/部分份额不在榜上——它们
+# 仍走原逐只路径（约 1,100 只 ≈ 6 分钟）。这是刻意的回退，不是遗漏。
+_RANKHANDLER_PAGE = 200
+_RANKHANDLER_CONCURRENCY = 5
+# 必须用 https：用 http 会得到 301（重定向到 https）。而 `fetch_async` 不跟随重定向，
+# 且 301 不会触发 `raise_for_status` —— 结果是拿到空 body、快照为空、**静默退入
+# 慢路径 69 分钟**。这正是本模块要消灭的那类隐蔽失效，所以在这里把它钉住。
+_RANKHANDLER_URL = (
+    "https://fund.eastmoney.com/data/rankhandler.aspx"
+    "?op=ph&dt=kf&ft=all&rs=&gs=0&sc=zzf&st=desc&sd=&ed=&qdii=&tabSubtype=,,,,,"
+)
 
 
-def _fundmobapi_url(codes: list[str]) -> str:
-    return (
-        f"{_FUNDMOBAPI_URL}?plat=Android&appType=ttjj&product=EFund"
-        f"&Version=1&deviceid=1&Fcodes={','.join(codes)}"
-    )
+def parse_rankhandler_page(text: str) -> list[tuple[str, str, float]]:
+    """解析一页榜单 → [(code, date, cum_nav)]（纯函数，便于测试）。
 
-
-class FundmobapiError(RuntimeError):
-    """fundmobapi 返回错误信封（Success=false）——**接口故障**，不是“这些基金没有数据”。
-
-    两者必须分开，这是 2026-09-04 起那场故障的直接成因：接口持续返回
-    `ErrCode=61136403 网络繁忙`，而解析只读 `Datas`（为 null）→ 整组 30 只被当作
-    “接口未返回” → 6,411 只整体回退到逐只 lsjz（约 71 分钟）→ 跑到一半被截断
-    → 半个市场静默停在 09-03，而日志里“成功”写得漂漂亮亮。
+    响应是 JS 字面量 `datas:['code,name,...,date,unit,cum,...', ...]`，每行是
+    逗号分隔字符串。实测字段位：0=代码 3=净值日期 5=累计净值（与 lsjz 的 LJJZ 同口径）。
     """
-
-
-def parse_fundmobapi_payload(text: str) -> list[dict]:
-    """解析 fundmobapi 响应（纯函数，便于测试）。
-
-    `Success=false` → 抛 `FundmobapiError`（带 ErrCode/ErrMsg）；
-    `Success=true` 但 Datas 为空 → 返回 `[]`（合法的“无新数据”）。
-    这两条分支的区别就是本模块最重要的一个断言。
-    """
-    data = json.loads(text)
-    if data.get("Success") is False:
-        raise FundmobapiError(
-            f"fundmobapi 拒绝请求: ErrCode={data.get('ErrCode')} "
-            f"{str(data.get('ErrMsg'))[:60]}")
-    out: list[dict] = []
-    for d in data.get("Datas") or []:
+    m = re.search(r"datas:(\[.*?\])", text, re.S)
+    if not m:
+        return []
+    try:
+        rows = json.loads(m.group(1).replace("'", '"'))
+    except ValueError:
+        return []
+    out: list[tuple[str, str, float]] = []
+    for row in rows:
+        f = str(row).split(",")
+        if len(f) <= 5 or not f[0] or not f[3] or not f[5]:
+            continue
         try:
-            out.append({"code": d["FCODE"], "date": d["PDATE"], "cum_nav": float(d["ACCNAV"])})
-        except (KeyError, TypeError, ValueError):
+            out.append((f[0], f[3], float(f[5])))
+        except ValueError:
             continue
     return out
 
 
-async def _fundmobapi_fetch_group(session, codes: list[str], headers: dict,
-                                  timeout: float = 15) -> list[dict]:
-    """批量拉取一组基金的最新累计净值（fundmobapi，<=30 只/请求）。
+async def _rankhandler_snapshot(session, headers: dict) -> dict[str, tuple[str, float]]:
+    """全市场最新净值快照 {code: (date, cum_nav)}（一页 200 只，约 102 页）。
 
-    返回 [{"code", "date", "cum_nav"}]；接口级错误抛 `FundmobapiError`（不再被
-    静默当成“无数据”），接口未返回的**个别**基金由调用方回退 lsjz 补全。
+    先取首页读 `allRecords` 得总页数，再并发取余页（限流 `_RANKHANDLER_CONCURRENCY`）。
     """
-    resp = await fetch_async(session, _fundmobapi_url(codes), timeout=timeout, headers=headers)
-    return parse_fundmobapi_payload(resp.text)
+    sem = asyncio.Semaphore(_RANKHANDLER_CONCURRENCY)
+
+    async def _page_text(pi: int) -> str:
+        async with sem:
+            url = f"{_RANKHANDLER_URL}&pi={pi}&pn={_RANKHANDLER_PAGE}&dx=1&v=0.1"
+            resp = await fetch_async(session, url, timeout=30, headers=headers)
+            return resp.text
+
+    first = await _page_text(1)
+    m = re.search(r"allRecords:(\d+)", first)
+    pages = 1 if not m else max(1, -(-int(m.group(1)) // _RANKHANDLER_PAGE))
+    texts = [first]
+    if pages > 1:
+        texts += list(await asyncio.gather(*(_page_text(p) for p in range(2, pages + 1))))
+    snap: dict[str, tuple[str, float]] = {}
+    for t in texts:
+        for code, date, cum in parse_rankhandler_page(t):
+            snap[code] = (date, cum)
+    return snap
 
 
-# 连续这么多组接口级报错 → 判定批量接口不可用，停止继续发请求。
-# 实测（2026-09-14）该错误是确定性的（换 deviceid/单只都一样），不是瞬时限流；
-# 但保留计数式判定，以便接口恢复后自动回到快路径。
-_FUNDMOBAPI_ABORT_AFTER = 5
+async def _rankhandler_incremental(session, headers: dict, codes: list[str],
+                                   local_max: dict[str, str]) -> tuple[list, list[str], bool]:
+    """用一份全市场快照覆盖批量相，返回 (results, missing, snapshot_failed)。
 
-
-async def _fundmobapi_incremental(session, codes: list[str], headers: dict) -> tuple[list, list[str], bool]:
-    """fundmobapi 批量增量：30 只/请求，semaphore 限流，失败重试。
-
-    返回 (results, missing, api_unavailable)：
-    - results: [(code, [navs], False)] 成功项（navs 仅最新单日）
-    - missing: 量级批量拉取失败或接口未返回的基金代码（回退 lsjz 逐只补全）
-    - api_unavailable: 批量接口已判定不可用（调用方应大声告知，不要静静掉进慢路径）
-
-    **为何需要第三个返回值**：接口整体挂掉时，6,411 只会全部掉进约 71 分钟的逐只
-    慢路径。这个代价本身可以接受（数据新鲜度优先），但必须**说出来**——实测那次
-    故障里它一声不吭，只留下一句“成功 0 只”。
+    - results: [(code, [{"date", "cum_nav"}], False)]——**仅当快照日期严格晚于本地
+      最新日**才取用。否则会把同一行旧值当新值反复写回（快照接口对停更基金长期
+      返回同一个日期，这是它最常见的形态）。
+    - missing: 榜上无此基金，或快照日期不比本地新（回退 lsjz 逐只）
+    - snapshot_failed: 快照一页都没拉到（调用方应大声告知，不要静静掉进慢路径）
     """
+    t0 = time.monotonic()
+    try:
+        snap = await _rankhandler_snapshot(session, headers)
+    except Exception as e:
+        logger.error("净值批量快照（rankhandler 榜单）拉取失败: %s——本次整体退入逐只回退",
+                     str(e)[:120])
+        return [], list(codes), True
+    if not snap:
+        logger.error("净值批量快照（rankhandler 榜单）返回空——本次整体退入逐只回退")
+        return [], list(codes), True
+
     results: list[tuple[str, list[dict], bool]] = []
     missing: list[str] = []
-    sem = asyncio.Semaphore(3)  # 服务端 ~3 QPS，并发 3 已到上限
-    groups = [codes[i:i + _FUNDMOBAPI_BATCH] for i in range(0, len(codes), _FUNDMOBAPI_BATCH)]
-    api_errors = 0
-    api_unavailable = False
-
-    async def _one(group: list[str]) -> None:
-        nonlocal api_errors, api_unavailable
-        async with sem:
-            if api_unavailable:
-                missing.extend(group)  # 已判定不可用：不再浪费请求
-                return
-            for attempt in range(3):
-                try:
-                    navs = await _fundmobapi_fetch_group(session, group, headers)
-                    returned = {n["code"] for n in navs}
-                    for n in navs:
-                        results.append((n["code"],
-                                        [{"date": n["date"], "cum_nav": n["cum_nav"]}]))
-                    for c in group:
-                        if c not in returned:
-                            missing.append(c)
-                    return
-                except FundmobapiError as e:
-                    # 接口级错误：重试无意义（同一错误码），直接计数并交给慢路径
-                    api_errors += 1
-                    if api_errors >= _FUNDMOBAPI_ABORT_AFTER and not api_unavailable:
-                        api_unavailable = True
-                        logger.error(
-                            "fundmobapi 批量接口连续 %d 组报错（%s）——判定接口不可用，"
-                            "已停止发请求；%d 只基金将改走 lsjz 逐只回退（耗时显著增加）。"
-                            "若每日如此，说明这条快路径已失效，需要重新选定批量数据源",
-                            api_errors, str(e)[:80], len(codes))
-                    missing.extend(group)
-                    return
-                except Exception:
-                    if attempt == 2:
-                        missing.extend(group)
-                        return
-                    await asyncio.sleep(0.6)
-
-    await asyncio.gather(*(_one(g) for g in groups))
-    return results, missing, api_unavailable
+    for code in codes:
+        got = snap.get(code)
+        if not got or got[0] <= (local_max.get(code) or ""):
+            missing.append(code)
+            continue
+        results.append((code, [{"date": got[0], "cum_nav": got[1]}], False))
+    logger.info("净值批量快照: 榜单 %d 只, 命中并更新 %d/%d 只, 耗时 %.1f 秒",
+                len(snap), len(results), len(codes), time.monotonic() - t0)
+    return results, missing, False
 
 
 async def async_update_nav_incremental(concurrency: int = 5) -> int:
@@ -538,10 +527,11 @@ async def async_update_nav_incremental(concurrency: int = 5) -> int:
         if not tasks_meta:
             return 0
 
-        # ── 三路拆分（2026-09 提速）：差 1 天批量 / 差多天 lsjz / 无本地 pingzhongdata ──
-        # 占绝大多数的“差 1 天”基金走 fundmobapi 批量（30 只/请求），把全市场
-        # 增量从 ~12690 次 lsjz 请求（~71 分钟）降到 ~423 次批量（~3 分钟）。
-        # 滞后基金（QDII/停更，差 2+ 天）与无本地基金仍走原路径。
+        # ── 三路拆分：差 1 天走榜单快照 / 差多天走 lsjz / 无本地走 pingzhongdata ──
+        # 占绝大多数的“差 1 天”基金由 rankhandler 榜单快照一次覆盖（200 只/请求，
+        # 实测全市场 102 页 36.8 秒），把 12,690 次 lsjz 请求（~69 分钟）降到
+        # ~1,100 次（约 6 分钟）。榜单未覆盖的（新基金/部分份额）与滞后基金
+        # （QDII/停更，差 2+ 天）、无本地基金仍走原逐只路径。
         batch_codes, lag_tasks, full_tasks = _split_tasks(tasks_meta, global_latest)
 
         total_new = 0
@@ -551,9 +541,9 @@ async def async_update_nav_incremental(concurrency: int = 5) -> int:
 
         if batch_codes:
             t0 = time.monotonic()
-            logger.info("净值批量增量（fundmobapi 30只/请求）: %d 只（差 1 天）", len(batch_codes))
-            batch_results, batch_missing, batch_api_down = await _fundmobapi_incremental(
-                session, batch_codes, headers)
+            logger.info("净值批量快照（rankhandler 榜单 200只/请求）: %d 只（差 1 天）", len(batch_codes))
+            batch_results, batch_missing, batch_api_down = await _rankhandler_incremental(
+                session, headers, batch_codes, local_max)
             with db_conn() as conn_:
                 for code, navs in batch_results:
                     n = save_nav_batch(conn_, code, navs)
