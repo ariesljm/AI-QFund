@@ -4,6 +4,8 @@
 在多处各自硬编码导致漂移。
 """
 
+import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -40,6 +42,36 @@ def percentile(values: list[float], pct: float) -> float:
     lo = int(pos)
     hi = min(lo + 1, len(s) - 1)
     return s[lo] + (s[hi] - s[lo]) * (pos - lo)
+
+
+def window_max_drawdown(navs: Sequence[float | None]) -> float | None:
+    """窗口内最大回撤（**正幅值**）；点数不足或含非正/缺失值 → None。
+
+    口径单一来源：结算账本的 `max_drawdown` 列与训练标签 `model.risk_adjusted_return`
+    （`label = ret − λ·dd`）共用。**返回正幅值而非负值**——符号反了会让 λ 变成奖励
+    回撤，而且不会报错，只会静静地学错东西（与 `repo.nav.forward_return_from_navs`
+    的失效值口径一致：缺失/非正一律视为不可用）。
+    """
+    vals: list[float] = []
+    for v in navs:
+        try:
+            f = float(v)  # type: ignore[arg-type]  # None 由 TypeError 捕获
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(f) or f <= 0:
+            return None
+        vals.append(f)
+    if len(vals) < 2:
+        return None
+    peak = vals[0]
+    mdd = 0.0
+    for v in vals:
+        if v > peak:
+            peak = v
+        dd = (peak - v) / peak
+        if dd > mdd:
+            mdd = dd
+    return mdd
 
 # 风险调整收益标签的惩罚系数：训练目标 = 40 日绝对收益 − λ × 40 日最大回撤。
 # 强迫模型排序时淘汰"涨幅大但回撤极端"的假牛基。λ=0 退化为纯绝对收益，

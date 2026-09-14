@@ -90,6 +90,42 @@ class TestBenchmarkDeclaration:
         assert benchmark.is_profit(0.005) is False
 
 
+class TestWindowReturn:
+    """同窗口收益：要求两端日期都有净值（否则跨基金不可比）。"""
+
+    NAVS = {"2026-08-14": 1.00, "2026-08-17": 1.10, "2026-09-11": 1.20}
+
+    def test_exact_endpoints(self):
+        assert benchmark.window_return(self.NAVS, "2026-08-14", "2026-09-11") == pytest.approx(0.20)
+
+    def test_interior_value_does_not_make_window_complete(self):
+        """窗口完整性只看两端：中间有值也不算。"""
+        assert benchmark.window_return({"2026-02-01": 1.10},
+                                       "2026-01-05", "2026-03-05") is None
+
+    def test_missing_start_is_none(self):
+        """停更基金的入场日缺净值 → 不可比，拒绝计算（不是退而取最近的可用日）。"""
+        assert benchmark.window_return({"2026-08-17": 1.1, "2026-09-11": 1.2},
+                                       "2026-08-14", "2026-09-11") is None
+
+    def test_missing_end_is_none(self):
+        assert benchmark.window_return({"2026-08-14": 1.0, "2026-08-17": 1.1},
+                                       "2026-08-14", "2026-09-11") is None
+
+    def test_degenerate_or_inverted_window_is_none(self):
+        assert benchmark.window_return(self.NAVS, "2026-08-17", "2026-08-17") is None
+        assert benchmark.window_return(self.NAVS, "2026-09-11", "2026-08-14") is None
+
+    def test_invalid_nav_is_none(self):
+        assert benchmark.window_return({"a": 1.0, "b": 0.0}, "a", "b") is None
+        assert benchmark.window_return({"a": 1.0, "b": -1.0}, "a", "b") is None
+        assert benchmark.window_return({"a": 1.0, "b": float("nan")}, "a", "b") is None
+        assert benchmark.window_return({"a": 1.0, "b": None}, "a", "b") is None
+
+    def test_flat_window_is_zero(self):
+        assert benchmark.window_return({"a": 2.0, "b": 2.0}, "a", "b") == pytest.approx(0.0)
+
+
 class TestVersionGuard:
     def test_matching_version_accepted(self):
         assert benchmark.is_current_benchmark(benchmark.BENCHMARK_VERSION) is True

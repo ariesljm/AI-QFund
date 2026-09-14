@@ -300,3 +300,21 @@ CREATE TABLE IF NOT EXISTS purchase_restrictions (
     note TEXT,
     updated_at TEXT DEFAULT (datetime('now'))
 );
+
+-- 结算账本（2.0 主标尺记账）：推荐结果的绝对/超额收益，以及三统计量的原料。
+-- benchmark_version 是标尺版本守卫的依据：口径改动即换版本号，旧记录不得与新标尺聚合。
+-- excess_return 为 NULL 表示同类样本不足（peer_n 记录实际有效样本数），此时绝对收益仍保留。
+CREATE TABLE IF NOT EXISTS settlement_ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    reco_date TEXT NOT NULL,
+    code TEXT NOT NULL,
+    benchmark_version TEXT NOT NULL,
+    settle_date TEXT NOT NULL,
+    abs_return REAL,
+    excess_return REAL,
+    peer_n INTEGER,
+    max_drawdown REAL,
+    confidence REAL,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE (reco_date, code, benchmark_version)
+);

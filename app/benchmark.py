@@ -53,14 +53,23 @@ def peer_group(features: Mapping[str, Any] | None) -> str | None:
     return raw.strip() or None
 
 
-def _valid(value: Any) -> bool:
-    """可用收益值：非 None、可转 float、非 NaN。"""
+def is_valid_return(value: Any) -> bool:
+    """可用收益值：非 None、可转 float、非 NaN。
+
+    公开给结算账本用：样本量判定与均值计算必须**共用同一过滤**，否则会出现
+    “12 个样本里 9 个有值”被算成 12 个样本的错。
+    """
     if value is None:
         return False
     try:
         return not math.isnan(float(value))
     except (TypeError, ValueError):
         return False
+
+
+def valid_returns(values: Iterable[Any]) -> list[float]:
+    """过滤出可用收益值（剔 None / NaN / 非数）。"""
+    return [float(v) for v in values if is_valid_return(v)]
 
 
 def peer_mean(peer_returns: Iterable[Any]) -> float | None:
@@ -71,7 +80,7 @@ def peer_mean(peer_returns: Iterable[Any]) -> float | None:
 
     注意：`peer_returns` 应**不含被测基金自身**（标尺版本契约，见模块头）。
     """
-    valid = [float(r) for r in peer_returns if _valid(r)]
+    valid = valid_returns(peer_returns)
     if len(valid) < MIN_PEER_SAMPLES:
         return None
     return sum(valid) / len(valid)
@@ -82,7 +91,7 @@ def excess_return(own_return: Any, peer_returns: Iterable[Any]) -> float | None:
 
     任一侧不可用（自身无收益、同类样本不足）→ None。
     """
-    if not _valid(own_return):
+    if not is_valid_return(own_return):
         return None
     mean = peer_mean(peer_returns)
     if mean is None:
@@ -93,3 +102,26 @@ def excess_return(own_return: Any, peer_returns: Iterable[Any]) -> float | None:
 def is_current_benchmark(version: str | None) -> bool:
     """标尺版本守卫：只有当前版本的记录才允许与当前标尺聚合/比对。"""
     return version == BENCHMARK_VERSION
+
+
+def window_return(navs_by_date: Mapping[str, float], start: str, end: str) -> float | None:
+    """同窗口收益：**要求两端日期都有净值**，否则 None。
+
+    为什么不能用“按行数取第 41 条”（`repo.nav.forward_return_from_navs` 的索引口径）：
+    "40 个交易日”指的是**市场**的 40 个交易日，而不是该基金的 40 条净值。净值有洞时
+    索引口径会把 50 个自然日当成 40 个交易日，让一只停更中的基金看起来“窗口已满”。
+    实测（2026-09-14）：全市场一半基金的最新净值日比另一半早 6 个交易日，故索引
+    口径会静默地拿不同长度的窗口做截面比较——**这类偏差不会报错，只会让结论失真**。
+
+    本函数是超额收益的组成部分：只有全部同类成员都走完**同一个日历窗口**，均值
+    才有意义。start == end 或 start > end 视为调用方错误 → None。
+    """
+    if start >= end:
+        return None
+    a, b = navs_by_date.get(start), navs_by_date.get(end)
+    if not is_valid_return(a) or not is_valid_return(b):
+        return None
+    a_f, b_f = float(a), float(b)  # type: ignore[arg-type]
+    if a_f <= 0 or b_f <= 0:
+        return None
+    return b_f / a_f - 1.0

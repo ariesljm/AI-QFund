@@ -36,45 +36,57 @@ DB = Path("data/qfund.db")
 _INTERPRETATION = """
 ## 解读
 
-**1.x 没有正超额。** 部分窗口口径下正超额占比 46.4%、均值 −0.68pp——接近抛硬币且
-略偏负；同期部分窗口绝对收益均值 −2.49%。所以此前的结论**不需要**改写成
-“只是 beta 拖累”：1.x 选出的基金在部分窗口内**既没赚到绝对收益，也没跑赢同类**。
+**1.x 的选基对同业没有任何可识别的选择价值。** 部分窗口口径下超额收益均值 −0.07pp、
+正超额占比 50.0%（n=14）——**恰好是抛硬币**。同时绝对收益均值 −3.02%、赚钱胜率 17.6%
+（n=17）：钱是亏的，而拿一只同行业的任意基金也差不多。
 
-三个必须一起看的限定：
+对“1.x 一直在正超额”这个假设：**没有证据支持**。所以此前“模型区分度失效”的结论
+**不需要**改写成“只是 beta 拖累”——超额接近零恰好说明失效是真失效，不是 beta 拖累。
+
+### 一个值得单独记下的教训：窗口口径不是小事
+
+本报告的第一版用“区间内首个/末个可用净值”算收益，得超额 −0.68pp / 正超额占比 46.4%；
+改成“入场日与截至日**两端都必须有净值**”后变成 −0.07pp / 50.0%。
+差别来自当时全市场一半基金的净值停更在 2026-09-03（见下），旧口径把停更基金的
+14 个交易日收益与正常基金的 20 个交易日收益放进了同一个同类均值。
+**这类偏差不会报错，只会让结论失真**——已收敛到 `app/benchmark.window_return` 单一口径。
+
+### 必须一起看的限定
 
 1. **窗口未满**（约 20 / 40 交易日）。部分窗口的排序与满 40 日可能不同；2026-11 后应
    重跑本脚本，以满 40 日结果为准。
-2. **两个口径不可直接比较**。`1.x 已实现收益` 是 1.x 自己的**提前退出**结果（12 条有值，
-   均值 −5.99%、胜率 8.3%），不是 40 日持有结果——它反映“1.x 的选基 + 1.x 的退出策略”
-   合起来的效果，而 40 日超额只衡量选基。
-3. **样本极小**：16 个推荐日、单一行情段（2026-08~09 的下跌段），不足以判定 1.x 的
-   长期能力。它只说明一件事：**“1.x 一直在正超额”这个假设没有证据支持**。
+2. **两个口径不可直接比较**。`1.x 已实现收益` 是 1.x 自己的**提前退出**结果
+   （12 条有值，均值 −5.99%、胜率 8.3%），不是 40 日持有结果——它反映“1.x 的选基 +
+   1.x 的退出策略”合起来的效果，而 40 日超额只衡量选基。
+3. **样本极小且不完整**：16 个推荐日、单一行情段，且 **11/28 条因净值停更根本算不出**。
 
-对本项目的意义：如果 1.x 一直正超额，那就该重新审视“模型区分度失效”的结论；
-但重算结果显示它并非如此。**1.x 的失效不是标尺选错了，而是选出来的东西真的不行**——
-这加强而不是削弱了“换标尺 + 换漏斗”的必要性。
+### 顺带暴露的数据基座故障
+
+全市场 `fund_nav` 日度条数从 2026-09-04 起由约 12,400 腰斩到约 6,300，截断按代码前缀
+（当日只有 0 开头的 6,435 只入库，5/1 开头几乎全缺）；`fund_features` 自 **2026-09-03
+起完全停止**。也就是说 1.x 的生产管道大约从 09-04 起已经半死，而推荐记录也正好停在
+2026-09-04。这不是本工单该修的，但 **2.0 要保留并扩写的数据基座，当前并不是健康的**。
 """
 
 
-def _load_nav(conn: sqlite3.Connection, since: str) -> dict[str, list[tuple[str, float]]]:
-    """{code: [(date, cum_nav)]} 升序，仅取 since 之后（部分窗口收益用不到更早的）。"""
-    out: dict[str, list[tuple[str, float]]] = {}
+def _load_nav(conn: sqlite3.Connection, since: str) -> dict[str, dict[str, float]]:
+    """{code: {date: cum_nav}}，仅取 since 之后。"""
+    out: dict[str, dict[str, float]] = {}
     for code, date, nav in conn.execute(
         "SELECT code, date, cum_nav FROM fund_nav WHERE date >= ? ORDER BY code, date", (since,)
     ):
-        out.setdefault(code, []).append((date, nav))
+        out.setdefault(code, {})[date] = nav
     return out
 
 
-def _window_return(rows: list[tuple[str, float]], start: str, end: str) -> float | None:
-    """[start, end] 内的收益：区间内首个可用净值 → 末个可用净值；不足两点 → None。"""
-    if not rows:
-        return None
-    first = next((nav for d, nav in rows if d >= start), None)
-    last = next((nav for d, nav in reversed(rows) if d <= end), None)
-    if first and last and first > 0:
-        return float(last) / float(first) - 1.0
-    return None
+def _window_return(navs_by_date: dict[str, float], start: str, end: str) -> float | None:
+    """同窗口收益（要求两端日期都有净值）——口径在 `app.benchmark.window_return`。
+
+    早期版本用“区间内首个/末个可用净值”，会把一只停更在 09-03 的基金的 14 个交易日
+    收益，与另一只走到 09-11 的 20 个交易日收益放进同一个同类均值里。
+    实测 2026-09-14：全市场一半基金停更在 09-03，所以那个偏差是实在的，不是理论风险。
+    """
+    return benchmark.window_return(navs_by_date, start, end)
 
 
 def _features_at(conn: sqlite3.Connection, date: str) -> tuple[str, dict[str, str | None]]:
@@ -109,7 +121,9 @@ def main() -> None:
     print(f"- 1.x 推荐日：**{first_date} ~ {max(r[0] for r in recs)}**（{len({r[0] for r in recs})} 个推荐日 / {len(recs)} 条记录）")
     print(f"- 标尺版本：`{benchmark.BENCHMARK_VERSION}`，前向窗口目标 **{benchmark.FORWARD_DAYS} 交易日**，"
           f"同类最小样本 **{benchmark.MIN_PEER_SAMPLES}**（不含自身）")
-    print("- 同类宇宙：同一 RBSA 第一行业的全部基金，**不按基金类型过滤**（见 `app/benchmark.py` 头口径声明）\n")
+    print("- 同类宇宙：同一 RBSA 第一行业的全部基金，**不按基金类型过滤**（见 `app/benchmark.py` 头口径声明）")
+    print("- 窗口完整性：所有收益均要求**入场日与截至日两端都有净值**（`benchmark.window_return`），"
+          "否则会拿不同长度的窗口做截面对比\n")
     print("> ⚠️ **窗口未满**：下列收益与超额是「推荐日 → 净值截止日」的**部分窗口**值，")
     print("> 不是 40 日标尺值。完整结算需等到约 2026-11。\n")
 
@@ -123,12 +137,12 @@ def main() -> None:
             feat_cache[rec_date] = _features_at(conn, rec_date)
         _feat_date, feats = feat_cache[rec_date]
 
-        own = _window_return(navs.get(code, []), rec_date, end)
+        own = _window_return(navs.get(code, {}), rec_date, end)
         industry = feats.get(code)
         peer_returns: list[float | None] = []
         if industry:
             peer_returns = [
-                _window_return(navs.get(c, []), rec_date, end)
+                _window_return(navs.get(c, {}), rec_date, end)
                 for c, ind in feats.items()
                 if ind == industry and c != code
             ]
@@ -141,6 +155,10 @@ def main() -> None:
         rows_report.append((realized, own, excess))
 
     print("\n## 汇总\n")
+    unavailable = sum(1 for _, own, _ in rows_report if own is None)
+    if unavailable:
+        print(f"- ⚠️ **{unavailable}/{len(rows_report)} 条自身窗口不可用**（入场日或截至日缺净值）——"
+              "全市场一半基金的净值自 2026-09-04 起停更在 2026-09-03，故这些推荐算不出收益。")
     realized_v = [r for r, _, _ in rows_report if r is not None]
     own_v = [o for _, o, _ in rows_report if o is not None]
     excess_v = [e for _, _, e in rows_report if e is not None]
