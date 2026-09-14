@@ -7,7 +7,9 @@ CREATE TABLE IF NOT EXISTS fund_basic (
     name TEXT NOT NULL,
     type TEXT NOT NULL,
     company TEXT,
-    is_buyable INTEGER DEFAULT 1
+    is_buyable INTEGER DEFAULT 1,
+    aum REAL,        -- 合并规模（元，票 06）
+    shares REAL      -- 份额（份，票 06 的 AUM_surge 输入）
 );
 
 -- 历史净值
@@ -310,6 +312,7 @@ CREATE TABLE IF NOT EXISTS data_fetch_failures (
 CREATE TABLE IF NOT EXISTS purchase_restrictions (
     code TEXT PRIMARY KEY,
     status TEXT NOT NULL,          -- normal / limited / suspended
+    daily_limit REAL,              -- 单日申购上限（元），NULL = 无限购（票 06）
     note TEXT,
     updated_at TEXT DEFAULT (datetime('now'))
 );

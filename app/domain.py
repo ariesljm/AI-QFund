@@ -20,6 +20,39 @@ FORWARD_DAYS = 40
 PROFIT_THRESHOLD = 0.01
 
 
+# ── 模块一硬过滤阈值（票 06）──────────────────────────
+# 四条硬过滤：合并规模越界、暂停申购、单日上限过小、净值历史过短。
+# 纯谓词，可离网单测；数据由 AUM/申赎状态/单日上限供给（票 06 数据源部分）。
+AUM_MIN = 50_000_000          # 合并规模下限：5000 万
+AUM_MAX = 10_000_000_000      # 合并规模上限：100 亿
+DAILY_PURCHASE_MIN = 1000     # 单日申购下限：1000 元
+# 净值历史条数下限：复用 features.calculator.EMA_WARMUP_NAVS（span60+confirm2=62）
+# 口径（票 06 Q5 的“净值历史 < 6 个月”落为既有短历史打标的同源阈值）。
+SHORT_HISTORY_NAVS = 62
+
+
+def hard_filter_violations(aum: float | None, purchase_status: str,
+                           daily_limit: float | None,
+                           nav_count: int) -> list[str]:
+    """四条硬过滤谓词（票 06 / Q5）。返回违反项列表，空列表 = 通过。
+
+    aum             合并规模（元）；None = 数据缺失，不因缺数据误杀（该项不判违规）
+    purchase_status normal / limited / suspended（暂停申购 → 违规）
+    daily_limit     单日申购上限（元）；None = 无限购；< 1000 → 违规
+    nav_count       自身净值条数；< SHORT_HISTORY_NAVS → 违规（短历史）
+    """
+    v: list[str] = []
+    if aum is not None and (aum < AUM_MIN or aum > AUM_MAX):
+        v.append("aum")
+    if purchase_status == "suspended":
+        v.append("suspended")
+    if daily_limit is not None and daily_limit < DAILY_PURCHASE_MIN:
+        v.append("daily_limit")
+    if nav_count < SHORT_HISTORY_NAVS:
+        v.append("short_history")
+    return v
+
+
 def is_profit(ret: float) -> bool:
     """赚钱口径纯谓词（单一来源）：绝对收益 > 1% 覆盖申赎成本。
 

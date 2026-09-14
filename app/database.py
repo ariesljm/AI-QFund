@@ -96,6 +96,19 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
     # ── 历史 ALTER 迁移：旧库补列（schema.sql 已含新列，新建库无需执行）──
 
+    if "fund_basic" in tables:
+        fb_cols = {row[1] for row in conn.execute("PRAGMA table_info(fund_basic)").fetchall()}
+        for col in ("aum", "shares"):
+            if col not in fb_cols:
+                conn.execute(f"ALTER TABLE fund_basic ADD COLUMN {col} REAL")
+                conn.commit()
+
+    if "purchase_restrictions" in tables:
+        pr_cols = {row[1] for row in conn.execute("PRAGMA table_info(purchase_restrictions)").fetchall()}
+        if "daily_limit" not in pr_cols:
+            conn.execute("ALTER TABLE purchase_restrictions ADD COLUMN daily_limit REAL")
+            conn.commit()
+
     if "fund_holdings" in tables:
         fh_cols = {row[1] for row in conn.execute("PRAGMA table_info(fund_holdings)").fetchall()}
         if "disclosure_date" not in fh_cols:
