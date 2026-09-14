@@ -703,15 +703,25 @@ def run_recommendation(retrain: bool = False) -> None:
     """
     date_str = datetime.now().strftime("%Y-%m-%d")
 
-    # 特征新鲜度护栏：数据基座失败时特征陈旧。陈旧 <=1 天用旧特征兑底（验证：Top-5 重合 80%）；
-    # 滞后 >=2 天影响明显（Top-5 掉至 40%），强告警但仍放行（按用户决策：失败后重试仍失败则用旧特征）。
+    # 特征新鲜度护栏（ticket 25 改为硬闸门）：数据基座失败时特征陈旧。
+    # 滞后 ==1 天用旧特征兑底（验证：Top-5 重合 80%）；
+    # 滞后 >=2 天影响明显（Top-5 掉至 40%）——**拒绝产出**，而不是带着陈旧特征推荐。
+    #
+    # ⚠️ 这里反转了一条旧决策：1.x 的原文注释是“强告警但仍放行（按用户决策：
+    # 失败后重试仍失败则用旧特征）”。反转理由：那个决策把“告警”当成了控制手段，
+    # 而告警只是一条日志；2026-09-03 起特征实际停摆了 6 个交易日，无人知晓。
+    # 标尺要靠“守门”而非法“劝告”才能真正生效（与 2.0 “主标尺用于守门”同构）。
     feat_date = repo.get_latest_feature_date()
     lag = _feature_freshness(feat_date)
     if lag == 1:
         logger.warning("特征新鲜度：最新特征日期 %s 滞后 1 个交易日，用旧特征跑推荐（数据基座可能未更新）", feat_date)
     elif lag >= 2:
-        logger.error("特征新鲜度：最新特征日期 %s 滞后 %d 个交易日——数据基座连续失败，推荐将基于严重陈旧特征",
+        logger.error("特征新鲜度：最新特征日期 %s 滞后 %d 个交易日——数据基座连续失败，拒绝产出推荐",
                      feat_date, lag)
+        repo.record_empty_recommendation(
+            date_str, f"特征停摆：最新特征日 {feat_date} 已滞后 {lag} 个交易日",
+            reason_type="data_failure")
+        return
 
     model = get_or_train(retrain)
     if model is None:

@@ -24,6 +24,7 @@ from app.data.store import (
 )
 from app.database import db_conn
 from app.utils.log import get_logger
+from app.utils.trading_calendar import trading_day_lag
 
 logger = get_logger("nav")
 
@@ -230,6 +231,99 @@ def _count_stale_lagging(tasks_meta: list[tuple[str, str]], target: str | None) 
         except ValueError:
             continue
     return n
+
+
+# ── 覆盖度断言（ticket 25）─────────────────────────────
+# 容忍 5 个交易日：实测正常发布延迟最多到 4~5 天（QDII/慢披露基金），
+# 容忍 1~3 天时健康态基线高达 2.05%（260/12,675，全是正常换手）。
+#
+# **为何是 5 而不是 10**：真实故障恰好是 **6 个交易日**（2026-09-03 → 09-11），
+# 而 `mark_stale_funds` 的逐只打标阀值是 **>10 交易日** —— 6 < 10，所以那些基金
+# 根本没被打标，这才是故障能藏住 6 天的直接原因。本门必须卡在 5~10 之间：
+# 上界看住“不是正常延迟”，下界看住“比逐只打标更早发现”。
+NAV_COVERAGE_TOLERANCE_DAYS = 5
+# 超过该比例的基金滞后才算数据基座故障。阈值由**实测**校准，不是拍脑袋：
+#   - 健康态（2026-09-03 回放重建）：71/12,675 = **0.56%**
+#   - 故障态（2026-09-11，真实发生）：6,232/12,675 = **49.17%**
+# 取 5%：对健康基线留 9 倍余量，距故障态还差 10 倍——两者差了 88 倍，这个
+# 阈值不需要更精细。
+# 注意：**单基金停更不由本门拦**（那由 mark_stale_funds 逐只打标）；本门只负责
+# “数据基座部分失效”这种静默灾难。
+MAX_NAV_STALE_RATIO = 0.05
+
+
+class NavCoverageError(RuntimeError):
+    """净值覆盖度缺口超阀——数据基座部分失效，不可继续算特征与推荐。"""
+
+
+def nav_coverage_gap(ranges: dict[str, tuple[str, str]], dates: list[str],
+                     target: str | None = None,
+                     tolerance: int = NAV_COVERAGE_TOLERANCE_DAYS) -> dict:
+    """净值覆盖度缺口（纯函数，便于测试）。
+
+    `ranges` 来自 `repo.get_nav_time_state()`：{code: (首日, 末日)}；`dates` 为
+    全部净值日期。滞后计数用 `trading_day_lag`（与停更打标/特征新鲜度同一来源）。
+
+    **为什么需要这个函数**：既有护栏是 `total_new == 0`——只要还有一只基金在新，
+    它就永不触发。那护栏拦不住真实发生过的故障（2026-09-04 起一半市场停更、每日
+    仍写入约 6,400 行、日志无异常），因为“写入了若干条”与“全市场都更新了”是两件事。
+
+    返回 dict：`target` / `total` / `stale` / `ratio` / `worst_lag` / `samples`。
+    `stale` 含**从无净值**的基金（拉取从未成功也是缺口），而 `worst_lag` 只统计
+    有净值基金中的最深滞后。空库/无目标日一律返回零缺口（空库自举不得自己拦住自己）。
+    """
+    latest = {code: end for code, (_start, end) in ranges.items()}
+    total = len(latest)
+    if target is None:
+        target = max((v for v in latest.values() if v), default=None)
+    if not target or not dates or not total:
+        return {"target": target, "total": total, "stale": 0, "ratio": 0.0,
+                "worst_lag": 0, "samples": []}
+
+    days = set(dates)
+    stale: list[tuple[str, int]] = []
+    worst_lag = 0
+    for code, end in latest.items():
+        if not end:
+            stale.append((code, 0))  # 从无净值
+            continue
+        lag = trading_day_lag(end, target, days=days)
+        if lag > tolerance:
+            stale.append((code, lag))
+            worst_lag = max(worst_lag, lag)
+    stale.sort(key=lambda x: -x[1])
+    return {
+        "target": target,
+        "total": total,
+        "stale": len(stale),
+        "ratio": len(stale) / total,
+        "worst_lag": worst_lag,
+        "samples": [c for c, _ in stale[:10]],
+    }
+
+
+def assert_nav_coverage(ranges: dict[str, tuple[str, str]], dates: list[str],
+                        target: str | None = None,
+                        tolerance: int = NAV_COVERAGE_TOLERANCE_DAYS,
+                        threshold: float = MAX_NAV_STALE_RATIO) -> dict:
+    """缺口超阀 → 抛 `NavCoverageError`（让整个数据基座步骤失败），否则返回缺口。
+
+    **为何是抛错而不是告警**：`run_pipeline` 不捕获步骤异常，所以抛错会中止后续
+    步骤（特征、推荐），下游就拿不到陈旧特征；而告警只是一种建议——1.x 在
+    `recommend` 里已经有“特征滞后 ≥ 2 天”的 ERROR 日志，它是**故意只记不拦**的
+    （按早年决策“失败后用旧特征”，注释原文：“强告警但仍放行”），结果就是 6 天没
+    出特征也无人知晓。静默失效只能靠结构性阻断治疗，不能靠“多看一眼日志”。
+    """
+    gap = nav_coverage_gap(ranges, dates, target, tolerance)
+    if gap["ratio"] > threshold:
+        raise NavCoverageError(
+            f"净值覆盖度缺口过大：{gap['stale']}/{gap['total']} 只基金的净值日落后于 "
+            f"{gap['target']} 超过 {tolerance} 个交易日（{gap['ratio']:.1%} > 阈值 "
+            f"{threshold:.1%}），最深滞后 {gap['worst_lag']} 个交易日，"
+            f"样例 {gap['samples']}。这不是「少拉了几只」，而是数据基座部分失效："
+            f"流程已中止，避免用陈旧净值算特征与推荐。"
+        )
+    return gap
 
 
 def _summarize_nav_results(conn_, results) -> FetchOutcome:
@@ -468,6 +562,14 @@ async def async_update_nav_incremental(concurrency: int = 5) -> int:
                 logger.info("净值增量更新 0 条: 接口最新 %s, 本地最新 %s，无新增数据（正常）",
                             api_latest, global_latest)
 
+        # 覆盖度断言（ticket 25）：写入若干条 ≠ 全市场都更新了。放在阶段末尾，
+        # 因为要判定的是“跑完之后还剩多少基金没跟上”，而不是“这次请求成不成”——
+        # 2026-09-04 那次故障每日都成功写入约 6,400 条，日志无异常。
+        gap = assert_nav_coverage(*repo.get_nav_time_state())
+        logger.info("净值覆盖度：%d/%d 只已对齐 %s，滞后超 %d 交易日 %d 只（最深 %d）",
+                    gap["total"] - gap["stale"], gap["total"], gap["target"],
+                    NAV_COVERAGE_TOLERANCE_DAYS, gap["stale"], gap["worst_lag"])
+
     return total_new
 
 
@@ -529,6 +631,9 @@ async def async_download_all_nav(concurrency: int = 15) -> int:
                 "全量净值下载写入 0 条但任务数 %d——疑似净值接口失效，请检查",
                 len(all_codes),
             )
+
+        # 覆盖度断言（ticket 25）：与增量路径同一闸门（首库自举也不能绕过）
+        assert_nav_coverage(*repo.get_nav_time_state())
 
     return total_new
 

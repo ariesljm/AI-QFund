@@ -22,7 +22,7 @@ def _reset_calendar_cache():
 import app.engine.recommend as rec
 from app.data.foundation import mark_short_history_funds, mark_stale_funds
 from app.database import get_db, meta_set
-from app.engine.recommend import _feature_freshness
+from app.engine.recommend import _feature_freshness, run_recommendation
 
 
 class _FakeDateTime(__import__("datetime").datetime):
@@ -164,3 +164,52 @@ class TestMarkShortHistoryFunds:
             assert rows == {"EDGE": 1, "LOW": 0}
         finally:
             conn.close()
+
+
+class TestFeatureStallBlocksRecommendation:
+    """ticket 25：特征停摆必须**阻断产出**，而不只是打一行 ERROR 日志。
+
+    1.x 的护栏原文是“强告警但仍放行（按用户决策）”——把日志当成了控制手段。
+    结果是 2026-09-03 起特征实际停摆 6 个交易日、推荐流程照跑、没有任何人知道。
+    这两条测试钉住“不再放行”，同时钉住“滞后 1 天仍兜底”以免误伤。
+    """
+
+    def _seed(self, monkeypatch, tmp_path, feat_date):
+        monkeypatch.setattr(db_mod, "DB_PATH", tmp_path / "test.db")
+        conn = get_db()
+        try:
+            meta_set(conn, "trade_dates_cache",
+                     json.dumps(["2026-08-03", "2026-08-04", "2026-08-05",
+                                 "2026-08-06", "2026-08-07"]))
+        finally:
+            conn.close()
+        monkeypatch.setattr(rec, "datetime", _FakeDateTime)
+        monkeypatch.setattr(rec.repo, "get_latest_feature_date", lambda: feat_date)
+
+    def test_stalled_features_refuse_to_recommend(self, monkeypatch, tmp_path):
+        self._seed(monkeypatch, tmp_path, "2026-08-04")  # 滞后 2 个交易日
+        recorded: dict = {}
+        monkeypatch.setattr(rec.repo, "record_empty_recommendation",
+                            lambda d, r, reason_type=None: recorded.update(
+                                date=d, reason=r, reason_type=reason_type))
+        trained: list = []
+        monkeypatch.setattr(rec, "get_or_train", lambda retrain=False: trained.append(1))
+
+        run_recommendation()
+
+        assert recorded["reason_type"] == "data_failure"
+        assert "特征停摆" in recorded["reason"]
+        assert trained == []  # 连模型都没取，直接拒绝产出
+
+    def test_one_day_stale_still_recommends(self, monkeypatch, tmp_path):
+        """滞后 1 天用旧特征兜底（Top-5 重合 80%），不得误伤。"""
+        self._seed(monkeypatch, tmp_path, "2026-08-05")  # 滞后 1 个交易日
+        recorded: list = []
+        monkeypatch.setattr(rec.repo, "record_empty_recommendation",
+                            lambda d, r, reason_type=None: recorded.append(reason_type))
+        # 训练返回 None → 入口在此提前返回，无需进入 LLM 阶段
+        monkeypatch.setattr(rec, "get_or_train", lambda retrain=False: None)
+
+        run_recommendation()
+
+        assert recorded == []  # 未记为 data_failure 空推日
