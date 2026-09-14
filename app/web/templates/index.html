@@ -82,13 +82,16 @@
   <!-- ============ 今日投研 ============ -->
   <div id="tab-today" class="flex flex-col gap-stack-lg px-margin-page pt-stack-lg pb-16">
     {% if empty_today %}
+    {# 空推原因常与赛道分析同文（record_empty_recommendation 复用 ctx.sector_reasoning）——
+       避免与下方 AI 赛道报告卡重复渲染同一段文本 #}
+    {% set _edup = empty_today.reasoning and sector_reasoning and empty_today.reasoning.strip() == sector_reasoning.strip() %}
     {% if empty_today.reason_type == 'data_failure' %}
     <!-- data_failure：数据故障导致空推（警示色，明确告知） -->
     <div class="border border-error bg-error-container/30 p-3 flex items-start gap-3 rounded-lg">
       <span class="material-symbols-outlined text-error text-[18px] mt-0.5">error</span>
       <div>
         <p class="font-label-caps text-error">今日未推荐（数据故障）</p>
-        <p class="text-on-surface-variant text-[13px] mt-1">{{ empty_today.reasoning or '数据异常导致未推荐，请检查数据基座' }}</p>
+        <p class="text-on-surface-variant text-[13px] mt-1">{{ '原因见下方 AI 赛道报告' if _edup else (empty_today.reasoning or '数据异常导致未推荐，请检查数据基座') }}</p>
       </div>
     </div>
     {% else %}
@@ -97,7 +100,7 @@
       <span class="material-symbols-outlined text-on-surface-variant text-[18px] mt-0.5">info</span>
       <div>
         <p class="font-label-caps text-on-surface-variant">今日无合适推荐</p>
-        <p class="text-on-surface-variant text-[13px] mt-1">{{ empty_today.reasoning or '今日无合适机会' }}</p>
+        <p class="text-on-surface-variant text-[13px] mt-1">{{ '原因见下方 AI 赛道报告' if _edup else (empty_today.reasoning or '今日无合适机会') }}</p>
       </div>
     </div>
     {% endif %}
