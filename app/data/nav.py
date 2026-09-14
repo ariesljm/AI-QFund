@@ -544,14 +544,17 @@ async def async_update_nav_incremental(concurrency: int = 5) -> int:
             logger.info("净值批量快照（rankhandler 榜单 200只/请求）: %d 只（差 1 天）", len(batch_codes))
             batch_results, batch_missing, batch_api_down = await _rankhandler_incremental(
                 session, headers, batch_codes, local_max)
+            # 与慢路径**共用同一个消费器**：结果契约是 (code, navs, failed) 三元组。
+            # 这里曾经自己写了一遍二解包，与生产者三元组不一致——因为旧快路径
+            # （已死的 fundmobapi）总是返回 0 条，循环体从未执行，这个 ValueError
+            # 潜伏着，直到 2026-09-15 换到 rankhandler 后才在生产上炸出来。
+            # 改用共用消费器，形状再怎么改也只有一处需要对齐。
             with db_conn() as conn_:
-                for code, navs in batch_results:
-                    n = save_nav_batch(conn_, code, navs)
-                    if n:
-                        total_new += n
-                        success.add(code)
-                    else:
-                        no_update.append(code)
+                outcome_batch = _summarize_nav_results(conn_, batch_results)
+            total_new += outcome_batch["new_count"]
+            success |= outcome_batch["success"]
+            failed.extend(outcome_batch["failed"])
+            no_update = outcome_batch["no_update"]
             if success:
                 mark_recovered_batch("nav_incr", sorted(success))
             # no_update 记账与 lsjz 路径同语义（接口确认无新数据 → 累计进冷却，
