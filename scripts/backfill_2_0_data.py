@@ -45,7 +45,7 @@ def backfill_valuation() -> None:
 
 
 def backfill_daily() -> None:
-    from app.data.sector_history import stock_daily
+    from app.data.stock_daily import stock_daily
     from app.data.store import save_stock_daily
     codes = stock_universe()
     logger.info("票 07 日线回填：%d 只股票", len(codes))

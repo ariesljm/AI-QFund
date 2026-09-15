@@ -22,24 +22,14 @@
 
 import app.repo as repo
 from app.data.fetchers import fetch
+from app.data.stock_daily import stock_daily
 from app.utils.log import get_logger
 
 logger = get_logger("data.sector_history")
 
 _TOP_K = 15  # 每板块取市值 Top-K 成分股
-_SOHU_KLINE = "https://q.stock.sohu.com/hisHq"
 _EM_CLIST = "https://push2.eastmoney.com/api/qt/clist/get"
 _BACKFILL_DONE = "sector_history_backfilled"  # meta 标记（避免重复全量回填）
-
-
-def tx_symbol(code: str) -> str:
-    """6 位 A 股代码 → 搜狐符号（cn_ 前缀，沪/深/创业/科创通用）。"""
-    return f"cn_{code}"
-
-
-def _sohu_start_days(days: int) -> int:
-    """600 个交易日约需 900 自然日（搜狐按自然日区间拉取）。"""
-    return int(days * 1.5)
 
 
 def board_top_members(board_code: str, k: int = _TOP_K) -> list[tuple[str, float]]:
@@ -59,34 +49,11 @@ def board_top_members(board_code: str, k: int = _TOP_K) -> list[tuple[str, float
     return out
 
 
-def stock_daily(code: str, days: int = 600) -> dict[str, float]:
-    """搜狐历史日线，返回 {date: close}；无数据返回空 dict。
+# 个股日线（tx_symbol/_sohu_start_days/stock_daily）已迁至 app/data/stock_daily.py（票 07 源，
+# 22 删除前置解耦）；此处 re-export 保持旧引用（synthesize_board）兼容。
 
-    搜狐行格式：[日期, 开盘, 收盘, 涨跌额, 涨跌幅, 最低, 最高, 量, 额, 换手, 量比]，
-    收盘取 **index 2**（index 1 是开盘价，若误取会含隔夜跳空噪声、与基金净值收盘价
-    口径不匹配）；响应为 GBK 编码，需手动 decode。
-    """
-    from datetime import datetime, timedelta
-    end = datetime.now().strftime("%Y%m%d")
-    start = (datetime.now() - timedelta(days=_sohu_start_days(days))).strftime("%Y%m%d")
-    r = fetch(_SOHU_KLINE, params={
-        "code": tx_symbol(code), "start": start, "end": end,
-        "stat": "1", "order": "D", "period": "d",
-    })
-    try:
-        import json
-        data = json.loads(r.content.decode("gbk", errors="replace"))
-    except Exception:
-        return {}
-    hq = ((data or [{}])[0] or {}).get("hq") or []
-    out: dict[str, float] = {}
-    for row in hq:
-        if len(row) >= 3 and row[0] and row[2] not in (None, ""):
-            try:
-                out[str(row[0])] = float(row[2])
-            except (TypeError, ValueError):
-                continue
-    return out
+
+
 
 
 def synthesize_board(board_code: str, k: int = _TOP_K,
