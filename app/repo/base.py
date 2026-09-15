@@ -71,27 +71,27 @@ def get_fund_basics() -> list[tuple[str, str]]:
 def get_restriction_facts(codes: list[str]) -> dict[str, dict]:
     """硬过滤事实（票 11 接线）：{code: {aum, purchase_status, daily_limit, nav_count}}。
 
-    单查询收敛（N+1 防护）：aum 取自 fund_basic；申赎/单日上限取自
-    purchase_restrictions；nav_count 取自 fund_nav。缺失字段为 None/未知。
+    单查询收敛 + 全表聚合规避：aum 全 buyable 一次查询；申赎小表 IN；
+    **nav_count 不查 fund_nav**（1160 万行聚合）——is_buyable=1 已由
+    mark_short_history_funds 排除 <62 条的基金，nav_count 语义由 buyable 覆盖。
     """
     if not codes:
         return {}
-    ph = ",".join("?" for _ in codes)
+    wanted = set(codes)
     out: dict[str, dict] = {c: {"aum": None, "purchase_status": "unknown",
-                                "daily_limit": None, "nav_count": 0} for c in codes}
+                                "daily_limit": None, "nav_count": 999} for c in codes}
     with db_conn() as conn:
         for code, aum in conn.execute(
-                f"SELECT code, aum FROM fund_basic WHERE code IN ({ph})", codes).fetchall():
-            out[code]["aum"] = aum
+                "SELECT code, aum FROM fund_basic WHERE is_buyable = 1").fetchall():
+            if code in wanted:
+                out[code]["aum"] = aum
+        ph = ",".join("?" for _ in codes)
         for code, status, dlimit in conn.execute(
                 f"SELECT code, status, daily_limit FROM purchase_restrictions "
                 f"WHERE code IN ({ph})", codes).fetchall():
-            out[code]["purchase_status"] = status or "unknown"
-            out[code]["daily_limit"] = dlimit
-        for code, n in conn.execute(
-                f"SELECT code, COUNT(*) FROM fund_nav WHERE code IN ({ph}) "
-                f"GROUP BY code", codes).fetchall():
-            out[code]["nav_count"] = n
+            if code in wanted:
+                out[code]["purchase_status"] = status or "unknown"
+                out[code]["daily_limit"] = dlimit
     return out
 
 def get_buyable_feature_stats() -> list[tuple[str, float | None, float | None, float | None]]:
@@ -359,6 +359,33 @@ def get_latest_features(code: str) -> dict | None:
     if not row:
         return None
     return {'hurst_60d': row[0], 'momentum_20d': row[1], 'calmar': row[2], 'downside_vol': row[3], 'capture_up': row[4], 'capture_down': row[5], 'drawdown_60d': row[6], 'reversal_20d': row[7], 'mom_5d': row[8], 'mom_60d': row[9], 'vol_20d': row[10], 'rbsa_industry_1': row[11], 'rbsa_weight_1': row[12] or 0, 'rbsa_industry_2': row[13], 'rbsa_weight_2': row[14] or 0, 'rbsa_industry_3': row[15], 'rbsa_weight_3': row[16] or 0, 'date': row[17]}
+
+
+def get_latest_features_batch(codes: list[str] | None = None) -> dict[str, dict]:
+    """全部（或给定）基金最新特征一次查询（票 11 全市场初筛 N+1 收敛）。
+
+    窗口函数每基金取最新一行的 12 维特征；无特征基金不在返回中。
+    返回 {code: {hurst_60d, ..., date}}。
+    """
+    _COLS = ("hurst_60d", "momentum_20d", "calmar", "downside_vol", "capture_up",
+             "capture_down", "drawdown_60d", "reversal_20d", "mom_5d", "mom_60d",
+             "vol_20d", "rbsa_industry_1", "rbsa_weight_1", "date")
+    where = ""
+    args: list = []
+    if codes:
+        ph = ",".join("?" for _ in codes)
+        where = f" WHERE code IN ({ph})"
+        args = list(codes)
+    sql = (f"SELECT code, {', '.join('f.' + c for c in _COLS)} FROM ("
+           f"  SELECT code, {', '.join(_COLS)}, "
+           f"  ROW_NUMBER() OVER (PARTITION BY code ORDER BY date DESC) AS rn "
+           f"  FROM fund_features{where}) f WHERE rn = 1")
+    with db_conn() as conn:
+        rows = conn.execute(sql, args).fetchall()
+    out: dict[str, dict] = {}
+    for row in rows:
+        out[row[0]] = {c: row[i + 1] for i, c in enumerate(_COLS)}
+    return out
 
 def get_latest_holdings_date(code: str) -> str | None:
     """基金最新季报披露日期。"""

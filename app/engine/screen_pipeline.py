@@ -12,7 +12,7 @@ model.score）。空态区分：无候选 → "no_opportunity"；有池但打分
 from app import model
 from app.engine.screen import active_equity_pool, apply_hard_filters, top_n
 from app.repo import decision as decision_repo
-from app.repo.base import get_fund_basics, get_latest_features, get_restriction_facts
+from app.repo.base import get_fund_basics, get_latest_features_batch, get_restriction_facts
 
 
 def screen_top30(today: str, scorer=None, limit: int = 30) -> dict:
@@ -28,9 +28,11 @@ def screen_top30(today: str, scorer=None, limit: int = 30) -> dict:
     facts = get_restriction_facts(pool)
     pool = apply_hard_filters(pool, facts)
     scorer = scorer or model.score
+    # N+1 收敛：一次查询全部最新特征（全市场 12,900 只不可逐只查）
+    feats = get_latest_features_batch(pool)
     ranked: list[dict] = []
     for c in pool:
-        feat = get_latest_features(c)
+        feat = feats.get(c)
         if not feat:
             continue
         sc = scorer(feat)

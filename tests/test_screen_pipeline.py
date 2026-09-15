@@ -25,8 +25,8 @@ def _seed(monkeypatch, tmp_path):
                           ("F3", "指数三", "指数型"), ("F4", "混合四", "混合型")])
         # F4 暂停申购（应被硬过滤剔除）
         conn.execute("INSERT INTO purchase_restrictions (code, status) VALUES ('F4','suspended')")
-        # F5 短历史（nav 不足 62 条，应被剔除）；F5 不在买池也测一下
-        conn.execute("INSERT INTO fund_basic (code, name, type, is_buyable) VALUES ('F5','混合五','混合型',1)")
+        # F5 短历史（nav 10 条）：真实世界 mark_short_history_funds 会置 is_buyable=0
+        conn.execute("INSERT INTO fund_basic (code, name, type, is_buyable) VALUES ('F5','混合五','混合型',0)")
         # 净值：F1/F2/F3 足够多，F5 仅 10 条
         for code in ("F1", "F2", "F3"):
             for i in range(100):
