@@ -11,7 +11,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
 
-from app import domain
 from app import model as model_mod
 
 
@@ -31,11 +30,14 @@ class TestRiskAdjustedReturn:
         assert abs(y - (-0.35)) < 1e-12
 
     def test_lambda_configurable(self, monkeypatch):
-        """λ 可配置：λ=1 时回撤惩罚加倍。"""
-        monkeypatch.setattr(model_mod.domain, "RISK_ADJ_DD_LAMBDA", 1.0)
+        """λ 可配置（settings.toml [label].lambda）：λ=1 时回撤惩罚加倍。"""
+        import app.config as cfg
+        monkeypatch.setattr(cfg, "_settings_cache", None)   # 强制重读
+        monkeypatch.setattr(cfg, "SETTINGS_PATH",
+                            Path("config/settings.toml"))
         navs = np.array([1.0, 1.2, 0.9])
         y = model_mod.risk_adjusted_return(navs, 0, 2)
-        assert abs(y - (-0.1 - 1.0 * 0.25)) < 1e-12  # -0.35
+        assert abs(y - (-0.1 - 1.0 * 0.25)) < 1e-12  # -0.35（λ=1.0）
 
     def test_window_out_of_range_returns_nan(self):
         """窗口越界 → nan（不抛异常）。"""
@@ -61,5 +63,7 @@ class TestLabelVersionUpgrade:
         assert model_mod.LABEL_VERSION == "risk_adj_40d_v2"
 
     def test_default_lambda_is_conservative(self):
-        """λ 默认值落在 (0, 1] 的标定区间（0.3~1.0 扫描单调，取上界 1.0）。"""
-        assert 0.0 < domain.RISK_ADJ_DD_LAMBDA <= 1.0
+        """λ 默认值 = 1.0（生产标定值；settings.toml [label].lambda 可调）。"""
+        from app.config import get_label_lambda
+        assert 0.0 < get_label_lambda() <= 1.0
+        assert get_label_lambda() == 1.0

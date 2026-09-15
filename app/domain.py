@@ -161,10 +161,9 @@ def window_max_drawdown(navs: Sequence[float | None]) -> float | None:
             mdd = dd
     return mdd
 
-# 风险调整收益标签的惩罚系数：训练目标 = 40 日绝对收益 − λ × 40 日最大回撤。
-# 强迫模型排序时淘汰"涨幅大但回撤极端"的假牛基。λ=0 退化为纯绝对收益，
-# λ 越大越惩罚回撤；初值 0.5 为稳健折中（精确值应走 walk-forward 标定）。
-RISK_ADJ_DD_LAMBDA = 1.0
+# 风险调整收益标签的惩罚系数 λ 已迁移到配置（config.get_label_lambda，settings.toml
+# [label].lambda，初值 1.0 = 生产标定值）。票 09：λ 是可调参数，不属于领域常量；
+# 标定报告见 settings.toml 注释与 docs/backtest/model_walk_forward_40d.md。
 
 # 单基金特征新鲜度闸门（2026-09 审计 P1-1）：候选基金特征日滞后决策日超过
 # 该交易日数即剔除。全局最新特征日护栏只拦"数据基座整体失败"；单基金因停牌/

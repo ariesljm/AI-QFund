@@ -17,7 +17,6 @@ from app import domain
 from app.features.calculator import (
     compute_fund_features,
     latest_market_state,
-    latest_sector_heat,
     load_sector_pct_frame,
     market_state_features,
     sector_heat_from_frame,
@@ -60,18 +59,30 @@ def risk_adjusted_return(navs: np.ndarray, pos: int, forward: int,
     navs: 复权净值序列；pos: 决策日索引；forward: 前向交易日窗口。
     最大回撤取 [pos, pos+forward] 窗口内净值相对历史高点的最大回撤（正数）。
     窗口越界或含非有限值 → nan（调用方跳过该样本）。
-    lambda_: λ 标定用覆盖（backtest_model 扫描）；缺省用全局 RISK_ADJ_DD_LAMBDA。
+    lambda_: λ 标定用覆盖（backtest_model 扫描）；缺省用配置 λ
+    （config.get_label_lambda，票 09 迁移；初值 1.0 = 生产标定值）。
     """
     if pos < 0 or pos + forward >= len(navs):
         return float("nan")
     window = np.asarray(navs[pos: pos + forward + 1], dtype=float)
     if window.size < forward + 1 or not np.all(np.isfinite(window)) or window[0] <= 0:
         return float("nan")
-    lam = domain.RISK_ADJ_DD_LAMBDA if lambda_ is None else lambda_
+    from app.config import get_label_lambda
+    lam = get_label_lambda() if lambda_ is None else lambda_
     ret = window[-1] / window[0] - 1.0
     peak = np.maximum.accumulate(window)
     max_dd = float(np.max((peak - window) / peak))
     return float(ret - lam * max_dd)
+
+
+def excess_adjusted_return(excess_ret: float, max_dd: float, lambda_: float) -> float:
+    """2.0 主标签（票 09）：同类中性化超额收益 − λ × 最大回撤。
+
+    excess_ret: `benchmark.excess_return` 的输出（自身收益 − 同类均值，主标尺口径）。
+    max_dd: 40 日窗口最大回撤（正数，复用 risk_adjusted_return 的窗口口径）。
+    λ=0 → 退化为纯超额收益。负超额/大回撤都会被正确惩罚（方向性检查见测试）。
+    """
+    return excess_ret - lambda_ * max_dd
 
 
 # LightGBM 树结构超参默认值（GA 月度寻优前的基线，ticket 10）。

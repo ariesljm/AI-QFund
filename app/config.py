@@ -112,3 +112,15 @@ def save_settings(settings: dict) -> bool:
     _settings_cache = None
     logger.info("配置已保存: %s", {k: list(v.keys()) for k, v in settings.items()})
     return True
+
+
+_LABEL_LAMBDA_DEFAULT = 1.0
+"""λ 默认值 = 生产标定值（非文档的 1.5~2.0 无证据外推，见票 09 Comments）。"""
+
+
+def get_label_lambda() -> float:
+    """标签 λ（风险厌恶系数）：settings.toml [label].lambda，缺省 1.0。
+
+    票 09：从 domain 常量迁移到配置（标定报告要求 λ 可调、初值有据）。
+    """
+    return float(load_settings().get("label", {}).get("lambda", _LABEL_LAMBDA_DEFAULT))

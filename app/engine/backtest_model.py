@@ -11,11 +11,10 @@
 
 import logging
 
+import lightgbm as lgb
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
 
-import app
 from app import domain
 from app.features.stats import spearman as stats_spearman
 from app.model import _FORWARD_WINDOW, get_lgb_params, panel_samples
@@ -92,17 +91,19 @@ def run(max_funds: int = 2000, window_days: int = 365) -> str:
             f" | 低分组 {m['低分组胜率']:.1%} | 胜率差 {m['胜率差(+pp)']:+.1f}pp | IC {m['IC']:+.4f}")
     lines.append("")
     lines.append("--- B: λ 标定（含 style_r2 特征，λ=回撤惩罚系数）---")
+    from app.config import get_label_lambda
+    prod_lambda = get_label_lambda()
     for lam in LAMBDAS:
         m, _ = _train_eval(samples, split, True, lam)
-        tag = "  ← 生产当前值" if abs(lam - domain.RISK_ADJ_DD_LAMBDA) < 1e-9 else ""
+        tag = "  ← 生产当前值" if abs(lam - prod_lambda) < 1e-9 else ""
         lines.append(
             f"λ={lam:.1f}{tag:<10} 高分组胜率 {m['高分组胜率']:.1%}"
             f" | 低分组 {m['低分组胜率']:.1%} | 胜率差 {m['胜率差(+pp)']:+.1f}pp | IC {m['IC']:+.4f}")
     best = max(LAMBDAS, key=lambda lam: _train_eval(samples, split, True, lam)[0]["IC"])
     lines.append("")
     lines.append(f"λ 推荐: IC 最优 {best:.1f}"
-                 + ("（维持生产 0.5 不变）" if abs(best - domain.RISK_ADJ_DD_LAMBDA) < 1e-9
-                    else f"（当前 {domain.RISK_ADJ_DD_LAMBDA:.1f} 需更新）"))
+                 + ("（维持生产 1.0 不变）" if abs(best - prod_lambda) < 1e-9
+                    else f"（当前 {prod_lambda:.1f} 需更新）"))
     return "\n".join(lines)
 
 
