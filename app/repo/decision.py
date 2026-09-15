@@ -975,3 +975,35 @@ def get_signal_stats() -> list[dict]:
     return [{"signal_id": r[0], "hits": int(r[1] or 0), "samples": int(r[2]),
              "hit_rate": (int(r[1] or 0) / int(r[2])) if r[2] else None}
             for r in rows]
+
+
+def save_recommend_v2(date: str, rows: list[dict]) -> int:
+    """2.0 最终推荐 Top5 落库（票 11：date/code/final_score/audit_json）。幂等 REPLACE。"""
+    import json as _json
+    if not rows:
+        return 0
+    with db_conn() as conn:
+        conn.executemany(
+            "INSERT OR REPLACE INTO recommend_v2 (date, code, final_score, audit_json) "
+            "VALUES (?, ?, ?, ?)",
+            [(date, r["code"], r["final_score"],
+              _json.dumps(r.get("audit") or {}, ensure_ascii=False)) for r in rows])
+        conn.commit()
+    return len(rows)
+
+
+def get_recommend_v2(date: str) -> list[dict]:
+    """读取某日 2.0 推荐 Top5（final_score 降序）。"""
+    import json as _json
+    with db_conn() as conn:
+        rows = conn.execute(
+            "SELECT code, final_score, audit_json FROM recommend_v2 "
+            "WHERE date = ? ORDER BY final_score DESC", (date,)).fetchall()
+    out = []
+    for code, score, audit in rows:
+        try:
+            a = _json.loads(audit) if audit else {}
+        except (TypeError, ValueError):
+            a = {}
+        out.append({"code": code, "final_score": score, "audit": a})
+    return out

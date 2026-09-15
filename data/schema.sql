@@ -171,6 +171,16 @@ CREATE TABLE IF NOT EXISTS tracked_states (
     PRIMARY KEY (object_type, object_id)
 );
 
+-- 2.0 最终推荐 Top5（票 11 完整：审计后复合分定稿，Web/结算消费）
+CREATE TABLE IF NOT EXISTS recommend_v2 (
+    date TEXT NOT NULL,
+    code TEXT NOT NULL,
+    final_score REAL NOT NULL,
+    audit_json TEXT,
+    PRIMARY KEY (date, code)
+);
+
+
 -- 校准层信号记账（票 18 决策周期入口）：每路信号触发/结算，assess 消费历史
 CREATE TABLE IF NOT EXISTS signal_outcomes (
     signal_id TEXT NOT NULL,
