@@ -11,3 +11,10 @@
 
 - 新增 LLM 素材段落须进 `llm/context.py`；引擎只消费，不自行拼接。
 - monitor 的薄委托保测试 seam（`mon._rbsa_distribution` 等 monkeypatch 继续有效）。
+
+## 修订（2026-09，2.0）
+
+**原则不变**：LLM 素材装配仍收敛在 `llm/context.py` 单一归属，引擎只消费。
+**内容变化**：装配素材从 1.x 的赛道/锚点/RBSA 分布（随赛道下线）换成
+基金画像/重仓股（PIT 可见）/事件切片（票 23 Web 改造时同步落地）。
+本 ADR 的验收句“新增素材段落须进 llm/context.py”继续适用。

@@ -38,4 +38,22 @@
   豁免域内），引擎层只消费命名函数。
 - **可执行约束**：`tests/test_stats_primitives.py::TestExemptionBoundary` 扫描
   features/ 之外的所有源码，出现真实 `import scipy`/`from scipy` 语句即失败——
-  边界从"注释承诺"升级为 CI 可执行断言。
+  边界从“注释承诺”升级为 CI 可执行断言。
+
+## 修订（2026-09，Q19 后豁免边界收窄）
+
+原始动因随 Q19 作废：style 反推（净值反推实时持仓的 ElasticNet 求解）在 2.0
+被**否决**（1.x 证据：反推权重做分组 −20.6%；仅反推拟合优度 `r2` 本身作为
+候选特征保留，见票 08），`app/features/style_solve.py` 删除挂起。因此：
+
+- **sklearn 不再有豁免用途**：ElasticNet 的消费者消失。豁免范围收窄为 **scipy**
+  （`features/stats.py` 的秩相关/线性相关/**显著性检验**——2.0 校准层（票 18）
+  判定“某条规则/参数变更是否显著”的唯一机理来源）。
+- **边界仍为域内例外**：scipy 只允许在 `app/features/`（及校准层明确命名函数）
+  出现；`tests/test_stats_primitives.py::TestExemptionBoundary` 的可执行断言
+  继续守住。
+- 本 ADR 不删除：豁免的理由变了（统计检验而非带约束回归），但“域内例外、
+  可执行断言”的机制不变。
+
+**冲突标注**：与 ADR-0009（进化分层）衔接——校准层的显著性检验正是本豁免的
+落地消费者；与 1.x 的 Style Tracking（P1 前提）无继承关系（作废）。
