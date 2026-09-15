@@ -372,9 +372,44 @@ def get_purchase_statuses(codes: list[str]) -> dict[str, str]:
         return {}
     ph = ",".join("?" for _ in codes)
     with db_conn() as conn:
-        return dict(conn.execute(
-            f"SELECT code, status FROM purchase_restrictions WHERE code IN ({ph})",
-            codes).fetchall())
+        rows = conn.execute(f"SELECT code, status FROM purchase_restrictions "
+                            f"WHERE code IN ({ph})", codes).fetchall()
+    return dict(rows)
+
+
+def save_screen_candidates(date: str, rows: list[dict]) -> int:
+    """Top30 候选池落库（票 11）：(date, code, score, feature_snapshot JSON)。
+
+    同日重复跑 → INSERT OR REPLACE（幂等）；特征快照供审计与复盘。
+    """
+    if not rows:
+        return 0
+    import json as _json
+    with db_conn() as conn:
+        conn.executemany(
+            "INSERT OR REPLACE INTO screen_candidates "
+            "(date, code, score, feature_snapshot) VALUES (?, ?, ?, ?)",
+            [(date, r["code"], r["score"],
+              _json.dumps(r.get("features") or {}, ensure_ascii=False)) for r in rows])
+        conn.commit()
+    return len(rows)
+
+
+def get_screen_candidates(date: str) -> list[dict]:
+    """读取某日 Top30 候选池（按 score 降序），用于审计/复盘/Web。"""
+    import json as _json
+    with db_conn() as conn:
+        rows = conn.execute(
+            "SELECT code, score, feature_snapshot FROM screen_candidates "
+            "WHERE date = ? ORDER BY score DESC", (date,)).fetchall()
+    out = []
+    for code, score, snap in rows:
+        try:
+            feat = _json.loads(snap) if snap else {}
+        except (TypeError, ValueError):
+            feat = {}
+        out.append({"code": code, "score": score, "features": feat})
+    return out
 
 
 def get_quality_metrics(limit: int=6) -> list[dict]:

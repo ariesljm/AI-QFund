@@ -152,6 +152,15 @@ CREATE TABLE IF NOT EXISTS stock_daily (
     PRIMARY KEY (stock_code, date)
 );
 
+-- 全市场初筛候选池（票 11）：Top30 落库 + 特征快照（审计与复盘用）
+CREATE TABLE IF NOT EXISTS screen_candidates (
+    date TEXT NOT NULL,
+    code TEXT NOT NULL,
+    score REAL NOT NULL,
+    feature_snapshot TEXT,
+    PRIMARY KEY (date, code)
+);
+
 -- 赛道选择记录（进化闭环用）
 CREATE TABLE IF NOT EXISTS sector_selections (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

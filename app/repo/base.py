@@ -60,6 +60,40 @@ def get_buyable_codes() -> list[str]:
         rows = conn.execute('SELECT code FROM fund_basic WHERE is_buyable = 1').fetchall()
     return [r[0] for r in rows]
 
+
+def get_fund_basics() -> list[tuple[str, str]]:
+    """全部可投基金 (code, type)——票 11 主动权益池筛选用（type 实测枚举：混合型/指数型/股票型）。"""
+    with db_conn() as conn:
+        rows = conn.execute('SELECT code, type FROM fund_basic WHERE is_buyable = 1').fetchall()
+    return [(r[0], r[1]) for r in rows]
+
+
+def get_restriction_facts(codes: list[str]) -> dict[str, dict]:
+    """硬过滤事实（票 11 接线）：{code: {aum, purchase_status, daily_limit, nav_count}}。
+
+    单查询收敛（N+1 防护）：aum 取自 fund_basic；申赎/单日上限取自
+    purchase_restrictions；nav_count 取自 fund_nav。缺失字段为 None/未知。
+    """
+    if not codes:
+        return {}
+    ph = ",".join("?" for _ in codes)
+    out: dict[str, dict] = {c: {"aum": None, "purchase_status": "unknown",
+                                "daily_limit": None, "nav_count": 0} for c in codes}
+    with db_conn() as conn:
+        for code, aum in conn.execute(
+                f"SELECT code, aum FROM fund_basic WHERE code IN ({ph})", codes).fetchall():
+            out[code]["aum"] = aum
+        for code, status, dlimit in conn.execute(
+                f"SELECT code, status, daily_limit FROM purchase_restrictions "
+                f"WHERE code IN ({ph})", codes).fetchall():
+            out[code]["purchase_status"] = status or "unknown"
+            out[code]["daily_limit"] = dlimit
+        for code, n in conn.execute(
+                f"SELECT code, COUNT(*) FROM fund_nav WHERE code IN ({ph}) "
+                f"GROUP BY code", codes).fetchall():
+            out[code]["nav_count"] = n
+    return out
+
 def get_buyable_feature_stats() -> list[tuple[str, float | None, float | None, float | None]]:
     """可投基金核心特征快照（进化引擎排分自纠偏用）。
 
