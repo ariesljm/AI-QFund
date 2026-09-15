@@ -30,7 +30,8 @@ class TestRegimeNoWorse:
         assert not ok and "劣化" in why
 
     def test_insufficient_regimes(self):
-        ok, why = regime_no_worse(_regimes([0.5], [0.4]))
+        ok, why = regime_no_worse(
+            [{"regime": "bull", "challenger": 0.5, "champion": 0.4}])
         assert not ok and "不足" in why
 
 
