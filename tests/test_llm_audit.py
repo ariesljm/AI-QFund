@@ -11,7 +11,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
 
-from app.llm.audit import composite_score, prune, top_n, validate_audit
+from app.llm.audit import (
+    cache_fingerprint,
+    composite_score,
+    is_cache_valid,
+    prune,
+    should_call_llm,
+    top_n,
+    validate_audit,
+)
 
 
 def _ok(verdict="PASS", risk=30, reasons=None, summary="正常"):
@@ -85,3 +93,45 @@ class TestTopN:
 
     def test_empty(self):
         assert top_n([]) == []
+
+
+class TestAuditCache:
+    """票 14：失效条件三元组——每个条件单独变化都必须导致失效重跑。"""
+
+    _BASE = {"holdings_period": "2026-06-30", "stock_fingerprint": "abc",
+             "event_version": "v3"}
+
+    def _current(self, **kw):
+        c = dict(self._BASE)
+        c.update(kw)
+        return c
+
+    def test_fingerprint_changes_with_each_condition(self):
+        f1 = cache_fingerprint("2026-06-30", "abc", "v3")
+        assert cache_fingerprint("2026-03-31", "abc", "v3") != f1
+        assert cache_fingerprint("2026-06-30", "xyz", "v3") != f1
+        assert cache_fingerprint("2026-06-30", "abc", "v4") != f1
+
+    def test_all_matching_is_valid(self):
+        assert is_cache_valid(dict(self._BASE), self._current()) is True
+
+    def test_no_cache_invalid(self):
+        assert is_cache_valid(None, self._current()) is False
+
+    def test_each_condition_change_invalidates(self):
+        """每个失效条件单独变化都必须导致失效重跑（票 14 明示最容易写错处）。"""
+        cases = [
+            self._current(holdings_period="2026-03-31"),   # 持仓期次变
+            self._current(stock_fingerprint="zzz"),        # 重仓股集合指纹变
+            self._current(event_version="v2"),             # 风险事件版本变
+        ]
+        for cur in cases:
+            assert is_cache_valid(dict(self._BASE), cur) is False
+
+    def test_should_call_rules(self):
+        cur = self._current()
+        assert should_call_llm(is_new_entry=True, cached=dict(self._BASE), current=cur) is True
+        assert should_call_llm(is_new_entry=False, cached=dict(self._BASE), current=cur) is False
+        assert should_call_llm(is_new_entry=False, cached=None, current=cur) is True
+        assert should_call_llm(is_new_entry=False, cached=dict(self._BASE),
+                               current=self._current(stock_fingerprint="changed")) is True

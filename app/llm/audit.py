@@ -50,3 +50,38 @@ def composite_score(lgbm_score: float, risk_score: float) -> float:
 def top_n(scored: list[dict], n: int = TOP_N) -> list[dict]:
     """按 final_score 降序取 TopN（调用方已剪枝）。"""
     return sorted(scored, key=lambda x: x["final_score"], reverse=True)[:n]
+
+
+# ── 票 14：事件驱动的审计缓存（失效条件三元组）────────────────
+# 把 LLM 触发从“时钟”改成“变化”：同一天同一基金两次进入 Top30，
+# 只要失效条件三元组没变就复用上次审计，不重复烧 LLM。
+# 三元组 = 持仓期次 / 重仓股集合指纹 / 风险事件版本。
+
+
+def cache_fingerprint(holdings_period: str | None, stock_fingerprint: str,
+                      event_version: str | None) -> str:
+    """失效条件三元组 → 缓存指纹（任一变化 → 指纹变化 → 失效重跑）。"""
+    return f"{holdings_period or '-'}|{stock_fingerprint}|{event_version or '-'}"
+
+
+def is_cache_valid(cached: dict | None, current: dict) -> bool:
+    """缓存读取校验：无缓存或任一失效条件不一致 → 失效（重跑）。
+
+    current 含 holdings_period / stock_fingerprint / event_version。
+    """
+    if not cached:
+        return False
+    for key in ("holdings_period", "stock_fingerprint", "event_version"):
+        if cached.get(key) != current.get(key):
+            return False
+    return True
+
+
+def should_call_llm(is_new_entry: bool, cached: dict | None, current: dict) -> bool:
+    """触发规则（票 14）：基金新进 Top30 **或** 任一失效条件变化 → 调用 LLM。
+
+    否则复用缓存（同一天两次跑，LLM 桩只被调用一次——决策周期入口断言）。
+    """
+    if is_new_entry:
+        return True
+    return not is_cache_valid(cached, current)
