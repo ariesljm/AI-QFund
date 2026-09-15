@@ -22,9 +22,9 @@ import numpy as np
 import app.domain as domain
 import app.repo as repo
 from app.database import db_conn
-from app.features.style_solve import solve_style_weights
 from app.features.sector import style_returns_matrix
 from app.features.stats import pearson, t_tail_p
+from app.features.style_solve import solve_style_weights
 
 FORWARD = 40   # 与 domain.FORWARD_DAYS 对齐
 WINDOW = 60    # 与 style_track._WINDOW 对齐
@@ -159,6 +159,32 @@ def sample_funds(n: int = 300, seed: int = 7,
     return random.Random(seed).sample(codes, min(n, len(codes)))
 
 
+def purged_folds(dates: list[str], train_days: int = 480, valid_days: int = 60,
+                 purge_days: int = 60) -> list[tuple[list[str], list[str]]]:
+    """隔离滚动划分（票 10）：训练 train_days 交易日 / 验证 valid_days，
+    训练与验证之间留 purge_days 交易日隔离带，每步推进一个 valid_days。
+
+    dates 须升序（交易日序列）。返回 [(train_dates, valid_dates), ...]。
+    默认：训练 2 年 ≈ 480 交易日、验证 1 季 ≈ 60、隔离带 60 交易日（票 10）。
+
+    防作弊不变式（泄漏测试断言）：∀ fold，valid 首日与 train 末日的索引差
+    > purge_days——60 日窗口标签与特征存在时间重叠，gap 两侧不得共享 fold。
+    """
+    folds: list[tuple[list[str], list[str]]] = []
+    n = len(dates)
+    k = 0
+    while True:
+        train_start = k * valid_days
+        train_end = train_start + train_days
+        valid_start = train_end + purge_days
+        valid_end = valid_start + valid_days
+        if valid_end > n:
+            break
+        folds.append((dates[train_start:train_end], dates[valid_start:valid_end]))
+        k += 1
+    return folds
+
+
 def run_walk_forward(funds: list[str], start: str = "2024-06-01",
                      end: str = "2026-07-01",
                      step: int = 20) -> list[dict]:
@@ -221,7 +247,7 @@ def report(recs: list[dict]) -> str:
     if not recs:
         return "无有效样本（数据窗口不足）"
     n = len(recs)
-    lines = [f"=== 风格跟踪 walk-forward 回测报告 ===",
+    lines = ["=== 风格跟踪 walk-forward 回测报告 ===",
              f"样本: {n} 条（T × 基金） | 前瞻: {FORWARD} 交易日 | 反推窗口: {WINDOW} 日",
              f"整体 40 日赚钱胜率: {sum(1 for r in recs if domain.is_profit(r['fwd_ret'])) / n:.1%}",
              f"整体平均收益: {np.mean([r['fwd_ret'] for r in recs]):.2%}"]
@@ -251,7 +277,7 @@ def report(recs: list[dict]) -> str:
     w1 = np.array([r["weight_1"] for r in recs])
     r2 = np.array([r["r2"] for r in recs])
     fr = np.array([r["fwd_ret"] for r in recs])
-    for name, x in ((f"weight_1(反推)", w1), ("r2(反推拟合)", r2)):
+    for name, x in (("weight_1(反推)", w1), ("r2(反推拟合)", r2)):
         rho, p = pearson(x, fr)
         lines.append(f"{name} ~ fwd_ret: r={rho:+.4f} (p={p:.4g})"
                      + ("  ← 显著" if p < 0.05 else ""))
