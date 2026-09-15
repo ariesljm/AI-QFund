@@ -68,3 +68,4 @@ models/
 node_modules/
 data/backtest_*.csv
 data/bt_*.txt
+backfill_*.log
