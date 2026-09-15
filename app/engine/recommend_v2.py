@@ -85,3 +85,9 @@ def _slices_for(cand: dict) -> dict:
         "sentiment": sentiment_text([{"stock_code": h["stock_code"],
                                       "stock_name": h["stock_name"]} for h in cur]),
     }
+
+
+def recommend_v2_enabled() -> bool:
+    """2.0 推荐开关（settings.toml [recommend_v2].enabled；默认关闭不破坏 1.x）。"""
+    from app.config import load_settings
+    return bool(load_settings().get("recommend_v2", {}).get("enabled", False))

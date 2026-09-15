@@ -96,3 +96,19 @@ class TestRecommendTop5:
                                 audit_fn=_audit_factory(veto={"F0", "F1", "F2", "F3", "F4", "F5", "F6", "F7"}),
                                 scorer=lambda f: 0.8)
         assert result.get("empty") == "data_failure"
+
+
+class TestRecommendV2Enabled:
+    def test_default_disabled(self):
+        """默认关闭（不破坏 1.x 推荐）。"""
+        from app.engine.recommend_v2 import recommend_v2_enabled
+        assert recommend_v2_enabled() is False
+
+    def test_switch_via_settings(self, monkeypatch, tmp_path):
+        import app.config as cfg
+        from app.engine.recommend_v2 import recommend_v2_enabled
+        monkeypatch.setattr(cfg, "_settings_cache", None)
+        s = cfg.load_settings()
+        s["recommend_v2"] = {"enabled": True}
+        monkeypatch.setattr(cfg, "load_settings", lambda: s)
+        assert recommend_v2_enabled() is True
