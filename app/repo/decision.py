@@ -253,14 +253,20 @@ def get_purchase_status(code: str) -> str | None:
     return row[0] if row else None
 
 
-def save_purchase_restriction(code: str, status: str, note: str = "") -> None:
-    """写入/更新基金申购状态（幂等，维护清单导入用）。"""
+def save_purchase_restriction(code: str, status: str, note: str = "",
+                              daily_limit: float | None = None) -> None:
+    """写入/更新基金申购状态（幂等，维护清单导入/数据源回填用）。
+
+    daily_limit 为单日申购上限（元），None = 无限购/未知（票 06）。
+    """
     with db_conn() as conn:
         conn.execute(
-            "INSERT INTO purchase_restrictions (code, status, note) VALUES (?, ?, ?) "
-            "ON CONFLICT(code) DO UPDATE SET status=excluded.status, note=excluded.note, "
+            "INSERT INTO purchase_restrictions (code, status, note, daily_limit) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(code) DO UPDATE SET status=excluded.status, "
+            "note=excluded.note, daily_limit=excluded.daily_limit, "
             "updated_at=datetime('now')",
-            (code, status, note))
+            (code, status, note, daily_limit))
         conn.commit()
 
 
