@@ -59,3 +59,22 @@ class TestApplyTransition:
         apply_transition("user_position", "U1", _s(), "2026-09-11")
         assert get_tracked_state("recommendation", "R1")["state"] == "WATCH"
         assert get_tracked_state("user_position", "U1")["state"] == "HOLD"
+
+
+class TestTrackedStatesBlock:
+    """票 23：状态机视图数据契约。"""
+
+    def test_block_lists_states(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(db_mod, "DB_PATH", tmp_path / "smv.db")
+        from app.web.dashboard import tracked_states_block
+        apply_transition("recommendation", "F001", _s(drifted=True), "2026-09-11")
+        block = tracked_states_block()
+        assert len(block) == 1
+        b = block[0]
+        assert b["state"] == "WATCH" and b["object_id"] == "F001"
+        assert b["date"] == "2026-09-11"
+
+    def test_empty_block(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(db_mod, "DB_PATH", tmp_path / "smv2.db")
+        from app.web.dashboard import tracked_states_block
+        assert tracked_states_block() == []
