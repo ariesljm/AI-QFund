@@ -1,1 +1,2 @@
 2026-09-16 01:24:11 [INFO   ] [-] backfill: 票 05 估值回填：3678 只股票
+2026-09-16 01:47:59 [WARNING] [-] app.data.fetchers: 请求失败(datacenter-web.eastmoney.com/get, 第1次重试), 1.0秒后重试: _ssl.c:1063: The handshake operation timed out

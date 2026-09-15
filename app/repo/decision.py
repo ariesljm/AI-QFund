@@ -538,6 +538,32 @@ def insert_llm_audit(caller: str, prompt: str, raw_output: str, parsed_json: str
                      "(SELECT id FROM llm_audit ORDER BY id DESC LIMIT ?)", (max_rows,))
 
 
+def get_recent_audits(limit: int = 10) -> list[dict]:
+    """最近 LLM 审计记录（新→旧，票 23 审计可见性：排雷过程可追溯）。
+
+    每条含 ts/caller/ok/parsed_result（JSON 字符串，调用方解析 verdict/risk_score/\n    veto_reasons）/prompt_preview/raw_output。无记录返回空列表。
+    """
+    import json as _json
+    with db_conn() as conn:
+        rows = conn.execute(
+            "SELECT ts, caller, ok, parsed_result, prompt_preview, raw_output "
+            "FROM llm_audit ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    out = []
+    for ts, caller, ok, parsed, preview, raw in rows:
+        verdict = risk = None
+        if parsed:
+            try:
+                p = _json.loads(parsed)
+                verdict = p.get("audit_verdict") or p.get("logic_verdict")
+                risk = p.get("risk_score")
+            except (TypeError, ValueError):
+                pass
+        out.append({"ts": ts, "caller": caller, "ok": bool(ok),
+                    "parsed": parsed, "verdict": verdict, "risk_score": risk,
+                    "prompt_preview": preview, "raw_output": raw})
+    return out
+
+
 def insert_monitor_score(code: str, date: str, score: float, model_version: str = "") -> None:
     """写入当日模型预测分（幂等：同 code+date 覆盖）。R1 模型序列确认期的数据源。"""
     with db_conn() as conn:
