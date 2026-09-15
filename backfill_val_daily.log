@@ -2,3 +2,5 @@
 2026-09-16 01:47:59 [WARNING] [-] app.data.fetchers: 请求失败(datacenter-web.eastmoney.com/get, 第1次重试), 1.0秒后重试: _ssl.c:1063: The handshake operation timed out
 2026-09-16 01:56:23 [WARNING] [-] app.data.fetchers: 请求失败(datacenter-web.eastmoney.com/get, 第1次重试), 1.0秒后重试: The read operation timed out
 2026-09-16 01:59:05 [WARNING] [-] app.data.fetchers: 请求失败(datacenter-web.eastmoney.com/get, 第1次重试), 1.0秒后重试: _ssl.c:1063: The handshake operation timed out
+2026-09-16 02:16:08 [WARNING] [-] app.data.fetchers: 请求失败(datacenter-web.eastmoney.com/get, 第1次重试), 1.0秒后重试: The read operation timed out
+2026-09-16 02:19:12 [WARNING] [-] app.data.fetchers: 请求失败(datacenter-web.eastmoney.com/get, 第1次重试), 1.0秒后重试: The read operation timed out
