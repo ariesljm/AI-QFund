@@ -288,6 +288,9 @@ def index_context() -> dict[str, object]:
 
     # 最近 LLM 审计（票 23 审计可见性：排雷过程可追溯）
     recent_audits = audit_block()
+    # 状态机视图 + 校准曲线（票 23）
+    tracked_states = tracked_states_block()
+    calibration_curve = calibration_block()
 
     # 今日推荐（最新 2 条 recommend_log）
     recs = repo.get_latest_recommendations(2)
@@ -394,6 +397,8 @@ def index_context() -> dict[str, object]:
         "latest_excess_win_rate": latest_excess_win_rate,
         "latest_profit_rate": latest_profit_rate,
         "recent_audits": recent_audits,
+        "tracked_states": tracked_states,
+        "calibration_curve": calibration_curve,
         "signal_labels": domain.SIGNAL_LABELS,
         "regime_labels": domain.REGIME_LABELS,
     }

@@ -576,6 +576,50 @@
           {% endif %}
         </div>
 
+        <!-- 跟踪状态（票 23 状态机视图：HOLD/WATCH/EXIT + 转移日） -->
+        <div class="bg-surface-container rounded-xl border border-surface-border shadow-sm p-stack-md">
+          <h4 class="font-headline-sm text-headline-sm text-on-surface mb-3 flex items-center gap-2">
+            <span class="material-symbols-outlined text-accent text-[24px]">monitor_heart</span>跟踪状态
+          </h4>
+          {% if tracked_states %}
+          <ul class="flex flex-col gap-2">
+            {% for s in tracked_states %}
+            <li class="bg-surface-container-low rounded-lg px-3 py-2 text-sm flex justify-between">
+              <span class="font-medium text-on-surface">{{ s.object_id }}</span>
+              <span>
+                <span class="text-outline-strong">{{ s.state }}</span>
+                <span class="text-outline-strong"> | {{ s.date }}</span>
+              </span>
+            </li>
+            {% endfor %}
+          </ul>
+          {% else %}
+          <p class="text-sm text-outline-strong">暂无跟踪对象（状态机接入后显示）</p>
+          {% endif %}
+        </div>
+
+        <!-- 校准曲线（票 23：各信号历史命中率，概念漂移的可观测数字） -->
+        <div class="bg-surface-container rounded-xl border border-surface-border shadow-sm p-stack-md">
+          <h4 class="font-headline-sm text-headline-sm text-on-surface mb-3 flex items-center gap-2">
+            <span class="material-symbols-outlined text-accent text-[24px]">monitoring</span>信号校准
+          </h4>
+          {% if calibration_curve %}
+          <ul class="flex flex-col gap-2">
+            {% for c in calibration_curve %}
+            <li class="bg-surface-container-low rounded-lg px-3 py-2 text-sm flex justify-between">
+              <span class="font-medium text-on-surface">{{ c.signal_id }}</span>
+              <span class="text-outline-strong">
+                {% if c.hit_rate is not none %}{{ (c.hit_rate * 100) | round(0) | int }}%{% else %}--{% endif %}
+                （{{ c.samples }} 样本）
+              </span>
+            </li>
+            {% endfor %}
+          </ul>
+          {% else %}
+          <p class="text-sm text-outline-strong">暂无校准数据（信号记账接入后显示）</p>
+          {% endif %}
+        </div>
+
         <!-- 最近一期评估（quality_metrics 真实数据） -->
         {% if quality_metrics %}
         {% set q0 = quality_metrics[0] %}
