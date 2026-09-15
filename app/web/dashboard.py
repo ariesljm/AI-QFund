@@ -286,6 +286,9 @@ def index_context() -> dict[str, object]:
     today = datetime.now().strftime("%Y-%m-%d")
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
+    # 最近 LLM 审计（票 23 审计可见性：排雷过程可追溯）
+    recent_audits = audit_block()
+
     # 今日推荐（最新 2 条 recommend_log）
     recs = repo.get_latest_recommendations(2)
     latest, latest_list, latest_rec_id = build_latest_recos(recs, today)
@@ -390,6 +393,7 @@ def index_context() -> dict[str, object]:
         "latest_ic": latest_ic,
         "latest_excess_win_rate": latest_excess_win_rate,
         "latest_profit_rate": latest_profit_rate,
+        "recent_audits": recent_audits,
         "signal_labels": domain.SIGNAL_LABELS,
         "regime_labels": domain.REGIME_LABELS,
     }

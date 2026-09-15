@@ -555,6 +555,27 @@
           </div>
         </div>
 
+        <!-- 最近 LLM 审计（票 23 审计可见性：排雷过程可追溯，非黑盒） -->
+        <div class="bg-surface-container rounded-xl border border-surface-border shadow-sm p-stack-md">
+          <h4 class="font-headline-sm text-headline-sm text-on-surface mb-3 flex items-center gap-2">
+            <span class="material-symbols-outlined text-accent text-[24px]">fact_check</span>最近审计
+          </h4>
+          {% if recent_audits %}
+          <ul class="flex flex-col gap-2">
+            {% for a in recent_audits %}
+            <li class="bg-surface-container-low rounded-lg px-3 py-2 text-sm">
+              <span class="font-medium text-on-surface">{{ a.ts }}</span>
+              <span class="text-outline-strong"> | {{ a.caller }}</span>
+              {% if a.verdict %}<span class="text-down"> | {{ a.verdict }}{% if a.risk_score is not none %} ({{ a.risk_score }}){% endif %}</span>{% endif %}
+              {% if not a.ok %}<span class="text-down font-medium"> | 解析失败</span>{% endif %}
+            </li>
+            {% endfor %}
+          </ul>
+          {% else %}
+          <p class="text-sm text-outline-strong">暂无审计记录（模块二排雷接入后显示）</p>
+          {% endif %}
+        </div>
+
         <!-- 最近一期评估（quality_metrics 真实数据） -->
         {% if quality_metrics %}
         {% set q0 = quality_metrics[0] %}
