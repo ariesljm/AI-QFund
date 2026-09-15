@@ -144,6 +144,14 @@ CREATE TABLE IF NOT EXISTS stock_valuation_daily (
     PRIMARY KEY (stock_code, date)
 );
 
+-- 个股日线（票 07）：前复权收盘价（搜狐 hisHq），供模块三虚拟组合比对
+CREATE TABLE IF NOT EXISTS stock_daily (
+    stock_code TEXT NOT NULL,
+    date TEXT NOT NULL,
+    close REAL,        -- 前复权收盘价
+    PRIMARY KEY (stock_code, date)
+);
+
 -- 赛道选择记录（进化闭环用）
 CREATE TABLE IF NOT EXISTS sector_selections (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

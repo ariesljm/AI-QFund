@@ -186,6 +186,19 @@ def get_pe_histories(codes: list[str], days: int = 750) -> dict[str, list[float]
     return out
 
 
+def get_stock_daily(code: str, days: int | None = None) -> dict[str, float]:
+    """个股日线（前复权收盘价，票 07）：{date: close} 升序。days 非空取最近 N 条。"""
+    sql = "SELECT date, close FROM stock_daily WHERE stock_code = ? ORDER BY date"
+    args: list = [code]
+    if days is not None:
+        sql = ("SELECT date, close FROM ("
+               "  SELECT date, close, ROW_NUMBER() OVER (ORDER BY date DESC) AS rn "
+               "  FROM stock_daily WHERE stock_code = ?) WHERE rn <= ? ORDER BY date")
+        args = [code, days]
+    with db_conn() as conn:
+        return {r[0]: r[1] for r in conn.execute(sql, args).fetchall()}
+
+
 def get_holdings_at_report(code: str, report_date: str, limit: int=10) -> list[dict]:
     """按报告期取持仓（R4 对称切片：锚点报告期前 N 大，与最新前 N 大对称比较）。
 

@@ -114,6 +114,24 @@ def percentile_of(values: list[float], x: float) -> float:
     return pos / (n - 1) * 100.0
 
 
+def adjusted_returns(closes: dict[str, float]) -> dict[str, float]:
+    """前复权收盘价序列 → 复权日收益 {date: pct}（票 07 复权口径单一来源）。
+
+    数据源（搜狐 hisHq）返回前复权收盘价，故复权收益 = cur/prev − 1，天然含
+    分红/拆股调整；停牌日（无交易）不出现在序列里，收益按相邻**有数据**
+    交易日计算——复牌日收益含停牌期跳空（正确的经济口径，而非把停牌当 0）。
+    prev <= 0 的异常点跳过（除权前价不可能非正，防御脏数据）。
+    """
+    dates = sorted(closes)
+    out: dict[str, float] = {}
+    for i in range(1, len(dates)):
+        prev = closes[dates[i - 1]]
+        cur = closes[dates[i]]
+        if prev and prev > 0:
+            out[dates[i]] = cur / prev - 1
+    return out
+
+
 def window_max_drawdown(navs: Sequence[float | None]) -> float | None:
     """窗口内最大回撤（**正幅值**）；点数不足或含非正/缺失值 → None。
 

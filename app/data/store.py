@@ -176,6 +176,18 @@ def save_stock_valuation(code: str, rows: list[tuple]) -> int:
     return len(rows)
 
 
+def save_stock_daily(code: str, closes: dict[str, float]) -> int:
+    """写入个股日线（前复权收盘价，票 07）。INSERT OR REPLACE 幂等。"""
+    if not closes:
+        return 0
+    with db_conn() as conn:
+        conn.executemany(
+            "INSERT OR REPLACE INTO stock_daily (stock_code, date, close) VALUES (?, ?, ?)",
+            [(code, d, c) for d, c in closes.items()],
+        )
+    return len(closes)
+
+
 def save_holdings_batch(conn, rows: list[tuple]) -> int:
     """批量写入重仓股（code, report_date, stock_code, stock_name, weight）。
 
