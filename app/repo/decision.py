@@ -923,3 +923,31 @@ def save_tracked_state(object_type: str, object_id: str, state: str,
             "(object_type, object_id, state, date, signals_json) VALUES (?, ?, ?, ?, ?)",
             (object_type, object_id, state, date, signals_json))
         conn.commit()
+
+
+def record_signal_trigger(signal_id: str, date: str) -> None:
+    """校准层记账（票 18 决策周期入口）：信号触发记一行（outcome 待结算）。"""
+    from datetime import datetime as _dt
+    with db_conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO signal_outcomes (signal_id, ts, date, outcome) "
+            "VALUES (?, ?, ?, NULL)",
+            (signal_id, _dt.now().strftime("%Y-%m-%d %H:%M:%S.%f"), date))
+        conn.commit()
+
+
+def settle_signal(signal_id: str, ts: str, hit: bool) -> None:
+    """40 日结算：回填 outcome（0/1）。"""
+    with db_conn() as conn:
+        conn.execute("UPDATE signal_outcomes SET outcome = ? WHERE signal_id = ? AND ts = ?",
+                     (1 if hit else 0, signal_id, ts))
+        conn.commit()
+
+
+def get_signal_history(signal_id: str) -> list[bool]:
+    """某信号已结算的历史结果（旧→新，末尾=最新；calibration.assess 消费）。"""
+    with db_conn() as conn:
+        rows = conn.execute(
+            "SELECT outcome FROM signal_outcomes WHERE signal_id = ? AND outcome IS NOT NULL "
+            "ORDER BY ts ASC", (signal_id,)).fetchall()
+    return [bool(r[0]) for r in rows]

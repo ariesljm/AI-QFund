@@ -171,6 +171,16 @@ CREATE TABLE IF NOT EXISTS tracked_states (
     PRIMARY KEY (object_type, object_id)
 );
 
+-- 校准层信号记账（票 18 决策周期入口）：每路信号触发/结算，assess 消费历史
+CREATE TABLE IF NOT EXISTS signal_outcomes (
+    signal_id TEXT NOT NULL,
+    ts TEXT NOT NULL,
+    date TEXT,          -- 触发日
+    outcome INTEGER,    -- NULL 待结算 / 0 未命中 / 1 命中
+    PRIMARY KEY (signal_id, ts)
+);
+
+
 -- 赛道选择记录（进化闭环用）
 CREATE TABLE IF NOT EXISTS sector_selections (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
