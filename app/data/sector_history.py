@@ -22,8 +22,10 @@
 
 import app.repo as repo
 from app.data.fetchers import fetch
-from app.data.stock_daily import stock_daily
 from app.utils.log import get_logger
+
+# 个股日线已迁 app/data/stock_daily.py（票 07 源）；re-export 保持旧引用兼容（22 删除前置解耦）
+from app.data.stock_daily import _sohu_start_days, stock_daily, tx_symbol  # noqa: F401
 
 logger = get_logger("data.sector_history")
 
