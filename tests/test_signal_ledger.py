@@ -56,3 +56,30 @@ class TestSignalLedger:
             rows = conn.execute("SELECT ts FROM signal_outcomes WHERE signal_id='s2'").fetchall()
         settle_signal("s2", rows[0][0], hit=True)   # 只结算第一条
         assert get_signal_history("s2") == [True]   # 第二条待结算不入历史
+
+
+class TestCalibrationBlock:
+    """票 23：校准曲线数据契约。"""
+
+    def test_block_aggregates(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(db_mod, "DB_PATH", tmp_path / "cal.db")
+        from app.repo.decision import db_conn
+        from app.web.dashboard import calibration_block
+        record_signal_trigger("s1", "2026-09-01")
+        record_signal_trigger("s1", "2026-09-02")
+        record_signal_trigger("s2", "2026-09-01")
+        with db_conn() as conn:
+            rows = conn.execute("SELECT signal_id, ts FROM signal_outcomes ORDER BY ts").fetchall()
+        settle_signal("s1", rows[0][1], True)
+        settle_signal("s1", rows[1][1], False)
+        settle_signal("s2", rows[2][1], True)
+        block = calibration_block()
+        by_id = {b["signal_id"]: b for b in block}
+        assert by_id["s1"]["samples"] == 2 and by_id["s1"]["hits"] == 1
+        assert by_id["s1"]["hit_rate"] == 0.5
+        assert by_id["s2"]["hit_rate"] == 1.0
+
+    def test_empty(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(db_mod, "DB_PATH", tmp_path / "cal2.db")
+        from app.web.dashboard import calibration_block
+        assert calibration_block() == []

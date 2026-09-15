@@ -405,3 +405,10 @@ def tracked_states_block(limit: int = 20) -> list[dict]:
     """
     return repo.get_all_tracked_states(limit)
 
+def calibration_block() -> list[dict]:
+    """校准曲线数据（票 23）：各信号历史命中率（samples/hit_rate）。
+
+    纯组装（模板字段投影）；无结算记录返回空列表。数据契约可测。
+    """
+    return repo.get_signal_stats()
+
