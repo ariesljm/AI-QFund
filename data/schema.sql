@@ -161,6 +161,16 @@ CREATE TABLE IF NOT EXISTS screen_candidates (
     PRIMARY KEY (date, code)
 );
 
+-- 三级状态机跟踪对象（票 15 决策周期入口；object_type 留缝，ADR-0011）
+CREATE TABLE IF NOT EXISTS tracked_states (
+    object_type TEXT NOT NULL,
+    object_id TEXT NOT NULL,
+    state TEXT NOT NULL,          -- HOLD / WATCH / EXIT
+    date TEXT NOT NULL,           -- 最近转移日期
+    signals_json TEXT,            -- 触发 signals 快照（审计可追溯）
+    PRIMARY KEY (object_type, object_id)
+);
+
 -- 赛道选择记录（进化闭环用）
 CREATE TABLE IF NOT EXISTS sector_selections (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

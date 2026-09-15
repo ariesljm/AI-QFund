@@ -62,3 +62,22 @@ def transition(current: str, s: dict) -> str:
             return WATCH
         return HOLD
     raise ValueError(f"未知状态: {current!r}")
+
+
+def apply_transition(object_type: str, object_id: str, signals: dict,
+                     date: str) -> tuple[str, str]:
+    """决策周期入口（票 15 接缝）：读当前状态 → transition → 落库。
+
+    返回 (旧状态, 新状态)；无记录时从 HOLD 起算。EXIT 不可逆由
+    transition 纯函数保证（落库只是持久化）。signals 快照存 JSON 可追溯。
+    """
+    import json as _json
+
+    from app.repo.decision import get_tracked_state, save_tracked_state
+
+    cur = get_tracked_state(object_type, object_id)
+    current = (cur or {}).get("state", HOLD)
+    nxt = transition(current, signals)
+    save_tracked_state(object_type, object_id, nxt, date,
+                       _json.dumps(signals, ensure_ascii=False))
+    return current, nxt

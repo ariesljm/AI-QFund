@@ -901,3 +901,25 @@ def get_candidate_nav_summaries(items: list[tuple[str, str]]) -> dict[str, dict]
 
 
 __all__ = ["clear_recommendations", "clear_empty_recommendation", "count_recommendation_domain", "exit_position", "get_active_insights", "get_all_insights", "get_empty_recommendation", "get_e2e_sample_rows", "get_entry", "get_entry_nav", "get_entry_score", "get_first_reco_date", "get_fund_detail", "get_holding_codes", "get_holding_log_id", "get_entry_feature_snapshot", "get_entry_sector_anchor", "get_latest_macro_news", "get_recent_macro_news", "get_latest_monitor_event", "get_latest_reco_id", "get_latest_recommendations", "get_settled_cases_after", "get_pending_sector_selections", "get_pool_outcomes_rows", "get_purchase_status", "get_purchase_statuses", "get_candidate_nav_summaries", "save_purchase_restriction", "get_quality_metrics", "get_quality_sample_rows", "get_ranking_cfg", "get_reco_date_of", "get_recommendation_by_id", "get_sector_insights", "get_sector_insights_dated", "get_tracking_list", "get_vetoed_audit_rows", "insert_insight", "insert_llm_audit", "get_recent_audits", "insert_monitor_event", "insert_monitor_score", "get_recent_scores", "get_recent_monitor_signals", "insert_recommendation", "insert_sector_selection", "get_empty_reco_dates", "get_reco_dates", "list_active_insights", "record_empty_recommendation", "save_flow_data", "save_macro_news", "save_quality_metrics", "save_context", "save_ranking_cfg", "save_sector_snapshot", "save_sector_history_batch", "get_sector_pct_map", "get_sector_pct_series", "save_fund_style", "get_fund_style", "update_highest_nav", "update_insight_confidence", "update_sector_selection_outcome", "update_status", "mark_insights_applied", "adjust_insight_confidence"]
+
+
+def get_tracked_state(object_type: str, object_id: str) -> dict | None:
+    """三级状态机当前状态（票 15）：{state, date, signals_json}；无记录 → None。"""
+    with db_conn() as conn:
+        row = conn.execute(
+            "SELECT state, date, signals_json FROM tracked_states "
+            "WHERE object_type = ? AND object_id = ?", (object_type, object_id)).fetchone()
+    if not row:
+        return None
+    return {"state": row[0], "date": row[1], "signals_json": row[2]}
+
+
+def save_tracked_state(object_type: str, object_id: str, state: str,
+                       date: str, signals_json: str | None = None) -> None:
+    """写入/更新状态机当前状态（幂等：同对象覆盖，EXIT 不可逆由转移函数保证）。"""
+    with db_conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO tracked_states "
+            "(object_type, object_id, state, date, signals_json) VALUES (?, ?, ?, ?, ?)",
+            (object_type, object_id, state, date, signals_json))
+        conn.commit()
