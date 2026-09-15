@@ -346,3 +346,66 @@ def final_pick_prompt(
 
 def final_pick_system_prompt() -> str:
     return "你是量化基金推荐决策助手。必须只输出一个纯JSON对象，禁止使用markdown代码块，禁止任何前后说明文字。"
+
+
+# ── 票 13：模块二 LLM 排雷审计 prompt ──────────────────────────────
+# System：资深风控合规官，极度挑剔；User：四组切片 + 四个审查维度装配；
+# 输出严格 JSON（与 app/llm/audit.py 的 validate_audit 契约一致）。
+
+def audit_system_prompt() -> str:
+    """票 13 System prompt：资深风控合规官视角。
+
+    职责是行使一票否决权（VETO）而非推销；发现严重隐患必须 VETO，
+    模棱两可给 CONDITIONAL_PASS 并写明条件；绝不因为候选优秀就放松。
+    """
+    return (
+        "你是资深公募基金风控合规官，对候选基金行使一票否决权。"
+        "你的职责是排雷，不是推销：任何可能让持有人亏大钱的隐患都必须 VETO。"
+        "四个审查维度：风格漂移（偏离自身定位追逐高危题材）、标的暴雷（重仓股"
+        "立案/业绩预亏/质押风险/减持潮）、经理负荷（管理规模与基金数过多、精力"
+        "分散）、流动性冲击（大额赎回/踩踏迹象）。"
+        "判定原则：证据确凿的致命隐患 → VETO（必须给出具体理由）；有隐忧但非致命"
+        " → CONDITIONAL_PASS（写明必须满足的条件）；干净 → PASS。"
+        "你极度挑剔，宁可有条件通过被质疑，也不放过一个隐患。"
+        "只输出一个纯 JSON 对象，禁止 markdown 代码块与任何前后说明文字。"
+    )
+
+
+def audit_user_prompt(fund: dict, slices: dict) -> str:
+    """票 13 User prompt：候选基金画像 + 四组切片 + 审查维度 + JSON 输出约束。
+
+    fund: {"code", "name", "quant_score", "industry"...}（量化分/基本面画像）。
+    slices: 四组切片的素材文本，键为切片名（如 holdings_change / risk_radar /
+            management / sentiment），由 llm/context.py 单一归属装配（ADR-0003）；
+            缺失切片（数据源未就绪）传 None/空 → 明示"缺失"而非静默填空。
+    """
+    lines = [
+        f"【候选基金】{fund.get('code', '?')} {fund.get('name', '?')}",
+        f"量化分: {fund.get('quant_score', '?')} | 所属行业: {fund.get('industry', '?')}",
+        "",
+        "【四组切片】（缺失项明确标注，不得脑补）",
+    ]
+    for key, label in (("holdings_change", "持仓异动"), ("risk_radar", "重仓股风险雷达"),
+                       ("management", "管理团队变动"), ("sentiment", "舆情争议")):
+        txt = slices.get(key)
+        lines.append(f"▸ {label}: {txt if txt else '【缺失——不得猜测，据此无法评估该维度】'}")
+    lines += [
+        "",
+        "【审查任务】按四个维度逐一评估并输出 JSON：",
+        "1. audit_verdict: PASS / CONDITIONAL_PASS / VETO（枚举精确，禁止其他值）",
+        "2. risk_score: 0–100 整数（越高越危险）",
+        "3. veto_reasons: VETO 时必填非空字符串数组（具体到事件/个股）",
+        "4. audit_details: 四维度的风险点对象（style_drift / stock_risk / manager_load / liquidity）",
+        "5. recommendation_summary: 不超过 50 字",
+        "",
+        "输出示例：",
+        "{",
+        '  "audit_verdict": "PASS",',
+        '  "risk_score": 25,',
+        '  "veto_reasons": [],',
+        '  "audit_details": {"style_drift": "无", "stock_risk": "无",',
+        '                   "manager_load": "经理管理 8 只基金", "liquidity": "无"},',
+        '  "recommendation_summary": "持仓稳健，估值合理，无重大隐患"',
+        "}",
+    ]
+    return "\n".join(lines)
