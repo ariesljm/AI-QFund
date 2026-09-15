@@ -163,6 +163,19 @@ def _recompute_ema60(conn, index_code: str) -> None:
             )
 
 
+def save_stock_valuation(code: str, rows: list[tuple]) -> int:
+    """写入个股估值日频（date, pe, pb, market_cap）。INSERT OR REPLACE 幂等。"""
+    if not rows:
+        return 0
+    with db_conn() as conn:
+        conn.executemany(
+            "INSERT OR REPLACE INTO stock_valuation_daily "
+            "(stock_code, date, pe, pb, market_cap) VALUES (?, ?, ?, ?, ?)",
+            [(code, r[0], r[1], r[2], r[3]) for r in rows],
+        )
+    return len(rows)
+
+
 def save_holdings_batch(conn, rows: list[tuple]) -> int:
     """批量写入重仓股（code, report_date, stock_code, stock_name, weight）。
 

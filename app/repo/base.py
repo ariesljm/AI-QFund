@@ -161,6 +161,31 @@ def get_holdings_summaries(codes: list[str], limit: int = 5, as_of: str | None =
                                 "weight": w, "industry": ind or ""})
     return out
 
+
+def get_pe_histories(codes: list[str], days: int = 750) -> dict[str, list[float]]:
+    """个股 PE 日频历史（升序，末位=最新），供重仓股加权 PE 分位（票 05）用。
+
+    days 默认 750 ≈ 3 年交易日；每只股票取最近 days 条 PE_TTM 非空值。
+    窗口函数 PARTITION BY stock_code 保证各股票独立限长，不会被跨股票截断。
+    无数据/样本不足由调用方自行设门槛。
+    """
+    if not codes:
+        return {}
+    ph = ",".join("?" for _ in codes)
+    out: dict[str, list[float]] = {c: [] for c in codes}
+    with db_conn() as conn:
+        rows = conn.execute(
+            f"SELECT stock_code, pe FROM ("
+            f"  SELECT stock_code, pe, date, "
+            f"  ROW_NUMBER() OVER (PARTITION BY stock_code ORDER BY date DESC) AS rn "
+            f"  FROM stock_valuation_daily WHERE stock_code IN ({ph}) AND pe IS NOT NULL"
+            f") WHERE rn <= ? ORDER BY stock_code, date ASC",
+            codes + [days]).fetchall()
+    for code, pe in rows:
+        out[code].append(pe)
+    return out
+
+
 def get_holdings_at_report(code: str, report_date: str, limit: int=10) -> list[dict]:
     """按报告期取持仓（R4 对称切片：锚点报告期前 N 大，与最新前 N 大对称比较）。
 
