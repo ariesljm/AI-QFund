@@ -20,6 +20,33 @@ def build_holdings_text(code: str, limit: int = 5) -> str:
     )
 
 
+def holdings_change_snapshot(current: list[dict], previous: list[dict]) -> str:
+    """持仓异动切片（票 12 切片一）：最近两期 Top-N 对比，纯函数。
+
+    current/previous 与 repo.get_holdings 同构：
+    list[dict]（stock_code / stock_name / weight / industry）。
+    输出：留存率、新进重仓（含行业）、集中度变化（pp）。
+    缺失必须**显式可见**（不静默填空）：任一侧缺失 → 指明缺失侧。
+    """
+    if not previous:
+        return "持仓异动：上期持仓缺失（无对比基准）"
+    if not current:
+        return "持仓异动：本期持仓缺失，无法对比"
+    prev_codes = {h["stock_code"] for h in previous}
+    cur_codes = {h["stock_code"] for h in current}
+    retained = len(prev_codes & cur_codes)
+    retention = retained / len(prev_codes)
+    new_entries = [h for h in current if h["stock_code"] not in prev_codes]
+    new_txt = (", ".join(f"{h['stock_name']}({h['industry'] or '其他'})" for h in new_entries)
+               or "无")
+    conc_cur = sum(h["weight"] for h in current)
+    conc_prev = sum(h["weight"] for h in previous)
+    parts = [f"持仓异动：两期重仓留存率 {retention * 100:.0f}%（前 {len(prev_codes)} 进 {retained}）",
+             f"新进重仓：{new_txt}",
+             f"集中度 {conc_prev:.1f}% → {conc_cur:.1f}%（{conc_cur - conc_prev:+.1f}pp）"]
+    return "；".join(parts)
+
+
 def rbsa_distribution(feat: dict | None) -> str:
     """基金 RBSA 行业暴露分布（如 '半导体(4.6%), 通信设备(4.1%), 电源设备(4.1%)'）。"""
     if not feat:
