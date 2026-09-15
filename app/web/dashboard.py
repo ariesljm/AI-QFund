@@ -249,6 +249,19 @@ def quality_block() -> QualityBlock:
                         latest_ic, latest_excess_win_rate, latest_profit_rate)
 
 
+def audit_block(limit: int = 8) -> list[dict]:
+    """最近 LLM 审计摘要（票 23 审计可见性：排雷过程可追溯，非黑盒）。
+
+    从 llm_audit 读最近记录，投影为模板字段（verdict/risk_score 由 parsed 解析）；
+    无记录返回空列表（模板显示空态文案）。纯组装，数据契约可测。
+    """
+    audits = repo.get_recent_audits(limit)
+    return [{"ts": a["ts"], "caller": a["caller"], "ok": a["ok"],
+             "verdict": a["verdict"], "risk_score": a["risk_score"],
+             "prompt_preview": (a["prompt_preview"] or "")[:80]}
+            for a in audits]
+
+
 def sector_heatmap_block() -> list[dict]:
     """行业热力图块：行业名 + 权重/动量（模板上下文用）。"""
     sectors = repo.get_sector_heatmap()
