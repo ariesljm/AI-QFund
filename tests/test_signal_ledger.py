@@ -43,7 +43,7 @@ class TestSignalLedger:
             record_signal_trigger("s1", f"2026-09-{i+1:02d}")
         with db_mod.db_conn() as conn:
             rows = conn.execute("SELECT ts FROM signal_outcomes WHERE signal_id='s1'").fetchall()
-        for i, (ts,) in enumerate(rows):
+        for (ts,) in rows:
             settle_signal("s1", ts, hit=False)
         assert assess(get_signal_history("s1"))["action"] == "hold"   # 样本 < MIN_SAMPLES
 
