@@ -1,4 +1,4 @@
-"""回测纯函数测试：补全 backtest.py / backtest_walkforward.py / sector_signals.py
+"""回测纯函数测试：backtest.py / backtest_walkforward.py
 未覆盖的纯函数（不依赖 DB/model，只接受 DataFrame 参数）。
 
 与 test_backtest_walkforward.py 互补：后者已覆盖 gate_verdict/_pctile_ret/_summarize。
@@ -16,7 +16,6 @@ import pytest
 from app import domain
 from backtest.backtest import _attach_forward_returns, _regime_at_date
 from backtest.backtest_walkforward import _sector_point
-from backtest.sector_signals import _cross_sectional_ic
 
 # ── 辅助：构造测试用指数/净值数据 ──────────────────────────
 
@@ -189,64 +188,3 @@ class TestSectorPoint:
         out = _sector_point(df, pd.Timestamp("2024-03-01"), rng_seed=42)
         assert out is not None
         assert out["n_sectors"] == 1
-
-
-# ── _cross_sectional_ic ─────────────────────────────────────
-
-class TestCrossSectionalIC:
-    """截面 IC：每决策日 feat 与目标收益的 Spearman 秩相关均值。"""
-
-    @staticmethod
-    def _make_panel(feat_vals: list, target_vals: list, dates: list[str]) -> pd.DataFrame:
-        """构造 panel：date/feat/fwd_20d。"""
-        rows = []
-        for d, f, t in zip(dates, feat_vals, target_vals, strict=True):
-            rows.append({"date": d, "feat": f, "fwd_20d": t})
-        return pd.DataFrame(rows)
-
-    def test_perfect_positive_correlation(self):
-        # feat 与目标完全正相关 → ic_mean ≈ 1.0
-        panel = self._make_panel(
-            feat_vals=[1, 2, 3, 4, 5], target_vals=[10, 20, 30, 40, 50],
-            dates=["2024-01-01"] * 5)
-        out = _cross_sectional_ic(panel, "feat")
-        assert out["ic_mean"] == pytest.approx(1.0)
-        assert out["n_dates"] == 1
-        assert out["n_rows"] == 5
-        assert out["ic_positive_pct"] == 1.0
-
-    def test_perfect_negative_correlation(self):
-        panel = self._make_panel(
-            feat_vals=[1, 2, 3, 4, 5], target_vals=[50, 40, 30, 20, 10],
-            dates=["2024-01-01"] * 5)
-        out = _cross_sectional_ic(panel, "feat")
-        assert out["ic_mean"] == pytest.approx(-1.0)
-        assert out["ic_positive_pct"] == 0.0
-
-    def test_constant_series_yields_no_dates(self):
-        # 常数序列无秩差异 → spearman None → 不计入 → n_dates=0
-        panel = self._make_panel(
-            feat_vals=[5, 5, 5, 5, 5], target_vals=[1, 2, 3, 4, 5],
-            dates=["2024-01-01"] * 5)
-        out = _cross_sectional_ic(panel, "feat")
-        assert out["n_dates"] == 0
-        assert out["ic_mean"] is None
-
-    def test_empty_panel_returns_zeros(self):
-        out = _cross_sectional_ic(pd.DataFrame(columns=["date", "feat", "fwd_20d"]), "feat")
-        assert out["n_dates"] == 0
-        assert out["n_rows"] == 0
-        assert out["ic_mean"] is None
-
-    def test_multi_date_averages_ics(self):
-        # 两日：第一日完全正相关(+1)，第二日完全负相关(-1) → 均值 0
-        rows = []
-        rows.extend({"date": "2024-01-01", "feat": float(i + 1), "fwd_20d": float(i + 1) * 10}
-                     for i in range(5))  # +1
-        rows.extend({"date": "2024-01-02", "feat": float(i + 1), "fwd_20d": float(5 - i) * 10}
-                     for i in range(5))  # -1
-        panel = pd.DataFrame(rows)
-        out = _cross_sectional_ic(panel, "feat")
-        assert out["n_dates"] == 2
-        assert out["ic_mean"] == pytest.approx(0.0, abs=1e-9)
-        assert out["ic_positive_pct"] == 0.5

@@ -212,7 +212,7 @@ def ema60_trigger_index(navs: list[float] | np.ndarray, confirm_days: int = _EMA
     """EMA60 连续 confirm 日 < EMA 的首个触发下标；不触发/数据不足返回 None。
 
     单一来源：ema60_exit（生产防线 R1 判定）、sim_ema60_exit（回测结算）、
-    backtest_exit_walkforward（长窗口退出模拟）共用同一触发逻辑。
+    backtest 回测共用同一触发逻辑。
     navs 从入场日起（含入场日），前 span 日为 EMA 预热期不判定。
     """
     if len(navs) < span + 2:

@@ -4,8 +4,7 @@
 见 domain.regime_from_multi_timeframe / repo.base.get_market_regime）。
 回测兼容：无 ema250 数据/不足预热时回退单周期 EMA60（旧行为，兼容早期区间与旧测试）。
 
-各回测脚本（backtest / backtest_walkforward / backtest_exit_walkforward /
-sector_signals / bear_market_research）统一经本模块判定，禁止各自实现。
+各回测脚本（backtest / backtest_walkforward / bear_market_research）统一经本模块判定，禁止各自实现。
 """
 
 import pandas as pd
