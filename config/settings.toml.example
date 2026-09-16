@@ -1,9 +1,10 @@
-# AI-QFund 项目配置文件
+# AI-QFund 项目配置文件（2.0 模板）
 # 仅保留用户需要填写/可调的参数；数据源接口等实现细节已内置在代码中。
+# 复制为 settings.toml 后填写（生产服务器经 docker-compose 挂载覆盖镜像默认值）。
 
 # ============ LLM 配置（OpenAI 兼容接口） ============
 [llm]
-# API 基地址，兼容任意 OpenAI 格式服务（如本地 Ollama、第三方代理）
+# API 基地址，兼容任意 OpenAI 格式服务（如本地 Ollama、第三方代理、DashScope 兼容模式）
 base_url = "http://192.168.1.222:20128/v1"
 # API 密钥；接入 LLM 前必须填入
 api_key = "your-api-key-here"
@@ -11,15 +12,25 @@ api_key = "your-api-key-here"
 model = "alpha-radar"
 
 # ============ 管线定时启动（每日指定时间运行推荐管线） ============
-# hour 设为空字符串表示关闭定时
+# 全流程定时：数据基座→推荐（recommend_top5）→2.0 监控，到点一次执行。
+# 建议设在 T-1 净值已完整公布之后（盘后/盘中）。hour 设为空字符串表示关闭定时。
 [scheduler]
 hour = 8
 minute = 0
 
-# ============ 进化引擎 ============
-[evolve]
-# 预留段：裁决损耗（LLM 选中 vs 候选池均值）连续 3 个月为负时只注入元分析自省；
-# 不做"纯量化降级"（Q8 共识：自动降级会让系统失去 LLM 宏观判断，违背设计初衷）。
+# ============ 标签配置（票 09） ============
+[label]
+# 超额标签的回撤惩罚系数：收益 − λ×最大回撤。
+# 初值 1.0 = 生产标定值（docs/backtest/model_walk_forward_40d.md：0.3/0.5/0.7/1.0
+# 扫描单调改善、1.0 最优）。2.0 文档的 1.5~2.0 为无证据外推，未采用。
+lambda = 1.0
+
+# ============ 2.0 推荐主流程（票 11） ============
+[recommend_v2]
+# enabled=true 时调度器/日循环改用 recommend_top5（全市场筛选→LLM 排雷→Top5），
+# 否则维持 1.x 推荐（1.x 代码已随 22 移除，enabled 恒为 true 的唯一合法值）。
+# 生产服务器由挂载的 settings.toml 独立控制（docker-compose 覆盖镜像默认值）。
+enabled = true
 
 # ============ 日志 ============
 [logging]
