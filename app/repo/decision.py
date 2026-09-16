@@ -978,11 +978,12 @@ def get_signal_stats() -> list[dict]:
 
 
 def save_recommend_v2(date: str, rows: list[dict]) -> int:
-    """2.0 最终推荐 Top5 落库（票 11：date/code/final_score/audit_json）。幂等 REPLACE。"""
+    """2.0 最终推荐 Top5 落库（票 11：date/code/final_score/audit_json）。幂等 REPLACE，同日唯一：重跑覆盖旧 Top5。"""
     import json as _json
     if not rows:
         return 0
     with db_conn() as conn:
+        conn.execute("DELETE FROM recommend_v2 WHERE date = ?", (date,))
         conn.executemany(
             "INSERT OR REPLACE INTO recommend_v2 (date, code, final_score, audit_json) "
             "VALUES (?, ?, ?, ?)",

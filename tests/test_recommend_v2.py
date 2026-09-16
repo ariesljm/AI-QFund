@@ -98,6 +98,19 @@ class TestRecommendTop5:
         assert result.get("empty") == "data_failure"
 
 
+class TestRecommendSameDayRerun:
+    def test_rerun_same_day_overwrites(self, monkeypatch, tmp_path):
+        """同日重跑 → 只保留本次 Top5（幂等 REPLACE 语义：同日唯一）。"""
+        _seed(monkeypatch, tmp_path)
+        recommend_top5("2026-09-14", audit_fn=_audit_factory(), scorer=lambda f: 0.8)
+        # 二次重跑：veto 掉首轮全部入选者 → Top5 成员变化，同日只留新结果
+        r2 = recommend_top5("2026-09-14",
+                            audit_fn=_audit_factory(veto={"F0", "F1", "F2", "F3", "F4"}),
+                            scorer=lambda f: 0.8)
+        saved = decision_repo.get_recommend_v2("2026-09-14")
+        assert len(saved) == len(r2["top5"]) == 3   # 只保留本次（F5/F6/F7），旧 F0..F4 已清
+
+
 class TestRecommendV2Enabled:
     def test_default_disabled(self):
         """默认关闭（不破坏 1.x 推荐）。"""
