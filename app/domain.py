@@ -325,6 +325,16 @@ SIGNAL_LABELS = {
     "CAUTION": "警惕",
 }
 
+# ── 2.0 状态机文案（US22-28 迁移后 Web 展示单一来源） ────────
+# 状态词 HOLD/WATCH/EXIT 由 state_machine 定义；模板 badge 分支与 JS 共用此映射
+STATE_LABELS = {
+    "HOLD": "持有",
+    "WATCH": "观察",
+    "EXIT": "离场",
+    "PASS": "持有",
+    "REJECT": "否决",
+}
+
 # ── 大盘状态机 ──────────────────────────────────────────
 REGIME_BULL = "BULL"
 REGIME_BEAR = "BEAR"

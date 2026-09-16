@@ -111,34 +111,39 @@ class TestCheckRecommendReady:
 
 class TestPipelineRecommendGate:
     def test_recommend_slot_skips_when_not_ready(self, monkeypatch):
-        """推荐槽位：数据未就绪（自愈后仍空）时跳过推荐，监控照常（信号链连续）。"""
+        """推荐槽位：数据未就绪（自愈后仍空）时跳过推荐，2.0 监控照常（信号链连续）。"""
         called: list[str] = []
         monkeypatch.setattr(pipeline, "_ensure_recommend_data_ready", lambda: False)
         monkeypatch.setattr(pipeline, "run_recommendation", lambda: called.append("rec"))
-        monkeypatch.setattr(pipeline, "run_monitor", lambda: called.append("mon"))
+        monkeypatch.setattr(pipeline, "_run_supervise_safely",
+                            lambda cid, today: called.append("supervise"))
+        monkeypatch.setattr(pipeline, "_run_style_track_safely", lambda cid: None)
 
         pipeline.run_recommend()
-        assert called == ["mon"]
+        assert called == ["supervise"]
 
     def test_recommend_slot_runs_when_ready(self, monkeypatch):
-        """推荐槽位（1.x 路径，enabled 关闭前置）：数据就绪时推荐与监控都执行。"""
+        """推荐槽位（1.x 路径，enabled 关闭前置）：数据就绪时推荐与 2.0 监控都执行。"""
         called: list[str] = []
         monkeypatch.setattr("app.engine.recommend_v2.recommend_v2_enabled", lambda: False)
         monkeypatch.setattr(pipeline, "_ensure_recommend_data_ready", lambda: True)
         monkeypatch.setattr(pipeline, "run_recommendation", lambda: called.append("rec"))
-        monkeypatch.setattr(pipeline, "run_monitor", lambda: called.append("mon"))
+        monkeypatch.setattr(pipeline, "_run_supervise_safely",
+                            lambda cid, today: called.append("supervise"))
+        monkeypatch.setattr(pipeline, "_run_style_track_safely", lambda cid: None)
 
         pipeline.run_recommend()
-        assert called == ["rec", "mon"]
+        assert called == ["rec", "supervise"]
 
     def test_full_run_skips_recommend_keeps_monitor(self, monkeypatch):
-        """全流程：数据未就绪时跳过推荐，监控照常（真实 phase 骨架验证信号链连续）。"""
+        """全流程：数据未就绪时跳过推荐，2.0 监控照常（真实 phase 骨架验证信号链连续）。"""
         called: list[str] = []
         monkeypatch.setattr(pipeline, "_ensure_recommend_data_ready", lambda: False)
         monkeypatch.setattr(pipeline, "run_data_foundation", lambda steps=None: None)
         monkeypatch.setattr(pipeline, "run_recommendation", lambda: called.append("rec"))
-        monkeypatch.setattr(pipeline, "run_monitor", lambda: called.append("mon"))
-        monkeypatch.setattr(pipeline, "_evolve_phase", lambda today: [])
+        monkeypatch.setattr(pipeline, "_run_supervise_safely",
+                            lambda cid, today: called.append("supervise"))
+        monkeypatch.setattr(pipeline, "_run_style_track_safely", lambda cid: None)
 
         pipeline.run()
-        assert called == ["mon"]
+        assert called == ["supervise"]

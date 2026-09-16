@@ -12,7 +12,6 @@ from datetime import datetime
 import app.repo as repo
 from app.data.foundation import _STEP_HOLDINGS, daily_steps, update_industry_map
 from app.data.foundation import run_pipeline as run_data_foundation
-from app.engine.monitor import run_monitor
 from app.engine.recommend import run_recommendation
 from app.repo import meta_keys as META
 from app.utils.log import get_logger
@@ -162,33 +161,50 @@ def _run_recommend_gated() -> None:
     run_recommendation()
 
 
+def _run_supervise_safely(cid: str, today: str) -> None:
+    """2.0 监控槽位（US22-28）：recommend_v2 对象 → 信号装配 → 状态机转移落库。
+
+    替代 1.x monitor 槽位（22 过渡期：run_monitor 代码保留但不再被调度调用）。
+    异常不阻断后续槽位；无推荐对象空跑静默返回。
+    """
+    def _run() -> None:
+        from app.engine.supervise import run_supervision
+        r = run_supervision(today)
+        moved = r.get("moved") or {}
+        tracked = r.get("tracked") or 0
+        if moved:
+            logger.info("2.0 监控: %d 只对象状态转移（%s）",
+                        len(moved), ", ".join(f"{c}:{o}>{n}" for c, (o, n) in list(moved.items())[:5]))
+        elif tracked:
+            logger.info("2.0 监控: %d 只对象无转移", tracked)
+    _run_phase_safely("2.0 监控", _run, cid)
+
+
 def run(today: datetime | None = None) -> None:
-    """全流程（手动触发）：数据基座 → 推荐 → 监控 → 进化，各槽位互不阻断。"""
+    """全流程（手动触发）：数据基座 → 推荐 → 2.0 监控，各槽位互不阻断。"""
     today, cid = _run_slot("管线", today)
     # 数据基座失败不中断后续槽位：推荐有前置门控（数据就绪才跑）与特征新鲜度护栏、
     # 监控有净值新鲜度护栏（陈旧走数据告警），全流程继续执行
     _run_phase_safely("数据基座", lambda: run_data_foundation(steps=daily_steps()), cid)
     _run_recommend_safely(cid)
     _run_style_track_safely(cid)
-    _run_phase_safely("监控引擎", run_monitor, cid)
-    _run_phases(_evolve_phase(today), "进化槽位", cid)
+    _run_supervise_safely(cid, today.strftime("%Y-%m-%d"))
 
 
 def run_data(today: datetime | None = None) -> None:
-    """数据基座槽位（盘前固定时间执行）：数据步骤 + 每日进化，独立于推荐。"""
+    """数据基座槽位（盘前固定时间执行），独立于推荐。"""
     today, cid = _run_slot("数据基座槽位", today)
     _run_phases([
         ("数据基座", lambda: run_data_foundation(steps=daily_steps())),
     ], "数据基座槽位", cid)
-    _run_phases(_evolve_phase(today), "进化槽位", cid)
 
 
 def run_recommend(today: datetime | None = None) -> None:
-    """推荐槽位（盘中可配时间执行）：推荐 → 监控，依赖数据槽位产出的特征。
+    """推荐槽位（盘中可配时间执行）：推荐 → 2.0 监控，依赖数据槽位产出的特征。
 
-    推荐前置门控（数据就绪才跑）与监控解耦：门控拦截不影响监控盯盘，持仓信号链连续。
+    推荐前置门控（数据就绪才跑，门控拦截不影响后续槽位）。
     """
     today, cid = _run_slot("推荐槽位", today)
     _run_recommend_safely(cid)
     _run_style_track_safely(cid)
-    _run_phase_safely("监控引擎", run_monitor, cid)
+    _run_supervise_safely(cid, today.strftime("%Y-%m-%d"))

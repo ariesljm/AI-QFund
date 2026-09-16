@@ -37,15 +37,16 @@ class TestRunPhaseSafely:
 
 
 class TestRecommendFailureKeepsMonitor:
-    """推荐失败 → 监控仍执行（信号链连续）。"""
+    """推荐失败 → 2.0 监控仍执行（信号链连续）。"""
     def test_run_recommend_continues_monitor(self, monkeypatch):
         from datetime import datetime
         order = []
         monkeypatch.setattr(pipeline, "run_recommendation",
                             lambda: (_ for _ in ()).throw(RuntimeError("模型缺失")))
-        monkeypatch.setattr(pipeline, "run_monitor", lambda: order.append("monitor"))
+        monkeypatch.setattr(pipeline, "_run_supervise_safely",
+                            lambda cid, today: order.append("supervise"))
         pipeline.run_recommend(datetime(2026, 8, 10))
-        assert order == ["monitor"]
+        assert order == ["supervise"]
 
     def test_data_failure_keeps_recommend_and_monitor(self, monkeypatch):
         """数据基座失败但数据就绪（历史数据在）→ 推荐（旧特征护栏）与监控继续。"""
@@ -56,13 +57,14 @@ class TestRecommendFailureKeepsMonitor:
                             lambda steps=None: (_ for _ in ()).throw(RuntimeError("网络失败")))
         monkeypatch.setattr(pipeline, "_ensure_recommend_data_ready", lambda: True)
         monkeypatch.setattr(pipeline, "run_recommendation", lambda: order.append("recommend"))
-        monkeypatch.setattr(pipeline, "run_monitor", lambda: order.append("monitor"))
-        monkeypatch.setattr(pipeline, "_evolve_phase", lambda today: [])
+        monkeypatch.setattr(pipeline, "_run_supervise_safely",
+                            lambda cid, today: order.append("supervise"))
+        monkeypatch.setattr(pipeline, "_run_style_track_safely", lambda cid: None)
         pipeline.run(datetime(2026, 8, 10))
-        assert order == ["recommend", "monitor"]
+        assert order == ["recommend", "supervise"]
 
     def test_gate_exception_keeps_monitor(self, monkeypatch):
-        """门控自身 DB 异常 → 推荐跳过但监控照常（架构深化 A 回归：不再拖死后续槽位）。"""
+        """门控自身 DB 异常 → 推荐跳过但 2.0 监控照常（架构深化 A 回归：不再拖死后续槽位）。"""
         from datetime import datetime
         called: list[str] = []
 
@@ -70,20 +72,24 @@ class TestRecommendFailureKeepsMonitor:
             raise RuntimeError("DB 连接失败")
         monkeypatch.setattr(pipeline, "_ensure_recommend_data_ready", boom)
         monkeypatch.setattr(pipeline, "run_recommendation", lambda: called.append("rec"))
-        monkeypatch.setattr(pipeline, "run_monitor", lambda: called.append("mon"))
+        monkeypatch.setattr(pipeline, "_run_supervise_safely",
+                            lambda cid, today: called.append("supervise"))
         pipeline.run_recommend(datetime(2026, 8, 10))
-        assert called == ["mon"]
+        assert called == ["supervise"]
 
-    def test_run_attaches_evolve_phase(self, monkeypatch):
-        """全流程末尾附加进化 phase（每日）。"""
+    def test_run_supervise_slot_present(self, monkeypatch):
+        """全流程（2.0 接管）：数据基座 → 推荐 → 2.0 监控纵向完整（无 1.x 进化槽位）。"""
         from datetime import datetime
-        phases = []
-        monkeypatch.setattr(pipeline, "run_data_foundation", lambda steps=None: None)
-        monkeypatch.setattr(pipeline, "run_recommendation", lambda: None)
-        monkeypatch.setattr(pipeline, "run_monitor", lambda: None)
-        monkeypatch.setattr(pipeline, "_evolve_phase", lambda today: phases.append(1) or [("进化引擎", lambda: None)])
+        order = []
+        monkeypatch.setattr("app.engine.recommend_v2.recommend_v2_enabled", lambda: False)
+        monkeypatch.setattr(pipeline, "run_data_foundation", lambda steps=None: order.append("data"))
+        monkeypatch.setattr(pipeline, "_ensure_recommend_data_ready", lambda: True)
+        monkeypatch.setattr(pipeline, "run_recommendation", lambda: order.append("recommend"))
+        monkeypatch.setattr(pipeline, "_run_supervise_safely",
+                            lambda cid, today: order.append("supervise"))
+        monkeypatch.setattr(pipeline, "_run_style_track_safely", lambda cid: None)
         pipeline.run(datetime(2026, 8, 10))
-        assert phases == [1]
+        assert order == ["data", "recommend", "supervise"]
 
 
 class TestRecommendGateSelfHeal:

@@ -399,7 +399,7 @@ def index_context() -> dict[str, object]:
         "recent_audits": recent_audits,
         "tracked_states": tracked_states,
         "calibration_curve": calibration_curve,
-        "signal_labels": domain.SIGNAL_LABELS,
+        "signal_labels": domain.STATE_LABELS,
         "regime_labels": domain.REGIME_LABELS,
     }
 

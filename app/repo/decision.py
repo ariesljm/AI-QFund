@@ -888,14 +888,12 @@ def get_candidate_nav_summaries(items: list[tuple[str, str]]) -> dict[str, dict]
             pairs).fetchall():
             out[code]["entry_nav"] = nav
         # 最新监控信号（排序口径 date DESC, id DESC，与 get_latest_monitor_event 一致）；
-        # 审计 P1-2：过滤 is_stale=1 数据告警——净值陈旧不是持仓风险信号，
-        # 否则用户会把"数据问题"误读为"持仓风险"（无信号时 dashboard 回退推荐状态）
-        for code, sig in conn.execute(
-            f"SELECT code, signal FROM (SELECT code, signal, "
-            f"ROW_NUMBER() OVER (PARTITION BY code ORDER BY date DESC, id DESC) rk "
-            f"FROM monitor_events WHERE code IN ({code_ph}) AND is_stale = 0) "
-            f"WHERE rk = 1", codes).fetchall():
-            out[code]["signal"] = sig
+        # 2.0 状态机状态（US22-28 迁移：监控信号源 monitor_events → tracked_states，
+        # 状态词 HOLD/WATCH/EXIT 由 state_machine 定义；无记录时 dashboard 回退推荐状态）
+        for code, st in conn.execute(
+            f"SELECT object_id, state FROM tracked_states "
+            f"WHERE object_type = 'fund' AND object_id IN ({code_ph})").fetchall():
+            out[code]["signal"] = st
     return out
 
 
@@ -991,6 +989,15 @@ def save_recommend_v2(date: str, rows: list[dict]) -> int:
               _json.dumps(r.get("audit") or {}, ensure_ascii=False)) for r in rows])
         conn.commit()
     return len(rows)
+
+
+def get_recommend_v2_codes(limit: int = 50) -> list[str]:
+    """2.0 推荐对象清单（全部日期去重，监控状态机分母；票 23 状态机视图）。"""
+    with db_conn() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT code FROM recommend_v2 ORDER BY code LIMIT ?",
+            (limit,)).fetchall()
+    return [r[0] for r in rows]
 
 
 def get_recommend_v2(date: str) -> list[dict]:
