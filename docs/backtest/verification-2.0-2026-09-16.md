@@ -48,6 +48,22 @@
   新进重仓（半导体/光模块/算力产业链）驱动风险判断——切片一从'缺失'升级为真实对比
 - 全数据地基：持仓 107 万行/多期 9,768 只、日线 234 万、估值 558 万、AUM 6,494
 
+## 结构层验收矩阵（共识 Q13 上线门槛对照，2026-09-16）
+
+| 门槛 | 2.0 实现 | 证据 |
+|---|---|---|
+| 全市场直接选基 | screen 全市场 12,900 → 硬过滤 → Top30 | `screen_candidates` 09-16 30 条；真实端到端 202s |
+| 硬过滤可执行 | is_buyable/aum<2亿/日限额<1000/nav<62/暂停 | 票 06+11 测试；真实候选池 6,250 只有特征 |
+| 理由可追溯 | 四组切片 + LLM 审计 + composite 落库 audit_json | recommend_v2 09-16 5 条含完整 audit_details |
+| 审计可解释 | 首页三区块（审计/跟踪状态/信号校准） | web HTTP 200（8ef3c3f 后复验）；事件/time 维度展示 |
+| 监控闭环 | 状态机 tracked_states + 校准 signal_outcomes + 脱轨/门控/退役 | 票 15/16/18/19/20 测试；tracked_states 落库 09-16 |
+| PIT（Q15） | disclosure_date + as_of 两期切片 | 真实 PIT 多期验证（000001 13 期回退） |
+| 分支保护（Q21） | 全部在 2.0 分支，main 未动 | origin/2.0 = 8ef3c3f |
+
+**结论：结构层（上线门槛）达成。** 效果层（超额期望>0/三段同向/校准曲线）为持续守门机制，
+记账层（recommend_v2/signal_outcomes/tracked_states/llm_audit）已就位，待真实运行数据累积；
+按 Q13 决策"先上线、后证明，不否决上线"。
+
 ## 遗留
 
 - 开 `[recommend_v2].enabled`（验收后决策）+ 调度接入 → 22 生产删除（sector_pool/ga/insights 等）
