@@ -121,8 +121,9 @@ class TestPipelineRecommendGate:
         assert called == ["mon"]
 
     def test_recommend_slot_runs_when_ready(self, monkeypatch):
-        """推荐槽位：数据就绪时推荐与监控都执行。"""
+        """推荐槽位（1.x 路径，enabled 关闭前置）：数据就绪时推荐与监控都执行。"""
         called: list[str] = []
+        monkeypatch.setattr("app.engine.recommend_v2.recommend_v2_enabled", lambda: False)
         monkeypatch.setattr(pipeline, "_ensure_recommend_data_ready", lambda: True)
         monkeypatch.setattr(pipeline, "run_recommendation", lambda: called.append("rec"))
         monkeypatch.setattr(pipeline, "run_monitor", lambda: called.append("mon"))

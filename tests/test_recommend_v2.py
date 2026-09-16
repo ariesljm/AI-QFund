@@ -112,9 +112,12 @@ class TestRecommendSameDayRerun:
 
 
 class TestRecommendV2Enabled:
-    def test_default_disabled(self):
-        """默认关闭（不破坏 1.x 推荐）。"""
+    def test_default_disabled(self, monkeypatch):
+        """默认关闭（不破坏 1.x 推荐）：配置缺省 = disabled，与运行机 settings.toml 解耦。"""
+        import app.config as cfg
         from app.engine.recommend_v2 import recommend_v2_enabled
+        monkeypatch.setattr(cfg, "_settings_cache", None)
+        monkeypatch.setattr(cfg, "load_settings", lambda: {})
         assert recommend_v2_enabled() is False
 
     def test_switch_via_settings(self, monkeypatch, tmp_path):

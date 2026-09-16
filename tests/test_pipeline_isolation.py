@@ -51,6 +51,7 @@ class TestRecommendFailureKeepsMonitor:
         """数据基座失败但数据就绪（历史数据在）→ 推荐（旧特征护栏）与监控继续。"""
         from datetime import datetime
         order = []
+        monkeypatch.setattr("app.engine.recommend_v2.recommend_v2_enabled", lambda: False)
         monkeypatch.setattr(pipeline, "run_data_foundation",
                             lambda steps=None: (_ for _ in ()).throw(RuntimeError("网络失败")))
         monkeypatch.setattr(pipeline, "_ensure_recommend_data_ready", lambda: True)
