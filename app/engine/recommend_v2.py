@@ -70,6 +70,7 @@ def _slices_for(cand: dict) -> dict:
     """四组切片装配（票 12；缺失切片明示）。测试可整体替换 audit_fn 绕过。"""
     code = cand["code"]
     from app.data.announcements import risk_radar_text
+    from app.data.manager import manager_text
     from app.data.sentiment import sentiment_text
     from app.llm.context import holdings_change_snapshot
     from app.repo.base import get_holdings_two_periods
@@ -79,7 +80,7 @@ def _slices_for(cand: dict) -> dict:
         "holdings_change": holdings_change_snapshot(cur, prev),
         "risk_radar": risk_radar_text([{"stock_code": h["stock_code"],
                                         "stock_name": h["stock_name"]} for h in cur]),
-        "management": None,     # 切片三待定（未决 #4）
+        "management": manager_text(code),   # 切片三（US17）：经理负荷与稳定性（天天 F10）
         "sentiment": sentiment_text([{"stock_code": h["stock_code"],
                                       "stock_name": h["stock_name"]} for h in cur]),
     }
