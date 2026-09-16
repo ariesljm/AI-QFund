@@ -127,10 +127,18 @@ def _ensure_recommend_data_ready() -> bool:
 def _run_recommend_safely(cid: str) -> None:
     """推荐阶段：门控自愈与引擎执行统一走安全包装，异常不中断后续槽位（监控照常）。
 
-    门控自身的 DB 读取（谓词/冷却标记）异常也纳入 _run_phase_safely 安全网，
-    修复：门控异常曾穿过未保护调用链中断监控/进化槽位（架构深化候选 A）。
+    2.0 切换点（票 11）：`[recommend_v2].enabled` 开启后改走 recommend_top5
+    （筛选→LLM 审计→剪枝→Top5 落库），关闭时保持 1.x run_recommendation；
+    门控各自的 DB 读取（谓词/冷却标记）异常也纳入 _run_phase_safely 安全网。
     """
-    _run_phase_safely("推荐引擎", _run_recommend_gated, cid)
+    def _run() -> None:
+        from app.engine.recommend_v2 import recommend_v2_enabled
+        if recommend_v2_enabled():
+            from app.engine.recommend_v2 import recommend_top5
+            recommend_top5(datetime.now().strftime("%Y-%m-%d"))
+            return
+        _run_recommend_gated()
+    _run_phase_safely("推荐引擎", _run, cid)
 
 
 def _run_style_track_safely(cid: str) -> None:

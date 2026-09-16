@@ -159,3 +159,28 @@ class TestRecommendGateSelfHeal:
         monkeypatch.setattr(pipeline.repo, "check_data_ready", _check)
         monkeypatch.setattr(pipeline, "update_industry_map", lambda: None)
         assert pipeline._ensure_recommend_data_ready() is True
+
+
+class TestRecommendV2Switch:
+    """2.0 切换点（票 11）：enabled 走 recommend_top5，否则 1.x run_recommendation。"""
+
+    def test_disabled_keeps_1x_path(self, monkeypatch):
+        called = []
+        monkeypatch.setattr("app.pipeline._run_recommend_gated",
+                            lambda: called.append("1x"))
+        monkeypatch.setattr("app.engine.recommend_v2.recommend_v2_enabled",
+                            lambda: False)
+        pipeline._run_recommend_safely("cid")
+        assert called == ["1x"]
+
+    def test_enabled_uses_recommend_top5(self, monkeypatch):
+        called = []
+        fake_top5 = {"date": "2026-09-16", "top5": ["F1", "F2"]}
+        monkeypatch.setattr("app.engine.recommend_v2.recommend_v2_enabled",
+                            lambda: True)
+        monkeypatch.setattr("app.engine.recommend_v2.recommend_top5",
+                            lambda today: called.append(today) or fake_top5)
+        monkeypatch.setattr("app.pipeline._run_recommend_gated",
+                            lambda: called.append("1x"))
+        pipeline._run_recommend_safely("cid")
+        assert called == ["2026-09-16"]   # 只走 2.0，不碰 1.x 门控
