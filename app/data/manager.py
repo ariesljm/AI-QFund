@@ -17,7 +17,7 @@
 import re
 from datetime import date, datetime
 
-import requests
+import httpx
 
 _F10_URL = "http://fundf10.eastmoney.com/jjjl_{code}.html"
 _HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -84,8 +84,8 @@ def parse_managers(html: str) -> dict:
 def fetch_managers(code: str) -> dict | None:
     """抓取 + 解析；网络失败/解析异常 → None（调用方标注缺失）。"""
     try:
-        r = requests.get(_F10_URL.format(code=code), headers=_HEADERS,
-                         timeout=_FETCH_TIMEOUT)
+        r = httpx.get(_F10_URL.format(code=code), headers=_HEADERS,
+                      timeout=_FETCH_TIMEOUT)
         r.raise_for_status()
         html = r.content.decode("utf-8", errors="replace")
     except Exception:
