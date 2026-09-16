@@ -47,6 +47,7 @@ from app.repo import (
     get_recent_monitor_signals,
     get_recent_scores,
     get_sector_momentum_median,
+    get_sector_pct_map,
     insert_monitor_event,
     insert_monitor_score,
     nav,
