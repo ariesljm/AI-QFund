@@ -14,9 +14,9 @@
 运行：uv run python monitor.py
 """
 
+import time
 from dataclasses import dataclass
 from datetime import datetime
-import time
 from typing import Any
 
 import numpy as np
