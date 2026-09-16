@@ -72,13 +72,11 @@ def _slices_for(cand: dict) -> dict:
     from app.data.announcements import risk_radar_text
     from app.data.sentiment import sentiment_text
     from app.llm.context import holdings_change_snapshot
-    from app.repo.base import get_holdings_at_report  # noqa: F401  # 未来多期装配用
+    from app.repo.base import get_holdings_two_periods
 
-    holdings = []   # 当前仅最新期（回填多期后接 as_of 两期对比）
-    from app.repo.base import get_holdings
-    cur = get_holdings(code, 10)
+    cur, prev = get_holdings_two_periods(code, 10)   # 最近两期（04 回填后真实对比）
     return {
-        "holdings_change": holdings_change_snapshot(cur, holdings),
+        "holdings_change": holdings_change_snapshot(cur, prev),
         "risk_radar": risk_radar_text([{"stock_code": h["stock_code"],
                                         "stock_name": h["stock_name"]} for h in cur]),
         "management": None,     # 切片三待定（未决 #4）

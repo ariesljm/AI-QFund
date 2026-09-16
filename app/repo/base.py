@@ -246,6 +246,23 @@ def get_holdings_at_report(code: str, report_date: str, limit: int=10) -> list[d
             (code, report_date, limit)).fetchall()
     return [{'stock_code': r[0], 'stock_name': r[1], 'weight': r[2], 'industry': r[3] or ''} for r in rows]
 
+
+def get_holdings_two_periods(code: str, limit: int = 10) -> tuple[list[dict], list[dict]]:
+    """最近两期持仓（当期 + 次期，报告期倒序）——持仓异动切片装配 seam（票 12 切片一）。
+
+    仅一期或缺失 → prev 为空列表（切片显式'无对比基准'，不脑补）；
+    两期均按 weight 降序取 limit。PIT 一致性由消费方（get_holdings as_of）负责，
+    此处是给 LLM 当期判断用的最近两期快照口径。
+    """
+    with db_conn() as conn:
+        dates = [r[0] for r in conn.execute(
+            "SELECT DISTINCT report_date FROM fund_holdings WHERE code = ? "
+            "ORDER BY report_date DESC LIMIT 2", (code,))]
+    cur = get_holdings_at_report(code, dates[0], limit) if dates else []
+    prev = get_holdings_at_report(code, dates[1], limit) if len(dates) > 1 else []
+    return cur, prev
+
+
 def get_index_close(code: str, date: str | None=None) -> float | None:
     with db_conn() as conn:
         if date:
