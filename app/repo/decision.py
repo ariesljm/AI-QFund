@@ -892,7 +892,8 @@ def get_candidate_nav_summaries(items: list[tuple[str, str]]) -> dict[str, dict]
         # 状态词 HOLD/WATCH/EXIT 由 state_machine 定义；无记录时 dashboard 回退推荐状态）
         for code, st in conn.execute(
             f"SELECT object_id, state FROM tracked_states "
-            f"WHERE object_type = 'fund' AND object_id IN ({code_ph})").fetchall():
+            f"WHERE object_type = 'fund' AND object_id IN ({code_ph})",
+            codes).fetchall():
             out[code]["signal"] = st
     return out
 

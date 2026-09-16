@@ -10,8 +10,8 @@
 并行已验证过（开发期 1291 样本 bitwise identical 冒烟），不与测试重复。
 """
 
-import sys
 import multiprocessing
+import sys
 from datetime import date, timedelta
 from pathlib import Path
 

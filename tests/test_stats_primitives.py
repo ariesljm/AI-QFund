@@ -7,7 +7,7 @@
 import numpy as np
 import pytest
 
-from app.features.stats import rankdata, spearman, pearson, t_tail_p
+from app.features.stats import pearson, rankdata, spearman, t_tail_p
 
 
 class TestRankdata:

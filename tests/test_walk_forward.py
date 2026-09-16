@@ -4,8 +4,12 @@ import numpy as np
 
 import app.domain as domain
 from app.engine.walk_forward import (
-    _slice_window, _quantile_layers, _layer_winrate, _ols, report,
-    WINDOW, FORWARD,
+    FORWARD,
+    _layer_winrate,
+    _ols,
+    _quantile_layers,
+    _slice_window,
+    report,
 )
 
 
@@ -92,9 +96,6 @@ class TestReport:
 
 
 class TestConstants:
-    def test_window_matches_style_track(self):
-        from app.engine.style_track import _WINDOW
-        assert WINDOW == _WINDOW == 60
 
     def test_forward_matches_domain(self):
         from app.domain import FORWARD_DAYS

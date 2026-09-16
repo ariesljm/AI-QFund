@@ -34,7 +34,10 @@ from app.repo.base import (
     save_meta,
 )
 from app.utils.log import get_logger
-from app.utils.trading_calendar import expected_trade_date, trading_day_lag  # 日历/滞后单一来源（候选 5）
+from app.utils.trading_calendar import (  # 日历/滞后单一来源（候选 5）
+    expected_trade_date,
+    trading_day_lag,
+)
 
 logger = get_logger(__name__)
 

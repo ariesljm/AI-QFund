@@ -1,6 +1,5 @@
 """US22-28 每日监控接线（票 15 状态机 × 2.0 推荐对象）纯函数与装配。"""
 
-import json
 import sys
 from pathlib import Path
 
@@ -79,10 +78,8 @@ class TestBuildSignals:
 
 class TestRunSupervision:
     def _seed(self, monkeypatch, tmp_path):
-        from datetime import date, timedelta
         monkeypatch.setattr(db_mod, "DB_PATH", tmp_path / "supervise.db")
         import app.repo.base as base
-        from app.repo import decision
 
         def _series(code, since=None, until=None):
             if code == "F000001":
@@ -121,7 +118,6 @@ class TestRunSupervision:
 
     def test_run_supervision_empty_pool(self, monkeypatch, tmp_path):
         self._seed(monkeypatch, tmp_path)
-        from app.repo import decision
         with db_mod.db_conn() as conn:
             conn.execute("DELETE FROM recommend_v2")
             conn.commit()

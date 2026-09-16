@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from app.features.sector import style_returns_matrix, sector_return_series
+from app.features.sector import sector_return_series, style_returns_matrix
 
 DAYS = ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04"]
 
