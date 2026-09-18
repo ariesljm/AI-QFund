@@ -204,7 +204,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         for col, typ in [("rbsa_industry_2", "TEXT"), ("rbsa_weight_2", "REAL DEFAULT 0"),
                          ("rbsa_industry_3", "TEXT"), ("rbsa_weight_3", "REAL DEFAULT 0"),
                          ("drawdown_60d", "REAL"), ("reversal_20d", "REAL"),
-                         ("mom_5d", "REAL"), ("mom_60d", "REAL"), ("vol_20d", "REAL"),
+                         ("mom_5d", "REAL"), ("mom_60d", "REAL"), ("mom_250d", "REAL"),
+                         ("vol_20d", "REAL"),
                          ("sharpe_60d", "REAL"), ("sortino_60d", "REAL"), ("ttr_60d", "REAL")]:
             if col not in ff_cols:
                 conn.execute(f"ALTER TABLE fund_features ADD COLUMN {col} {typ}")

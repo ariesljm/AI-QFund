@@ -89,7 +89,7 @@ class TestReport:
         recs = [{"t": "2024-01-01", "code": "A", "weight_1": 30.0, "r2": 0.5,
                  "fwd_ret": 0.02, "momentum": 0.1}] * 10
         text = report(recs)
-        assert "回测报告" in text and "40 日赚钱胜率" in text
+        assert "回测报告" in text and f"{FORWARD} 日赚钱胜率" in text
 
     def test_empty_recs(self):
         assert report([]) == "无有效样本（数据窗口不足）"
@@ -99,4 +99,4 @@ class TestConstants:
 
     def test_forward_matches_domain(self):
         from app.domain import FORWARD_DAYS
-        assert FORWARD == FORWARD_DAYS == 40
+        assert FORWARD == FORWARD_DAYS == 120

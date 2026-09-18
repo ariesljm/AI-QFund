@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pytest
 
 from app.config import get_label_lambda
-from app.model import excess_adjusted_return
+from app.domain import excess_adjusted_return
 
 
 class TestExcessAdjustedReturn:

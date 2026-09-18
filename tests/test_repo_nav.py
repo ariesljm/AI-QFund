@@ -1,10 +1,12 @@
 """repo.nav 净值时间序列 module 测试：series/latest/at/at_or_before/latest_dates/batch_latest/all_rows。"""
 
+import datetime
 import sqlite3
 
 import pytest
 
 import app.database as db_mod
+from app.domain import FORWARD_DAYS
 from app.repo import nav
 
 _NAV_ROWS = [
@@ -27,11 +29,17 @@ def nav_db(monkeypatch, tmp_path):
 
 @pytest.fixture
 def forward_db(monkeypatch, tmp_path):
-    """满 41 条净值窗口（A）与不足窗口（B）/入场净值为 0（X）的固定库。"""
+    """满 FORWARD_DAYS+1 条净值窗口（A）与不足窗口（B）/入场净值为 0（X）的固定库。"""
     db_path = tmp_path / "fwd.db"
     monkeypatch.setattr(db_mod, "DB_PATH", db_path)
-    rows = [("A", f"2026-06-{d:02d}", 1.00 + i * 0.01) for i, d in enumerate(range(1, 31))]
-    rows += [("A", f"2026-07-{d:02d}", 1.30 + i * 0.01) for i, d in enumerate(range(1, 12))]
+
+    def _dates(n, start="2026-06-01"):
+        d = datetime.date.fromisoformat(start)
+        return [(d + datetime.timedelta(days=i)).strftime("%Y-%m-%d") for i in range(n)]
+
+    n = FORWARD_DAYS + 1
+    ds = _dates(n)
+    rows = [("A", ds[i], 1.00 + i * 0.01) for i in range(n)]
     rows += [("B", f"2026-08-{d:02d}", 1.10 + i * 0.01) for i, d in enumerate(range(1, 6))]
     rows += [("X", "2026-07-01", 0.0)]
     rows += [("X", f"2026-07-{d:02d}", 1.00 + i * 0.01) for i, d in enumerate(range(2, 31))]
@@ -67,7 +75,7 @@ class TestForwardReturn:
     def test_full_window_returns_abs_ret(self, forward_db):
         ret = nav.forward_return("A", "2026-06-01")
         assert ret is not None
-        assert abs(ret - 0.40) < 1e-9  # 第 0 条 1.00 → 第 40 条 1.40
+        assert abs(ret - (FORWARD_DAYS * 0.01)) < 1e-9  # 第 0 条 1.00 → 第 FORWARD_DAYS 条
 
     def test_short_window_none(self, forward_db):
         assert nav.forward_return("B", "2026-08-01") is None

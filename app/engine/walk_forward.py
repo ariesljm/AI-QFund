@@ -26,7 +26,7 @@ from app.features.sector import style_returns_matrix
 from app.features.stats import pearson, t_tail_p
 from app.features.style_solve import solve_style_weights
 
-FORWARD = 40   # 与 domain.FORWARD_DAYS 对齐
+FORWARD = domain.FORWARD_DAYS   # 与主标尺同源
 WINDOW = 60    # 与 style_track._WINDOW 对齐
 
 
@@ -249,7 +249,7 @@ def report(recs: list[dict]) -> str:
     n = len(recs)
     lines = ["=== 风格跟踪 walk-forward 回测报告 ===",
              f"样本: {n} 条（T × 基金） | 前瞻: {FORWARD} 交易日 | 反推窗口: {WINDOW} 日",
-             f"整体 40 日赚钱胜率: {sum(1 for r in recs if domain.is_profit(r['fwd_ret'])) / n:.1%}",
+             f"整体 {FORWARD} 日赚钱胜率: {sum(1 for r in recs if domain.is_profit(r['fwd_ret'])) / n:.1%}",
              f"整体平均收益: {np.mean([r['fwd_ret'] for r in recs]):.2%}"]
 
     for field, label in (("weight_1", "反推主线权重 weight_1"),

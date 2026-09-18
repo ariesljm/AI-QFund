@@ -20,7 +20,7 @@ RBSA 为空的基金直接出局。
 **标尺版本号**：口径一旦冻结即带版本号。改标尺等于换裁判，因此历史记录不得与
 当前标尺混算——`is_current_benchmark` 是唯一准入判定。
 
-**边界**：本模块只做纯计算。数据装配（取同类成员的 40 日收益）在引擎层，
+**边界**：本模块只做纯计算。数据装配（取同类成员的 FORWARD_DAYS 日收益）在引擎层，
 `repo.nav.forward_return` 是区间收益的单一来源。
 """
 
@@ -32,7 +32,7 @@ from app import domain
 
 # 主标尺口径版本。改动 FORWARD_DAYS / 同类定义 / 剔除门槛即必须改版本号，
 # 否则新旧记录会被混在一起聚合（这正是版本号存在的意义）。
-BENCHMARK_VERSION = "excess_rbsa40d_v1"
+BENCHMARK_VERSION = "excess_rbsa120d_v2"
 
 # 同类组最小有效样本数：不足则剔除该样本（不回退到基金类型）
 MIN_PEER_SAMPLES = 10
@@ -87,7 +87,7 @@ def peer_mean(peer_returns: Iterable[Any]) -> float | None:
 
 
 def excess_return(own_return: Any, peer_returns: Iterable[Any]) -> float | None:
-    """超额收益 = 本基金 40 日收益 − 同期同类平均（同类不含自身）。
+    """超额收益 = 本基金 FORWARD_DAYS 日收益 − 同期同类平均（同类不含自身）。
 
     任一侧不可用（自身无收益、同类样本不足）→ None。
     """
@@ -107,9 +107,9 @@ def is_current_benchmark(version: str | None) -> bool:
 def window_return(navs_by_date: Mapping[str, float], start: str, end: str) -> float | None:
     """同窗口收益：**要求两端日期都有净值**，否则 None。
 
-    为什么不能用“按行数取第 41 条”（`repo.nav.forward_return_from_navs` 的索引口径）：
-    "40 个交易日”指的是**市场**的 40 个交易日，而不是该基金的 40 条净值。净值有洞时
-    索引口径会把 50 个自然日当成 40 个交易日，让一只停更中的基金看起来“窗口已满”。
+    为什么不能用“按行数取第 FORWARD_DAYS+1 条”（`repo.nav.forward_return_from_navs` 的索引口径）：
+    "FORWARD_DAYS 个交易日”指的是**市场**的 FORWARD_DAYS 个交易日，而不是该基金的 FORWARD_DAYS 条净值。净值有洞时
+    索引口径会把 50 个自然日当成 FORWARD_DAYS 个交易日，让一只停更中的基金看起来“窗口已满”。
     实测（2026-09-14）：全市场一半基金的最新净值日比另一半早 6 个交易日，故索引
     口径会静默地拿不同长度的窗口做截面比较——**这类偏差不会报错，只会让结论失真**。
 

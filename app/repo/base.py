@@ -381,12 +381,10 @@ def get_latest_features(code: str) -> dict | None:
 def get_latest_features_batch(codes: list[str] | None = None) -> dict[str, dict]:
     """全部（或给定）基金最新特征一次查询（票 11 全市场初筛 N+1 收敛）。
 
-    窗口函数每基金取最新一行的 12 维特征；无特征基金不在返回中。
-    返回 {code: {hurst_60d, ..., date}}。
+    窗口函数每基金取最新一行的特征；无特征基金不在返回中。
+    返回 {code: {FEATURE_COLS..., rbsa_industry_1, rbsa_weight_1, date}}。
     """
-    _COLS = ("hurst_60d", "momentum_20d", "calmar", "downside_vol", "capture_up",
-             "capture_down", "drawdown_60d", "reversal_20d", "mom_5d", "mom_60d",
-             "vol_20d", "rbsa_industry_1", "rbsa_weight_1", "date")
+    _COLS = (*FEATURE_COLS, "rbsa_industry_1", "rbsa_weight_1", "date")
     where = ""
     args: list = []
     if codes:

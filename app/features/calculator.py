@@ -510,6 +510,8 @@ def compute_fund_features(navs: np.ndarray, idx_closes: np.ndarray,
     # 多窗口动量与波动率：让模型自行学习哪个窗口在何种市场状态有效
     feat["mom_5d"] = float((navs[-1] / navs[-6] - 1) * 100) if len(navs) >= 6 else 0.0
     feat["mom_60d"] = float((navs[-1] / navs[-61] - 1) * 100) if len(navs) >= 61 else 0.0
+    # 1 年动量（Carhart 动量，120 日主标尺下有效因子，2026-09-17 因子扫描确认）
+    feat["mom_250d"] = float((navs[-1] / navs[-251] - 1) * 100) if len(navs) >= 251 else 0.0
     if len(returns) >= 20:
         feat["vol_20d"] = float(np.std(returns[-20:]) * np.sqrt(252) * 100)
     else:

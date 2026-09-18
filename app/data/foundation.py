@@ -219,9 +219,8 @@ _STEP_INDEX = 3          # 宏观指数（沪深300/上证/ETF）
 _STEP_HOLDINGS = 4       # 重仓股 + 行业映射（成功后置位 holdings_last_run）
 _STEP_RBSA_STATS = 6     # RBSA 行业暴露统计（仅日志）
 _STEP_FEATURES = 7       # 特征计算
-_STEP_MODEL_READY = 8    # 推荐模型就绪检查（仅日志）
 ALL_STEPS = frozenset({_STEP_FUND_LIST, _STEP_NAV, _STEP_INDEX, _STEP_HOLDINGS,
-                       _STEP_RBSA_STATS, _STEP_FEATURES, _STEP_MODEL_READY})
+                       _STEP_RBSA_STATS, _STEP_FEATURES})
 
 # ── 数据基座 Step 注册表（2026-09 架构深化 候选3）──
 # step 状态语义（成功才置位 / 后置打标 / 失败各自 try）此前散在 run_pipeline 各 if 块：
@@ -331,16 +330,6 @@ def _step_features() -> None:
     _features.calc_all_features()
 
 
-def _step_model_ready() -> None:
-    """Step 8：推荐模型就绪检查（重训判定收敛进模型 seam，管线不自行判断）。"""
-    from app.model import get_or_train
-    model = get_or_train()
-    if model is None:
-        logger.error("无可用模型，推荐引擎跳过")
-    else:
-        logger.info("模型已就绪")
-
-
 STEP_REGISTRY: dict[int, PipelineStep] = {
     _STEP_FUND_LIST: PipelineStep(_STEP_FUND_LIST, "基金列表获取与过滤", _step_fund_list),
     _STEP_NAV: PipelineStep(_STEP_NAV, "净值更新与停更打标", _step_nav,
@@ -351,7 +340,6 @@ STEP_REGISTRY: dict[int, PipelineStep] = {
                                  on_success=(_mark_holdings_run,)),
     _STEP_RBSA_STATS: PipelineStep(_STEP_RBSA_STATS, "RBSA 行业暴露统计", _step_rbsa_stats),
     _STEP_FEATURES: PipelineStep(_STEP_FEATURES, "特征计算", _step_features),
-    _STEP_MODEL_READY: PipelineStep(_STEP_MODEL_READY, "模型就绪检查", _step_model_ready),
 }
 
 

@@ -157,15 +157,13 @@ class TestWindowMaxDrawdown:
         assert domain.window_max_drawdown([1.0, None]) is None
 
     def test_agrees_with_training_label_caliber(self):
-        """与训练标签同口径：label = ret − λ·dd，λ 越大惩罚越重。"""
-        from app import model
-
+        """与标签同口径：label = ret − λ·dd，λ 越大惩罚越重。"""
         navs = [1.0, 1.2, 0.9, 1.0]
         lam = 2.0
-        label = model.risk_adjusted_return(navs, 0, 3, lambda_=lam)
         ret = navs[-1] / navs[0] - 1.0
         dd = domain.window_max_drawdown(navs)
         assert dd is not None
+        label = domain.excess_adjusted_return(ret, dd, lam)
         assert label == pytest.approx(ret - lam * dd)
 
 

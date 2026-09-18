@@ -11,9 +11,9 @@ from typing import Any
 
 # ── 推荐周期 ─────────────────────────────────────────────
 # 一次推荐对应的预测/结算/质量度量共用的前向窗口（交易日）
-# 用户定论持有周期 1-3 个月 → 取中值 40 交易日（约 2 个月）；
-# 多窗口验证（2026-09）：40 日窗口下赛道内排序最有效、5 日动量延续性最强。
-FORWARD_DAYS = 40
+# 持有周期扫描（2026-09-17，docs/backtest/120d-multifactor-rebuild.md）：
+# Sharpe/Sortino/TTR 是慢变量，40 日窗口无预测力，120 日（约 6 个月）转正显著。
+FORWARD_DAYS = 120
 
 # ── 收益判定阈值（单一来源） ──────────────────────────────
 # 赚钱口径：绝对收益 > 1% 视为扣费后真赚钱（quality 度量 / GA fitness / 回测 / 结算共用）
@@ -135,10 +135,10 @@ def adjusted_returns(closes: dict[str, float]) -> dict[str, float]:
 def window_max_drawdown(navs: Sequence[float | None]) -> float | None:
     """窗口内最大回撤（**正幅值**）；点数不足或含非正/缺失值 → None。
 
-    口径单一来源：结算账本的 `max_drawdown` 列与训练标签 `model.risk_adjusted_return`
-    （`label = ret − λ·dd`）共用。**返回正幅值而非负值**——符号反了会让 λ 变成奖励
-    回撤，而且不会报错，只会静静地学错东西（与 `repo.nav.forward_return_from_navs`
-    的失效值口径一致：缺失/非正一律视为不可用）。
+    口径单一来源：结算账本的 `max_drawdown` 列与标签构造
+    （`label = ret − λ·dd`，见 excess_adjusted_return）共用。**返回正幅值而非负值**——
+    符号反了会让 λ 变成奖励回撤，而且不会报错，只会静静地学错东西（与
+    `repo.nav.forward_return_from_navs` 的失效值口径一致：缺失/非正一律视为不可用）。
     """
     vals: list[float] = []
     for v in navs:
@@ -161,6 +161,16 @@ def window_max_drawdown(navs: Sequence[float | None]) -> float | None:
             mdd = dd
     return mdd
 
+
+def excess_adjusted_return(excess_ret: float, max_dd: float, lambda_: float) -> float:
+    """2.0 主标签（票 09）：同类中性化超额收益 − λ × 最大回撤。
+
+    excess_ret: `benchmark.excess_return` 的输出（自身收益 − 同类均值，主标尺口径）。
+    max_dd: 前向窗口最大回撤（正数，口径同 window_max_drawdown）。
+    λ=0 → 退化为纯超额收益；负超额/大回撤都会被正确惩罚。
+    """
+    return excess_ret - lambda_ * max_dd
+
 # 风险调整收益标签的惩罚系数 λ 已迁移到配置（config.get_label_lambda，settings.toml
 # [label].lambda，初值 1.0 = 生产标定值）。票 09：λ 是可调参数，不属于领域常量；
 # 标定报告见 settings.toml 注释与 docs/backtest/model_walk_forward_40d.md。
@@ -178,7 +188,7 @@ FEATURE_COLS = [
     "hurst_60d", "momentum_20d", "calmar", "downside_vol",
     "capture_up", "capture_down",
     "drawdown_60d", "reversal_20d",
-    "mom_5d", "mom_60d", "vol_20d",
+    "mom_5d", "mom_60d", "mom_250d", "vol_20d",
     # 风险调整指标（业务要求“优先考虑”的核心三项，见 RankingConfig 权重）
     "sharpe_60d", "sortino_60d", "ttr_60d",
     # 风格清晰度（ticket 05 + walk-forward 回测 P5）：净值被板块可解释程度，

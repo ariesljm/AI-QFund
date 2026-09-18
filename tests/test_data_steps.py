@@ -56,7 +56,7 @@ class TestDailySteps:
         """步骤语义常量与 run_pipeline 执行分支一致（编号单一来源）。"""
         assert fd._STEP_HOLDINGS == 4
         assert fd._STEP_FEATURES == 7
-        assert fd.ALL_STEPS == frozenset({1, 2, 3, 4, 6, 7, 8})
+        assert fd.ALL_STEPS == frozenset({1, 2, 3, 4, 6, 7})
 
 
 class TestUpdateFundListWeekly:
