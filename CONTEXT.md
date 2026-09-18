@@ -36,7 +36,7 @@ _Avoid_: 报告期口径（会泄漏污染回测）
 _Avoid_: 全基金
 
 **Top30 候选池**：
-LightGBM 打分排序的全市场 Top30；落库并保留特征快照（供审计与复盘）。2.0 无"赛道无候选 → 全市场 Top10"降级路径。
+多因子打分排序（sharpe + 动量 + TTR 反向）的全市场 Top30；落库并保留特征快照（供审计与复盘）。2.0 无"赛道无候选 → 全市场 Top10"降级路径。
 _Avoid_: 候选池（1.x 语义）
 
 **空推荐日**：
@@ -46,7 +46,7 @@ _Avoid_: 无推荐、异常
 ## 模块二：LLM 排雷审计
 
 **审计 JSON**（audit_verdict / risk_score / veto_reasons / audit_details / recommendation_summary）:
-LLM 对候选基金的结构化排雷输出；schema 严格校验（非法即失败，不静默降级）；`VETO` 或 `risk_score > 60` 剪枝，复合分 `LGBM × (1 − Risk/100)` 定 Top5。
+LLM 对候选基金的结构化排雷输出；schema 严格校验（非法即失败，不静默降级）；`VETO` 或 `risk_score > 60` 剪枝，复合分 `multifactor × (1 − Risk/100)` 定 Top5。
 _Avoid_: 自由文本意见
 
 **审计失效条件三元组**：
@@ -86,7 +86,7 @@ _Avoid_: IR 高 15% 阈值（±8pp 噪声下不可辨识）
 ## 质量与回测
 
 **主标尺**（超额收益，BENCHMARK_VERSION）:
-推荐后 FORWARD_DAYS（40）交易日的收益 − 同类（RBSA 第一行业、n≥10、不含自身）同期均值。主标尺口径变更 = 换版本号 + 人工批准（ADR-0008）。
+推荐后 FORWARD_DAYS（120）交易日的收益 − 同类（RBSA 第一行业、n≥10、不含自身）同期均值。主标尺口径变更 = 换版本号 + 人工批准（ADR-0008）。
 _Avoid_: 绝对收益（混入市场 beta 与赛道景气）
 
 **用户口径**（绝对胜率）:
@@ -94,16 +94,12 @@ _Avoid_: 绝对收益（混入市场 beta 与赛道景气）
 _Avoid_: 胜率
 
 **标签**（y_excess / y_abs）:
-训练目标 = 同类中性化超额收益 − λ×40 日最大回撤（λ 在 settings.toml [label]，初值 1.0）；y_abs 绝对收益并列保留（用户口径可比性）。LABEL_VERSION 强校验：不一致强制重训。
+主标签公式 = 同类中性化超额收益 − λ×120 日最大回撤（λ 在 settings.toml [label]，初值 1.0，`domain.excess_adjusted_return` 单一来源）；y_abs 绝对收益并列保留（用户口径可比性）。
 _Avoid_: 纯绝对收益标签（1.x）
 
 **素材装配**：
 把结构化数据（基金画像 / PIT 可见重仓股 / 事件切片）转成 LLM 可读中文段落的单一归属（llm/context，ADR-0003）。
 _Avoid_: 提示词拼接（仅指文案格式化部分）
-
-**面板采样**（panel_samples）：
-生产训练与研究回测共用的样本构建深函数：净值 → 预热 → PIT 可见持仓 → 特征现算 → 标签集（超额 y_excess + 绝对 y_abs + λ 风险调整）。
-_Avoid_: 采样循环拷贝
 
 **统计原语**（features/stats）：
 features 域内的秩相关/线性相关/显著性检验命名函数（内部 scipy，ADR-0007 豁免边界内）；校准层/影子闸门消费，引擎层不直接 import scipy。
