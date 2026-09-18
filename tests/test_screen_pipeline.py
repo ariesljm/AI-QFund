@@ -11,7 +11,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 import app.database as db_mod
-from app.engine.screen_pipeline import is_data_failure, is_no_opportunity, screen_top30
+from app.engine.screen_pipeline import (
+    check_data_freshness,
+    is_data_failure,
+    is_no_opportunity,
+    screen_top30,
+)
 from app.repo import decision as decision_repo
 from app.repo.base import db_conn
 
@@ -95,3 +100,73 @@ class TestScreenPipeline:
             n = conn.execute("SELECT COUNT(*) FROM screen_candidates "
                              "WHERE date='2026-09-14'").fetchone()[0]
         assert n == 2   # F1/F2 各一行，非 4
+
+
+def _seed_freshness(monkeypatch, tmp_path):
+    """种子：单基金净值 + 指数（日期 2026-09-14），供新鲜度闸门测试。"""
+    monkeypatch.setattr(db_mod, "DB_PATH", tmp_path / "fresh.db")
+    with db_conn() as conn:
+        conn.execute("INSERT INTO fund_nav (code, date, unit_nav, cum_nav) "
+                     "VALUES ('F1','2026-09-14',1.0,1.0)")
+        conn.execute("INSERT INTO index_daily (code, date, close) "
+                     "VALUES ('sh000300','2026-09-14',4000.0)")
+        conn.commit()
+
+
+def _patch_calendar(monkeypatch, nav_lag=0, idx_lag=0):
+    """打桩日历：净值 lag（传 days 集）与指数 lag（不传 days）分开控制。"""
+    import app.utils.trading_calendar as tc
+    monkeypatch.setattr(tc, "expected_trade_date", lambda today=None: "2026-09-14")
+    monkeypatch.setattr(tc, "trading_day_lag",
+                        lambda e, l, days=None: nav_lag if days is not None else idx_lag)
+
+
+class TestDataFreshness:
+    def test_fresh_ok(self, monkeypatch, tmp_path):
+        """净值/指数都新鲜 → ok=True。"""
+        _seed_freshness(monkeypatch, tmp_path)
+        _patch_calendar(monkeypatch)
+        ok, reason = check_data_freshness("2026-09-14")
+        assert ok is True and reason == ""
+
+    def test_stale_nav_blocked(self, monkeypatch, tmp_path):
+        """净值全局停更（lag>3）→ 拦截。"""
+        _seed_freshness(monkeypatch, tmp_path)
+        _patch_calendar(monkeypatch, nav_lag=5)
+        ok, reason = check_data_freshness("2026-09-14")
+        assert ok is False and "净值" in reason
+
+    def test_stale_index_blocked(self, monkeypatch, tmp_path):
+        """指数停更（lag>3）→ 拦截。"""
+        _seed_freshness(monkeypatch, tmp_path)
+        _patch_calendar(monkeypatch, idx_lag=5)
+        ok, reason = check_data_freshness("2026-09-14")
+        assert ok is False and "指数" in reason
+
+    def test_no_nav_blocked(self, monkeypatch, tmp_path):
+        """无净值数据 → 拦截。"""
+        _seed_freshness(monkeypatch, tmp_path)
+        with db_conn() as conn:
+            conn.execute("DELETE FROM fund_nav")
+            conn.commit()
+        _patch_calendar(monkeypatch)
+        ok, reason = check_data_freshness("2026-09-14")
+        assert ok is False and "净值" in reason
+
+    def test_no_index_blocked(self, monkeypatch, tmp_path):
+        """无指数数据 → 拦截。"""
+        _seed_freshness(monkeypatch, tmp_path)
+        with db_conn() as conn:
+            conn.execute("DELETE FROM index_daily")
+            conn.commit()
+        _patch_calendar(monkeypatch)
+        ok, reason = check_data_freshness("2026-09-14")
+        assert ok is False and "指数" in reason
+
+    def test_no_calendar_not_blocked(self, monkeypatch, tmp_path):
+        """无交易日历缓存 → 不误报（ok=True，与指数新鲜度核查同口径）。"""
+        _seed_freshness(monkeypatch, tmp_path)
+        import app.utils.trading_calendar as tc
+        monkeypatch.setattr(tc, "expected_trade_date", lambda today=None: None)
+        ok, _ = check_data_freshness("2026-09-14")
+        assert ok is True

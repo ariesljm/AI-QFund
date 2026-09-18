@@ -50,8 +50,16 @@ def _run_recommend_safely(cid: str, today: str) -> None:
 
     screen 自带健康门（候选池空 → no_opportunity；特征缺失 → data_failure），
     空态落 recommend_v2 的空记录由引擎处理，不在这里自审自拦。
+    数据新鲜度闸门（审计 P1-2 扩展）：全局净值/指数停更时拦截推荐——
+    数据槽位失败不阻断推荐槽位，这里补上"数据没更新就不要推荐"的检查。
     """
     def _run() -> None:
+        from app.engine.screen_pipeline import check_data_freshness
+        ok, reason = check_data_freshness(today)
+        if not ok:
+            logger.with_cid(cid).warn_event("recommend_blocked",
+                                            f"数据新鲜度闸门拦截推荐：{reason}")
+            return
         from app.engine.recommend_v2 import recommend_top5
         recommend_top5(today)
     _run_phase_safely("推荐引擎", _run, cid)

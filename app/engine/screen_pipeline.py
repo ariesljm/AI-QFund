@@ -84,3 +84,46 @@ def is_no_opportunity(result: dict) -> bool:
 def is_data_failure(result: dict) -> bool:
     """data_failure（数据故障）：有池但打分/特征全部缺失。"""
     return result.get("empty") == "data_failure"
+
+
+# ── 推荐前数据新鲜度闸门（审计 P1-2 扩展）────────────────
+# 与 mark_stale_funds（相对全局滞后打标）互补：后者只抓"个别基金停更"，
+# 抓不到"全局停更"——净值下载整体失败时所有基金同停 T-2，相对滞后=0
+# 打标失效，但数据已陈旧，推荐会照常用陈旧特征跑（pipeline 数据槽位失败
+# 不阻断推荐槽位，恰放大了这个洞）。本闸门在推荐槽位入口拦一道。
+
+
+def check_data_freshness(today: str | None = None, max_lag: int = 3) -> tuple[bool, str]:
+    """推荐前数据新鲜度检查。返回 (ok, reason)。
+
+    ok=False 时调用方应把推荐标记为 data_failure（数据停更，非市场判断）。
+    检查：净值全局最新日期、指数（sh000300）最新日期是否滞后期望交易日
+    超过 max_lag（默认 3 个交易日，与 foundation._check_index_freshness 同口径）。
+    无交易日历缓存时返回 ok=True（不误报，与指数新鲜度核查同口径）。
+    """
+    from app.repo.base import get_index_rows, get_nav_time_state
+    from app.utils.trading_calendar import expected_trade_date, trading_day_lag
+
+    expected = expected_trade_date(today)
+    if expected is None:
+        return True, ""
+
+    ranges, dates = get_nav_time_state()
+    if not ranges:
+        return False, "无净值数据（fund_nav 空）"
+    global_max = max((v[1] for v in ranges.values() if v[1]), default="")
+    if not global_max:
+        return False, "无净值数据（fund_nav 空）"
+    nav_lag = trading_day_lag(global_max, expected, days=set(dates))
+    if nav_lag > max_lag:
+        return False, f"净值全局停更（最新 {global_max}，滞后期望交易日 {nav_lag} 天 > {max_lag}）"
+
+    rows = get_index_rows("sh000300")
+    if not rows:
+        return False, "无指数数据（index_daily 缺 sh000300）"
+    idx_latest = rows[-1][0]
+    idx_lag = trading_day_lag(idx_latest, expected)
+    if idx_lag > max_lag:
+        return False, f"指数停更（最新 {idx_latest}，滞后期望交易日 {idx_lag} 天 > {max_lag}）"
+
+    return True, ""
