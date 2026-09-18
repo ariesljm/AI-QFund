@@ -81,71 +81,6 @@
 
   <!-- ============ 今日投研 ============ -->
   <div id="tab-today" class="flex flex-col gap-stack-lg px-margin-page pt-stack-lg pb-16">
-    <!-- AI 赛道报告（设计稿 AI Track Report：通栏卡 + 大盘状态指示卡） -->
-    <section class="bg-surface-container-lowest rounded-xl border border-surface-border p-stack-lg shadow-sm relative overflow-hidden">
-      <div class="absolute -right-20 -top-20 w-64 h-64 bg-primary/5 rounded-full blur-3xl pointer-events-none"></div>
-      <div class="relative z-10 flex flex-col md:flex-row justify-between items-center gap-stack-lg">
-        <div class="flex-1 min-w-0">
-          <div class="flex items-center gap-3 mb-stack-sm">
-            <span class="material-symbols-outlined text-accent text-[22px]" style="font-variation-settings: 'FILL' 1;">psychology</span>
-            <h1 class="font-headline-md text-headline-md text-primary">AI 赛道报告</h1>
-            <span class="font-data-tabular text-data-tabular text-[12px] text-on-surface-variant bg-surface-container px-2 py-1 rounded whitespace-nowrap">{{ macro_date or today }}</span>
-          </div>
-          {% if sector_reasoning %}
-          <p class="font-body-md text-body-md text-on-surface-variant leading-relaxed">{{ sector_reasoning }}</p>
-          {% else %}
-          <p class="font-body-md text-body-md text-on-surface-variant text-[13px]">暂无赛道分析数据</p>
-          {% endif %}
-        </div>
-        <!-- 大盘状态指示卡（设计稿 Bull/Bear Indicator，红涨绿跌）：显示在卡片右侧、垂直居中 -->
-        {% set _r = regime_label or 'NEUTRAL' %}
-        {% if _r == 'BULL' %}
-        <div class="flex flex-col items-center justify-center p-stack-md bg-up-soft rounded-lg border border-up/30 min-w-[160px] shrink-0">
-          <span class="material-symbols-outlined text-up text-4xl mb-1">trending_up</span>
-          <span class="font-headline-sm text-headline-sm text-up">{{ regime_labels.get(_r, '牛市') }}</span>
-          <span class="font-label-caps text-label-caps text-on-surface-variant mt-2">可适度进取</span>
-        </div>
-        {% elif _r == 'BEAR' %}
-        <div class="flex flex-col items-center justify-center p-stack-md bg-down-soft rounded-lg border border-down/30 min-w-[160px] shrink-0">
-          <span class="material-symbols-outlined text-down text-4xl mb-1">trending_down</span>
-          <span class="font-headline-sm text-headline-sm text-down">{{ regime_labels.get(_r, '熊市') }}</span>
-          <span class="font-label-caps text-label-caps text-on-surface-variant mt-2">建议控制仓位</span>
-        </div>
-        {% else %}
-        <div class="flex flex-col items-center justify-center p-stack-md bg-warn-soft rounded-lg border border-warning-amber/30 min-w-[160px] shrink-0">
-          <span class="material-symbols-outlined text-warn text-4xl mb-1">trending_flat</span>
-          <span class="font-headline-sm text-headline-sm text-warn">{{ regime_labels.get(_r, '中性') }}</span>
-          <span class="font-label-caps text-label-caps text-on-surface-variant mt-2">保持中性仓位</span>
-        </div>
-        {% endif %}
-      </div>
-    </section>
-
-    <!-- 实时快讯轮播（标题 + 摘要单行：摘要向左滚动，滚动完成后切下一条） -->
-    {% set _news_stale = news_date and macro_date and news_date != today %}
-    <section class="bg-surface-container-lowest rounded-xl border border-surface-border px-4 md:px-5 py-2.5 shadow-sm flex flex-wrap items-center gap-x-3 gap-y-1.5 min-w-0" id="newsCarousel">
-      <span class="material-symbols-outlined text-[16px] text-accent shrink-0">campaign</span>
-      {% if _news_stale %}
-      <span class="shrink-0 font-data-sm text-[11px] font-bold text-warn bg-warn-soft border border-warning-amber/30 rounded px-1.5 py-0.5" title="今日快讯尚未生成，当前展示 {{ news_date }} 的新闻">{{ news_date }} 新闻</span>
-      {% endif %}
-      <button class="shrink-0 max-w-[120px] sm:max-w-[260px] lg:max-w-[340px] text-left overflow-hidden" onclick="openNewsDetail()" title="点击查看完整快讯">
-        <span class="block truncate font-data-sm font-bold text-on-surface" id="newsCurrentText"></span>
-      </button>
-      <span class="shrink-0 w-1 h-1 rounded-full bg-outline-strong/60 hidden sm:block"></span>
-      <!-- 手机端独占整行，避免被压缩至不可见；桌面端回归同行 -->
-      <div class="order-2 w-full sm:order-none sm:w-auto sm:flex-1 sm:min-w-0 overflow-hidden whitespace-nowrap cursor-pointer" id="newsMarquee" onclick="openNewsDetail()" title="点击查看完整快讯">
-        <span class="inline-block font-data-sm text-on-surface-variant pr-10" id="newsSummaryText"></span>
-      </div>
-      <span class="font-data-sm text-[11px] text-on-surface-variant shrink-0" id="newsIdx"></span>
-      <div class="flex items-center gap-1 shrink-0">
-        <button class="w-7 h-7 flex items-center justify-center rounded-md border border-surface-border hover:border-accent hover:text-accent transition-colors" onclick="newsPrev()" aria-label="上一条">
-          <span class="material-symbols-outlined text-[15px]">chevron_left</span>
-        </button>
-        <button class="w-7 h-7 flex items-center justify-center rounded-md border border-surface-border hover:border-accent hover:text-accent transition-colors" onclick="newsNext()" aria-label="下一条">
-          <span class="material-symbols-outlined text-[15px]">chevron_right</span>
-        </button>
-      </div>
-    </section>
 
     <!-- 主区 + 侧栏（设计稿 8+4 网格） -->
     <div class="grid grid-cols-12 gap-stack-lg items-start">
@@ -379,59 +314,6 @@
             <div class="bg-surface-container-low p-3 rounded-lg flex flex-col">
               <span class="font-label-caps text-label-caps text-outline-strong mb-1">推荐数</span>
               <span class="font-headline-md text-headline-md leading-none text-on-surface">{{ rec_count }}</span>
-            </div>
-          </div>
-        </section>
-
-        <!-- 板块动量（设计稿 Sector Momentum，真实数据：板块领涨） -->
-        <section class="bg-surface-container-lowest rounded-xl border border-surface-border p-stack-md shadow-sm">
-          <h2 class="font-headline-sm text-headline-sm text-primary mb-3 border-b border-surface-border pb-2">板块动量</h2>
-          <div class="flex flex-col gap-3 mt-2">
-            {% if sector_gainers %}
-            {% for s in sector_gainers[:4] %}
-            <div class="flex justify-between items-center">
-              <span class="font-body-md text-body-md text-on-surface truncate pr-2">{{ s.name }}</span>
-              <span class="font-data-tabular text-data-tabular {% if s.pct is not none %}{% set _p = s.pct|replace('%','')|float %}{% if _p >= 0 %}text-up bg-up-soft{% else %}text-down bg-down-soft{% endif %}{% else %}text-on-surface-variant{% endif %} px-2 py-0.5 rounded text-sm font-bold">{{ s.pct }}</span>
-            </div>
-            {% endfor %}
-            {% else %}
-            <p class="font-body-sm text-body-sm text-on-surface-variant">暂无领涨数据</p>
-            {% endif %}
-          </div>
-        </section>
-
-        <!-- 主力资金流（设计稿 Capital Flow：横向条 + 全市场净额） -->
-        <section class="bg-surface-container-lowest rounded-xl border border-surface-border p-stack-md shadow-sm">
-          <h2 class="font-headline-sm text-headline-sm text-primary mb-3 border-b border-surface-border pb-2">主力资金流</h2>
-          <div class="flex flex-col gap-3 mt-2">
-            {% for s in flow_inflows[:2] %}
-            <div class="flex justify-between items-center">
-              <span class="font-body-md text-body-md text-on-surface truncate pr-2">{{ s.name }}</span>
-              <div class="flex items-center gap-2 shrink-0">
-                <div class="w-16 h-1.5 bg-surface-container rounded-full overflow-hidden flex justify-end">
-                  <div class="h-full bg-up rounded-full" style="width:{% if max_inflow and max_inflow > 0 %}{{ (s.flow / max_inflow * 100)|round|int }}%{% else %}0%{% endif %}"></div>
-                </div>
-                <span class="font-data-tabular text-data-tabular text-up w-16 text-right font-bold">+{{ (s.flow|float / 1e4)|round(1) }}亿</span>
-              </div>
-            </div>
-            {% endfor %}
-            {% for s in flow_outflows[:2] %}
-            <div class="flex justify-between items-center">
-              <span class="font-body-md text-body-md text-on-surface truncate pr-2">{{ s.name }}</span>
-              <div class="flex items-center gap-2 shrink-0">
-                <div class="w-16 h-1.5 bg-surface-container rounded-full overflow-hidden">
-                  <div class="h-full bg-down rounded-full" style="width:{% if max_outflow and max_outflow > 0 %}{{ (s.abs / max_outflow * 100)|round|int }}%{% else %}0%{% endif %}"></div>
-                </div>
-                <span class="font-data-tabular text-data-tabular text-down w-16 text-right font-bold">{{ (s.flow|float / 1e4)|round(1) }}亿</span>
-              </div>
-            </div>
-            {% endfor %}
-            {% set flow_net_f = flow_net_total|float if flow_net_total is not none else none %}
-            <div class="mt-2 pt-3 border-t border-surface-border border-dashed flex justify-between items-center bg-surface-container-low p-2 rounded">
-              <span class="font-label-caps text-outline-strong">全市场净额</span>
-              <span class="font-data-tabular text-data-tabular font-bold {% if flow_net_f is not none and flow_net_f >= 0 %}text-up{% elif flow_net_f is not none %}text-down{% else %}text-on-surface-variant{% endif %}">
-                {% if flow_net_f is not none %}{{ "+" if flow_net_f >= 0 else "-" }}{{ (flow_net_f|abs / 1e4)|round(1) }}亿{% else %}--{% endif %}
-              </span>
             </div>
           </div>
         </section>
@@ -712,23 +594,6 @@
 </div>
 </main>
 
-<!-- 快讯全文弹层 -->
-<div class="fixed inset-0 modal-backdrop z-[10000] hidden flex items-center justify-center p-sm" id="newsModal">
-  <div class="bg-paper-raised w-full max-w-lg border border-outline rounded-xl overflow-hidden flex flex-col">
-    <div class="p-3 border-b border-outline flex justify-between items-center">
-      <h2 class="font-label-caps text-[13px] uppercase font-bold flex items-center gap-2 tracking-widest text-primary">
-        <span class="material-symbols-outlined text-[16px] text-accent">campaign</span>
-        市场快讯
-      </h2>
-      <button class="material-symbols-outlined text-on-surface-variant hover:rotate-90 transition-transform" onclick="closeModal('newsModal')">close</button>
-    </div>
-    <div class="p-4 flex-1 overflow-y-auto space-y-3 visible-scrollbar max-h-[55dvh]" id="newsList"></div>
-    <div class="p-3 border-t border-outline flex items-center justify-between">
-      <span class="font-data-sm text-[11px] text-on-surface-variant" id="newsDetailIdx"></span>
-      <span class="font-label-caps text-[11px] text-on-surface-variant">点击条目展开摘要</span>
-    </div>
-  </div>
-</div>
 
 <!-- 系统日志弹层 -->
 <div class="fixed inset-0 modal-backdrop z-[10000] hidden flex items-center justify-center p-sm" id="systemLogModal">
@@ -858,7 +723,6 @@
 </div>
 
 
-<script>window.__NEWS_ITEMS__ = {{ macro.news_items|tojson }};</script>
 <script>window.SIGNAL_LABELS = {{ signal_labels|tojson }};</script>
 <script src="/static/app.js"></script>
 <script src="/static/js/manage.js"></script>

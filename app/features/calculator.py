@@ -21,76 +21,9 @@ _FEATURE_RETENTION_ROWS = 250
 # 而候选过滤的 dropna(FEATURE_COLS) 会直接清空整个候选池。
 # v2: 新增 sharpe_60d / sortino_60d / ttr_60d（风险调整三指标）
 # v3: 新增 style_r2（净值反推拟合优度=风格清晰度，walk-forward 回测 P5 证实有独立预测增益）
-_FEATURE_SCHEMA_VERSION = "v3"
+_FEATURE_SCHEMA_VERSION = "v4"
 """fund_features 每只基金保留的特征快照行数（与净值保留窗口一致，覆盖监控风格漂移的历史查询）。"""
 
-# combo 配方固定系数（combo_score 单一来源）：与 GA 可调权重（regime_combo_weights）区分。
-_COMBO_SECTOR_REL_MOMENTUM_W = 0.15   # 赛道相对动量对 combo 的固定贡献
-_COMBO_SECTOR_REL_CALMAR_W = 0.05     # 赛道相对卡玛的固定贡献
-_COMBO_RBSA_W = 0.003                 # RBSA 行业权重暴露的固定贡献
-# 赛道拥挤度惩罚贡献（ticket 08）：惩罚值本身已归一到 [-1, 0]，故系数放大到
-# 与 calmar 同量级，使极端拥挤足以�±动排序但不至于一票否决。
-_COMBO_SECTOR_CROWDING_W = 0.3
-
-# 拥挤度判定参数（sector_crowding_penalty）
-_CROWDING_MIN_SAMPLES = 5        # 最小样本数（不足则降级不惩罚）
-_CROWDING_EXTREME_Z = 2.0        # 最新净流入 z-score 极端阈值
-_CROWDING_SLOPE_RATIO = 2.0      # 后半段/前半段均值比（斜率过陡阈值）
-
-
-def sim_trailing_stop(daily_navs: list[float], atr_mult: float = 2.0,
-                      atr_period: int = 14, max_days: int = 20) -> float | None:
-    """回测用 2×ATR 追踪止损模拟（历史版本对照，监控侧已改用 EMA60 趋势退出）。
-
-    daily_navs: 入场日及之后每日净值（升序，含入场日）。
-    从入场起逐日：跟踪最高净值、按净值收益率均值算 ATR(14)，
-    回撤 > atr_mult×ATR 即提前结算（止损价 = 触发日净值）；否则持有到 max_days 结算。
-    返回结算收益（-1~∞）；数据不足返回 None。
-    """
-    if len(daily_navs) < 2:
-        return None
-    entry = daily_navs[0]
-    if entry is None or entry <= 0:
-        return None
-    highest = entry
-    rets: list[float] = []
-    for i in range(1, min(len(daily_navs), max_days + 1)):
-        nav = daily_navs[i]
-        if nav is None or nav <= 0:
-            break
-        if nav > highest:
-            highest = nav
-        rets.append(nav / daily_navs[i - 1] - 1.0)
-        atr = float(np.mean(np.abs(rets[-atr_period:])))
-        if atr > 0 and (highest - nav) / highest > atr_mult * atr:
-            return nav / entry - 1.0
-    settle_idx = min(len(daily_navs) - 1, max_days)
-    return daily_navs[settle_idx] / entry - 1.0
-
-
-def sim_hard_stop(daily_navs: list[float], stop_pct: float = 0.10,
-                  max_days: int = 20) -> float | None:
-    """模拟硬止损：净值从持仓期最高点回撤超过 stop_pct（如 10%）即提前结算。
-
-    结构同 sim_trailing_stop，但阈值是固定百分比而非 ATR（极端保护场景）。
-    返回结算收益（-1~∞）；数据不足返回 None。
-    """
-    if len(daily_navs) < 2:
-        return None
-    entry = daily_navs[0]
-    if entry is None or entry <= 0:
-        return None
-    highest = entry
-    for i in range(1, min(len(daily_navs), max_days + 1)):
-        nav = daily_navs[i]
-        if nav is None or nav <= 0:
-            break
-        if nav > highest:
-            highest = nav
-        if (highest - nav) / highest > stop_pct:
-            return nav / entry - 1.0
-    settle_idx = min(len(daily_navs) - 1, max_days)
-    return daily_navs[settle_idx] / entry - 1.0
 
 
 def vol_adaptive_stop_pct(daily_navs: list[float], mult: float = 1.5,
@@ -191,95 +124,6 @@ def _ema_series(navs: np.ndarray, span: int = _EMA_SPAN) -> np.ndarray:
     return ema
 
 
-def latest_below_ema60(navs: list[float]) -> bool:
-    """最新净值是否 < EMA60（推荐侧 R1 对齐门槛，B 修复 2026-09）。
-
-    与 ema60_trigger_index 同口径（ewm span=60, k=2/61）。判据“最新 < EMA60”
-    是 R1“连续2日<EMA60”触发的必要条件：过滤掉最新跌破 EMA60 的基金后，
-    R1 当天必不触发——从源头避免“推荐当天即 EXIT”（推荐/监控矛盾）。
-    数据不足 span 条返回 False（保守：不滤，交回防线判定）。
-    """
-    if len(navs) < _EMA_SPAN:
-        return False
-    arr = np.asarray(navs, dtype=float)
-    if np.any(arr <= 0):
-        return False
-    return bool(arr[-1] < _ema_series(arr, _EMA_SPAN)[-1])
-
-
-def ema60_trigger_index(navs: list[float] | np.ndarray, confirm_days: int = _EMA_CONFIRM_DAYS,
-                        span: int = _EMA_SPAN) -> int | None:
-    """EMA60 连续 confirm 日 < EMA 的首个触发下标；不触发/数据不足返回 None。
-
-    单一来源：ema60_exit（生产防线 R1 判定）、sim_ema60_exit（回测结算）、
-    backtest 回测共用同一触发逻辑。
-    navs 从入场日起（含入场日），前 span 日为 EMA 预热期不判定。
-    """
-    if len(navs) < span + 2:
-        return None
-    arr: np.ndarray = np.asarray(navs, dtype=float)
-    if np.any(arr <= 0):
-        return None
-    below = arr < _ema_series(arr, span)
-    for i in range(span, len(below)):
-        if below[i - confirm_days + 1:i + 1].all():
-            return i
-    return None
-
-
-def ema60_exit(navs: list[float], confirm_days: int = _EMA_CONFIRM_DAYS,
-               entry_idx: int | None = None) -> tuple[bool, str]:
-    """EMA60 趋势退出（R1，单一来源）：NAV 连续 confirm_days 日 < EMA60 → 触发。
-
-    生产监控防线 R1 与回测退出模拟共用此判定（替代 2×ATR 追踪止损，后者回测证明负贡献）。
-    navs：升序净值序列。纯入场后场景（回测）从入场日起计，前 span 日 EMA 预热不判定；
-    生产监控传入含入场前历史预热序列（navs_trend，审计 2026-09 对齐契约）——
-    预热段使 EMA 基线即时可用、R1 买入首日即生效，触发判据仍从序列第 span 条起。
-    entry_idx：入场在序列中的位置（生产监控传 len(navs_trend)-len(navs_post)，回测不传）——
-    仅约束 reason 文案"自高点回撤"的高点取自入场后段，避免预热段历史高点夸大数字；
-    触发判定不受影响。
-    豁免（2026-09 B 修复）：入场后净值不足 confirm_days+1 条时返回不触发——
-    此时 ema60_trigger_index 扫描到的是入场前历史趋势（如推荐当天净值 T-1 滞后、
-    navs_post 为空，触发点全在预热段），凭它判 EXIT 就是"推荐当天即离场"矛盾的根因
-    （011315 现场：推荐也选到中期跌势基金，R1 立即砍）。入场后至少 \n    confirm_days+1 个净值点才开始判。回测验证参数（勿改）：span=60, confirm=2 交易日。"""
-    if entry_idx is not None and len(navs) - entry_idx < confirm_days + 1:
-        return False, ""
-    idx = ema60_trigger_index(navs, confirm_days)
-    if idx is None:
-        return False, ""
-    arr: np.ndarray = np.asarray(navs, dtype=float)
-    seg = arr[entry_idx:idx + 1] if entry_idx is not None else arr[:idx + 1]
-    if len(seg) == 0:
-        seg = arr[:idx + 1]
-    peak = float(np.max(seg))
-    drawdown = (peak - arr[idx]) / peak if peak else 0.0
-    return True, (
-        f"EMA60趋势退出: NAV连续{confirm_days}日<EMA60"
-        f"（自入场后高点回撤{drawdown:.2%}）"
-    )
-
-
-def sim_ema60_exit(daily_navs: list[float], confirm_days: int = _EMA_CONFIRM_DAYS,
-                   max_days: int = 20) -> float | None:
-    """回测用 EMA60 趋势退出模拟：触发日按触发净值结算，否则持有到窗口末。
-
-    与生产防线 R1 同判定（ema60_trigger_index），使回测退出语义 == 生产退出语义；
-    触发后视为卖出持现金，收益 = 触发日净值 / 入场净值 - 1。
-    注意：EMA 需 span+confirm 日预热，max_days 须大于预热期才可能触发（主回测 40 日
-    窗口内生产 R1 本就不触发——这如实反映生产行为）。数据不足返回 None。
-    """
-    if len(daily_navs) < 2:
-        return None
-    entry = daily_navs[0]
-    if entry is None or entry <= 0:
-        return None
-    arr: np.ndarray = np.asarray(daily_navs[:max_days + 1], dtype=float)
-    idx = ema60_trigger_index(arr)
-    if idx is not None:
-        return arr[idx] / arr[0] - 1.0
-    return arr[-1] / arr[0] - 1.0
-
-
 def calc_sector_heat(cum_rets: list[float]) -> float:
     """赛道热度（市场级、**可历史化**）：近 5 日各赛道累计涨幅的横截面分化度。
 
@@ -326,15 +170,6 @@ def sector_heat_from_frame(sector_frame, as_of: str | None = None, window: int =
 _latest_heat_cache: dict = {}
 
 
-def latest_sector_heat() -> float:
-    """最新交易日赛道热度（进程内按日缓存，避免每次推荐重建宽表）。"""
-    today = datetime.now().strftime("%Y-%m-%d")
-    if _latest_heat_cache.get("date") != today:
-        _latest_heat_cache["value"] = sector_heat_from_frame(load_sector_pct_frame())
-        _latest_heat_cache["date"] = today
-    return float(_latest_heat_cache["value"])
-
-
 _mkt_state_cache: dict | None = None
 _mkt_state_cache_date: str = ""
 
@@ -353,7 +188,7 @@ def latest_market_state() -> dict:
             closes = np.array([r[1] for r in idx_rows], dtype=float)
             vols = np.array([r[2] for r in idx_rows], dtype=float)
             _mkt_state_cache = market_state_features(closes, vols,
-                                                     sector_heat=latest_sector_heat())
+                                                     sector_heat=0.0)
         else:
             # 审计 P2-4：指数缺失显式告警（不静默 0）——模型在分布外输入打分
             logger.warning("指数数据缺失（sh000300 无行）：市场状态列填 0，模型打分失真风险")
@@ -389,19 +224,6 @@ def market_state_features(idx_close: np.ndarray, idx_vol: np.ndarray,
         feat["bias_60d"] = 0.0
     feat["sector_heat_5d"] = float(sector_heat)
     return feat
-
-
-def forward_excess_alpha(nav_at: float, nav_fwd: float, idx_fwd_ret: float) -> float | None:
-    """基金前向超额 alpha：基金前向收益 − 指数前向收益（训练样本/回测共用口径）。
-
-    返回 None 表示数据不足（入场净值缺失或非正）。
-    """
-    if not nav_at or nav_at <= 0:
-        return None
-    fund_ret = nav_fwd / nav_at - 1.0
-    if not np.isfinite(fund_ret):
-        return None
-    return fund_ret - idx_fwd_ret
 
 
 def calc_hurst(series: np.ndarray, max_lag: int = 20) -> float:
@@ -590,177 +412,6 @@ def _ttr_days(navs) -> float:
     return float(recover[0])
 
 
-def _minmax01(s: "pd.Series") -> "pd.Series":
-    """min-max 归一到 [0,1]；退化（全等/非有限）时返回 0.5 中性值。"""
-    try:
-        lo, hi = float(s.min()), float(s.max())
-    except (TypeError, ValueError):
-        return pd.Series(0.5, index=s.index)
-    if not np.isfinite(lo) or not np.isfinite(hi) or hi - lo <= 1e-12:
-        return pd.Series(0.5, index=s.index)
-    return (s - lo) / (hi - lo)
-
-
-def combo_score(score_norm: float, rel_strength: float, calmar: float, hurst: float,
-                w: dict[str, float], sector_rel_momentum: float = 0.0,
-                sector_rel_calmar: float = 0.0, rbsa_weight: float = 0.0,
-                sector_crowding: float = 0.0, sharpe_norm: float = 0.0,
-                sortino_norm: float = 0.0, ttr_norm: float = 0.0) -> float:
-    """组合打分公式单一来源（主路径/降级路径/回测共用）。
-
-    主路径传 sector_rel + rbsa_weight；降级与回测路径缺失的数据按 0 处理。
-    固定系数：赛道相对动量 0.15 / 赛道相对卡玛 0.05 / RBSA 行业权重 0.003，
-    为 combo 配方常量（与 regime_combo_weights 的 GA 可调权重区分）。
-    sector_crowding：赛道拥挤度惩罚（≤0，ticket 08），缺数据传 0 不惩罚。
-    sharpe_norm / sortino_norm / ttr_norm：风险调整三指标（池内归一到 [0,1]，
-    ttr 已反向），按 RankingConfig 的 sharpe/sortino/ttr 权重进入 combo；
-    三权重合计（默认 0.50）高于 model_weight（0.30）——业务要求这三项优先。
-    """
-    return (score_norm * w["model"]
-            + rel_strength * w["rs"]
-            + sector_rel_momentum * _COMBO_SECTOR_REL_MOMENTUM_W
-            + calmar * w["cal"]
-            + sector_rel_calmar * _COMBO_SECTOR_REL_CALMAR_W
-            + (hurst - 0.5) * 10 * w["hurst"]
-            + rbsa_weight * _COMBO_RBSA_W
-            + sector_crowding * _COMBO_SECTOR_CROWDING_W
-            + sharpe_norm * w.get("sharpe", 0.0)
-            + sortino_norm * w.get("sortino", 0.0)
-            + ttr_norm * w.get("ttr", 0.0))
-
-
-def sector_crowding_penalty(flows: list[float]) -> float:
-    """赛道拥挤度惩罚（ticket 08）：短期净流入**极端**且**斜率过陡** → 负惩罚。
-
-    flows：该赛道近期主力净流入序列（升序，最新在末）。
-    判定：最新值 z-score > _CROWDING_EXTREME_Z 且后半段均值 ≥ 前半段
-    × _CROWDING_SLOPE_RATIO → 拥挤；惩罚随极端程度线性加深（上限 -1）。
-
-    纯函数、无 DB 依赖；样本不足 / 零方差 / 段均非正 → 0.0（不惩罚，优雅降级）。
-
-    注：net_flow 历史覆盖有限（东财资金流接口不可达，仅实时快照逐日累积），
-    故当前作为 **combo 层特征惩罚**生效；待累积足够样本后可同口径升入
-    LightGBM 输入列（见 ticket 08 说明）。
-    """
-    vals = [float(f) for f in flows if f is not None]
-    n = len(vals)
-    if n < _CROWDING_MIN_SAMPLES:
-        return 0.0
-    arr = np.asarray(vals, dtype=float)
-    sd = float(arr.std())
-    if sd <= 1e-12:
-        return 0.0
-    z_last = (float(arr[-1]) - float(arr.mean())) / sd
-    if z_last <= _CROWDING_EXTREME_Z:
-        return 0.0
-    half = n // 2
-    front = float(arr[:half].mean()) if half else 0.0
-    back = float(arr[half:].mean())
-    if front <= 1e-12 or back <= 1e-12:
-        return 0.0
-    if (back / front) < _CROWDING_SLOPE_RATIO:
-        return 0.0
-    return -float(min(z_last / (_CROWDING_EXTREME_Z * 2.0), 1.0))
-
-
-def regime_combo_weights(regime: str, cfg: dict | domain.RankingConfig) -> dict:
-    """根据大盘状态调整因子权重：BULL 偏动量+赫斯特，BEAR 偏卡玛。
-
-    系数来历（标定报告 40 日面板研究，2026-09）：
-    - BULL ×1.3：牛市 7080 行胜率 52%，20 日动量延续（48.2%→54.3%）与
-      excess_20d 延续（57.4%）——强势不追高但留动量；cal ×0.5：牛市回撤小，卡玛区分度低。
-    - BEAR cal ×1.5 / rs ×0.7：熊市 24089 行低波动防守胜率 60.1% vs 29.8%，
-      卡玛（回撤）类因子在熊市区分度最高。
-    注意：数值为单次研究定标，未经 40 日结算复验——收紧/回退随 ① 权重控制面收编再评估，勿单独调。
-    """
-    w_model = cfg["model_weight"]
-    w_rs = cfg["rel_strength_weight"]
-    w_cal = cfg["calmar_weight"]
-    w_hurst = cfg["hurst_weight"]
-    # 风险调整三指标：**不随 regime 缩放**——业务要求“必须优先考虑”，
-    # 若跟随 BULL/BEAR 系数会被稀释（如 BULL 下 hurst×1.3 相对抬高其他项）。
-    # 用 cfg.get 兼容只带旧 key 的调用方（直构 dict 的测试/回测），
-    # 默认值取 RankingConfig 默认（而非 0），确保优先语义不会被静默丢弃。
-    _d = domain.RankingConfig
-    w_sharpe = cfg.get("sharpe_weight", _d.sharpe_weight)
-    w_sortino = cfg.get("sortino_weight", _d.sortino_weight)
-    w_ttr = cfg.get("ttr_weight", _d.ttr_weight)
-    if regime == "BULL":
-        w_rs *= 1.3
-        w_hurst *= 1.3
-        w_cal *= 0.5
-    elif regime == "BEAR":
-        w_cal *= 1.5
-        w_rs *= 0.7
-        w_hurst *= 0.5
-    return {"model": w_model, "rs": w_rs, "cal": w_cal, "hurst": w_hurst,
-            "sharpe": w_sharpe, "sortino": w_sortino, "ttr": w_ttr}
-
-
-def apply_momentum_guard(df: pd.DataFrame, cfg) -> pd.DataFrame:
-    """动量护栏过滤：动量不低于门槛的候选保留（推荐排序/回测共用单一判定）。
-
-    cfg 为 RankingConfig 或兼容 dict（阈值经同一入口来源）。
-    """
-    return df[df["momentum_20d"] >= cfg["momentum_guard_pct"]]
-
-
-def score_frame(df: pd.DataFrame, model, cfg: dict | domain.RankingConfig, idx_mom: float, *,
-                default_regime: str = "NEUTRAL",
-                rbsa_weight_col: str | None = None,
-                sector_rel_momentum_col: str | None = None,
-                sector_rel_calmar_col: str | None = None,
-                sector_crowding_col: str | None = None) -> pd.DataFrame:
-    """对特征 DataFrame 统一打分：预测 → 相对化 → 归一化 → combo。
-
-    主路径 / 降级路径 / 回测共用。model 为 None 时 score_norm 取 0.5（回测无模型场景）。
-    行内已有 regime 列时优先使用，否则回退 default_regime。
-    市场状态列（MARKET_COLS）缺失时按 0 填充（防御）：正常调用方须在打分前注入。
-    """
-    df = df.copy()
-    # 防御：列缺失时按 0.0 填充（正常调用方须注入；schema 升级期间旧快照缺新列
-    # style_r2 等时，缺失=无信号=0，与 calc_features 的降级语义一致）。
-    for c in domain.MARKET_COLS + domain.FEATURE_COLS:
-        if c not in df.columns:
-            df[c] = 0.0
-    if model is not None:
-        X = df[domain.FEATURE_COLS + domain.MARKET_COLS].astype(float)
-        df["score"] = model.predict(X)
-        df = df[np.isfinite(df["score"])]
-        s_min, s_max = df["score"].min(), df["score"].max()
-        s_range = s_max - s_min if s_max > s_min else 1.0
-        df["score_norm"] = (df["score"] - s_min) / s_range
-    else:
-        df["score_norm"] = 0.5
-    df["rel_strength"] = df["mom_5d"] - idx_mom
-    # Ticket 06：相对强弱基准由 20 日动量改为 5 日动量（多窗口验证：40 日持有
-    # 视野下 5 日动量延续性最强（hot +3.08%/胜率 63%），20 日动量已无区分度）
-    calmar_clipped = df["calmar"].clip(-5, 5)
-    # 风险调整三指标（业务要求“优先考虑”）：池内 min-max 归一到 [0,1]，
-    # 与 score_norm 同量级——TTR 反向（恢复越慢得分越低）。
-    # 缺列（旧库/回测早段）补 0：归一会退化为 0.5 中性，不窃动排序。
-    for _c in ("sharpe_60d", "sortino_60d", "ttr_60d"):
-        if _c not in df.columns:
-            df[_c] = 0.0
-    sharpe_n = _minmax01(df["sharpe_60d"].astype(float))
-    sortino_n = _minmax01(df["sortino_60d"].astype(float))
-    ttr_n = 1.0 - _minmax01(df["ttr_60d"].astype(float))
-    if "regime" in df.columns and len(df) > 0 and pd.notna(df["regime"].iloc[0]):
-        regime = df["regime"].iloc[0]
-    else:
-        regime = default_regime
-    w = regime_combo_weights(regime, cfg)
-    df["combo"] = combo_score(
-        df["score_norm"], df["rel_strength"], calmar_clipped, df["hurst_60d"], w,
-        sector_rel_momentum=df[sector_rel_momentum_col] if sector_rel_momentum_col else 0.0,
-        sector_rel_calmar=df[sector_rel_calmar_col] if sector_rel_calmar_col else 0.0,
-        rbsa_weight=df[rbsa_weight_col] if rbsa_weight_col else 0.0,
-        sector_crowding=df[sector_crowding_col] if sector_crowding_col else 0.0,
-        sharpe_norm=sharpe_n,
-        sortino_norm=sortino_n,
-        ttr_norm=ttr_n,
-    )
-    return df
 
 
 def calc_rbsa(holdings: list[dict], industry_map: dict[str, str] | None = None) -> list[dict]:

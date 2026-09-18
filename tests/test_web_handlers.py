@@ -68,8 +68,8 @@ class TestIndexContext:
     def test_full_context_shape(self, monkeypatch):
         """_index_context 组合器返回全部模板 key（空数据下也安全）。"""
         ctx = dashboard.index_context()
-        for key in ("latest", "latest_list", "macro", "candidates", "fund_pool",
-                    "sector_list", "regime_label", "fund_svg", "alpha_svg",
+        for key in ("latest", "latest_list", "candidates", "fund_pool",
+                    "sector_list", "fund_svg", "alpha_svg",
                     "portfolio_svg", "sharpe_ratio", "max_drawdown",
                     "quality_curve_svg", "now", "today", "reco_status"):
             assert key in ctx
@@ -77,28 +77,6 @@ class TestIndexContext:
 
 class TestIndexContextBlocks:
     """_index_context 拆分出的窄函数（I3：模板上下文按领域块拆，可独立单测）。"""
-
-    def test_macro_block_empty(self, monkeypatch):
-        monkeypatch.setattr(webapp.repo, "get_latest_macro_news", lambda: None)
-        (macro, gainers, losers, inflow, outflow, max_in,
-         max_out, reasoning, regime, flow_net, macro_date, news_date) = dashboard.macro_block()
-        assert regime == domain.REGIME_NEUTRAL
-        assert max_in == 0 and max_out == 0
-        assert flow_net is None
-        assert macro_date == ""
-        assert news_date == ""
-
-    def test_macro_block_stale_news_date(self, monkeypatch):
-        """跨日回退：news_date 为 T-1 时透传给模板，供"非今日新闻"角标展示。"""
-        monkeypatch.setattr(webapp.repo, "get_latest_macro_news", lambda: {
-            "news_summary": "[15:00] 昨闻", "top_gainers": "", "top_losers": "",
-            "etf_net_flow": "", "flow_inflows": [], "flow_outflows": [],
-            "flow_net_total": None, "sector_reasoning": "", "regime_label": "NEUTRAL",
-            "date": "2026-08-11", "news_date": "2026-08-10",
-        })
-        result = dashboard.macro_block()
-        assert result[-1] == "2026-08-10"   # news_date
-        assert result[-2] == "2026-08-11"   # macro_date
 
     def test_quality_block_empty(self, monkeypatch):
         monkeypatch.setattr(webapp.repo, "get_quality_metrics", lambda n: [])
@@ -117,70 +95,6 @@ class TestIndexContextBlocks:
         svg, hs_svg, baseline, sharpe, mdd = dashboard.portfolio_block()
         assert svg == "" and hs_svg == "" and baseline == 50
         assert sharpe is None and mdd is None
-
-
-class TestMacroSummary:
-    def test_parse_gainers_losers_and_regime(self):
-        """领涨/领跌行业解析 + LLM regime 变体归一。"""
-        mn = {
-            "news_summary": "半导体板块大涨：政策利好\nAI板块走弱：估值回调",
-            "top_gainers": "半导体(+3.2%)、白酒(+1.1%)",
-            "top_losers": "煤炭(-2.5%)、房地产(-1.2%)",
-            "regime_label": "bullish",
-        }
-        m = domain.parse_macro_summary(mn)
-        assert m["regime_label"] == "BULL"
-        assert m["sector_gainers"][0]["name"] == "半导体"
-        assert m["sector_gainers"][0]["pct"] == "+3.20%"
-        # 领跌按跌幅从小到大排列后反转 → 最深跌幅排最后
-        assert [s["name"] for s in m["sector_losers"]] == ["房地产", "煤炭"]
-        # 快讯拆分为「标题 + 摘要」对象：冒号前为标题，摘要保留完整行
-        assert len(m["macro"]["news_items"]) == 2
-        assert m["macro"]["news_items"][0] == {"title": "半导体板块大涨", "summary": "半导体板块大涨：政策利好"}
-        assert m["macro"]["news_items"][1] == {"title": "AI板块走弱", "summary": "AI板块走弱：估值回调"}
-
-    def test_news_long_line_title_truncation(self):
-        """快讯行无冒号且为长句：标题截取到第一句标点/限长，摘要保留完整内容（含时间戳）。"""
-        raw = "[05:38] 持有67%仓位押注AI概念，同时也加杠杆，资产管理规模暴跌 这意味着什么？后续还有更多细节内容补充说明。"
-        m = domain.parse_macro_summary({"news_summary": raw})
-        item = m["macro"]["news_items"][0]
-        assert item["title"].startswith("持有67%仓位押注AI概念")
-        assert "？" not in item["title"]  # 标题不含第一句之后的标点
-        assert item["title"] != item["summary"]  # 摘要必须比标题长
-        assert item["summary"] == raw  # 摘要 = 完整行
-        assert "后续还有更多细节" in item["summary"]
-
-    def test_news_without_colon_uses_full_line(self):
-        """快讯行无冒号时整行作标题与摘要（弹出窗仍可展示完整内容）。"""
-        m = domain.parse_macro_summary({"news_summary": "央行开展公开市场操作"})
-        assert m["macro"]["news_items"][0] == {"title": "央行开展公开市场操作", "summary": "央行开展公开市场操作"}
-        assert m["macro"]["news"] == "央行开展公开市场操作"
-
-    def test_sector_reasoning_regime_chinese(self):
-        """AI赛道分析中的英文大盘状态词替换为中文（熊市/牛市/中性）。"""
-        m = domain.parse_macro_summary({
-            "news_summary": "新闻",
-            "sector_reasoning": "半导体领涨，但大盘判定为bearish，消费板块中性观望，注意bull陷阱",
-        })
-        sr = m["sector_reasoning"]
-        assert "熊市" in sr and "bearish" not in sr
-        assert "中性" in sr and "neutral" not in sr
-        assert "牛市" in sr and "bull" not in sr
-
-    def test_zh_regime_replacements(self):
-        """替换函数：大小写不敏感、无匹配原样返回。"""
-        assert domain.zh_regime("判定为 Bearish 和 BULL market") == "判定为 熊市 和 牛市 market"
-        assert domain.zh_regime("无英文大盘词") == "无英文大盘词"
-        assert domain.zh_regime("") == ""
-        assert domain.zh_regime(None) is None
-
-    def test_empty_macro(self):
-        """无宏观数据 → 默认值。"""
-        m = domain.parse_macro_summary(None)
-        assert m["regime_label"] == "NEUTRAL"
-        assert m["macro"]["news"] == "暂无快讯"
-        assert m["flow_inflows"] == []
-        assert m["max_inflow"] == 0
 
 
 class TestBuildLatestRecos:

@@ -67,8 +67,12 @@ class TestSaveSectorHistoryBatch:
     def test_insert_and_preserve_existing_net_flow(self, monkeypatch):
         """历史合成为 pct_chg 补数，不覆盖实时快照已有的 net_flow。"""
         code, name, date = "BK9999", "测试板块", "2026-08-20"
-        # 先在（同一 date, sector_code）写入带 net_flow 的实时快照
-        repo.save_sector_snapshot(date, [{"c": code, "n": name, "u": 1.0, "zjl": 12345.0}])
+        # 先在（同一 date, sector_code）写入带 net_flow 的快照行（net_flow 无历史源，
+        # 由历史合成回填时不得覆盖）
+        with db_conn() as c:
+            c.execute(
+                "INSERT INTO sector_daily_snapshot (date, sector_code, sector_name, pct_chg, net_flow) "
+                "VALUES (?, ?, ?, ?, ?)", (date, code, name, 1.0, 12345.0))
         # 再用历史合成批量写同一天
         n = repo.save_sector_history_batch([(date, code, name, 2.5)])
 

@@ -143,17 +143,6 @@ p { text-wrap: pretty; }
 }
 .pulse-dot { animation: pulse 2s infinite; }
 @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
-/* 快讯摘要向左滚动（设计稿 ticker：滚动完成后由 animationend 切换下一条） */
-@keyframes news-marquee {
-  from { transform: translateX(0); }
-  to { transform: translateX(-100%); }
-}
-.news-marquee-anim {
-  animation-name: news-marquee;
-  animation-timing-function: linear;
-  animation-iteration-count: 1;
-  will-change: transform;
-}
 .visible-scrollbar::-webkit-scrollbar { width: 6px; }
 .visible-scrollbar::-webkit-scrollbar-thumb { background: var(--color-rule-2); border-radius: 4px; }
 .visible-scrollbar { scrollbar-width: thin; scrollbar-color: var(--color-rule-2) transparent; }

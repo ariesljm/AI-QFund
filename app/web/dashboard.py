@@ -169,22 +169,6 @@ def build_latest_recos(recs: list[dict], today: str) -> tuple[dict | None, list[
     return latest, latest_list, latest_rec_id or 0
 
 
-class MacroBlock(NamedTuple):
-    """宏观摘要块（13 字段，模板上下文用）。NamedTuple 兼容位置解包。"""
-    macro: dict
-    sector_gainers: list[dict]
-    sector_losers: list[dict]
-    flow_inflows: list[dict]
-    flow_outflows: list[dict]
-    max_inflow: float
-    max_outflow: float
-    sector_reasoning: str
-    regime_label: str
-    flow_net_total: float | None
-    macro_date: str
-    news_date: str
-
-
 class QualityBlock(NamedTuple):
     """质量度量块（6 字段）。"""
     quality_metrics: list[dict]
@@ -202,17 +186,6 @@ class PortfolioBlock(NamedTuple):
     baseline: float
     sharpe: float | None
     max_drawdown: float | None
-
-
-def macro_block() -> MacroBlock:
-    """宏观摘要块：macro_news 行 → 展示结构（模板上下文用）。"""
-    mn = repo.get_latest_macro_news()
-    macro = domain.parse_macro_summary(mn)
-    return MacroBlock(macro["macro"], macro["sector_gainers"], macro["sector_losers"],
-                      macro["flow_inflows"], macro["flow_outflows"], macro["max_inflow"],
-                      macro["max_outflow"], macro["sector_reasoning"], macro["regime_label"],
-                      macro["flow_net_total"], macro["macro_date"],
-                      macro["news_date"])
 
 
 def model_trained_at() -> str | None:
@@ -303,11 +276,6 @@ def index_context() -> dict[str, object]:
         today,
     )
 
-    # 宏观摘要
-    (macro_data, sector_gainers, sector_losers, flow_inflows, flow_outflows,
-     max_inflow, max_outflow, sector_reasoning, regime_label,
-     flow_net_total, macro_date, news_date) = macro_block()
-
     # 质量度量 + 累计超额曲线 + 最新一期指标
     (quality_metrics, quality_curve_svg, quality_curve_baseline,
      latest_ic, latest_excess_win_rate, latest_profit_rate) = quality_block()
@@ -347,7 +315,6 @@ def index_context() -> dict[str, object]:
         "latest_list": latest_list,
         "latest_rec_id": latest_rec_id,
         "reco_status": reco_status,
-        "macro": macro_data,
         "candidates": candidate_list,
         "fund_pool": fund_pool,
         "pool_types": pool_types,
@@ -356,8 +323,6 @@ def index_context() -> dict[str, object]:
         "data_latest_date": repo.get_data_latest_date(),
         "model_last_trained": model_trained_at(),
         "sector_list": sector_list,
-        "sector_reasoning": sector_reasoning,
-        "regime_label": regime_label,
         "nav_pcts": nav_pcts,
         "nav_dates": nav_dates,
         "hs_pcts": hs_pcts,
@@ -369,8 +334,6 @@ def index_context() -> dict[str, object]:
         "fund_features": fund_features,
         "top_holdings": top_holdings,
         "top_holdings2": top_holdings2,
-        "sector_gainers": sector_gainers,
-        "sector_losers": sector_losers,
         "uptime_days": uptime_days,
         "alpha": alpha,
         "alpha_svg": alpha_svg,
@@ -378,13 +341,6 @@ def index_context() -> dict[str, object]:
         "total_return": total_return,
         "rec_count": rec_count,
         "hit_rate": hit_rate,
-        "flow_inflows": flow_inflows,
-        "flow_outflows": flow_outflows,
-        "flow_net_total": flow_net_total,
-        "max_inflow": max_inflow,
-        "max_outflow": max_outflow,
-        "macro_date": macro_date,
-        "news_date": news_date,
         "quality_metrics": quality_metrics,
         "quality_curve_svg": quality_curve_svg,
         "quality_curve_baseline": quality_curve_baseline,
@@ -400,7 +356,6 @@ def index_context() -> dict[str, object]:
         "tracked_states": tracked_states,
         "calibration_curve": calibration_curve,
         "signal_labels": domain.STATE_LABELS,
-        "regime_labels": domain.REGIME_LABELS,
     }
 
 def tracked_states_block(limit: int = 20) -> list[dict]:

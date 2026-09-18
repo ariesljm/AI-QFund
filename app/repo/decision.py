@@ -6,7 +6,7 @@ from datetime import datetime
 from app import domain
 from app.database import db_conn
 from app.repo import meta_keys as META
-from app.repo.base import get_meta, save_meta
+from app.repo.base import get_meta
 from app.utils.log import get_logger
 
 logger = get_logger("repo")
@@ -32,45 +32,6 @@ def count_recommendation_domain() -> dict[str, int]:
     with db_conn() as conn:
         counts = {'recommend_log': conn.execute('SELECT COUNT(*) FROM recommend_log').fetchone()[0], 'sector_selections': conn.execute('SELECT COUNT(*) FROM sector_selections').fetchone()[0], 'monitor_events': conn.execute('SELECT COUNT(*) FROM monitor_events').fetchone()[0], 'evolution_insights': conn.execute('SELECT COUNT(*) FROM evolution_insights').fetchone()[0], 'quality_metrics': conn.execute('SELECT COUNT(*) FROM quality_metrics').fetchone()[0], 'macro_news': conn.execute('SELECT COUNT(*) FROM macro_news').fetchone()[0], 'empty_recommendations': conn.execute('SELECT COUNT(*) FROM empty_recommendations').fetchone()[0]}
     return counts
-
-def exit_position(code: str, sell_reason: str, return_rate: float | None, statuses: tuple[str, ...], today: str) -> None:
-    placeholders = ','.join('?' * len(statuses))
-    with db_conn() as conn:
-        conn.execute(f"UPDATE recommend_log SET status='EXIT', sell_reason=?, exit_date=?, return_rate=? WHERE code=? AND status IN ({placeholders})", (sell_reason, today, return_rate, code, *statuses))
-
-def get_active_insights(limit: int = 8, exclude_ranking: bool = True,
-                        regime_label: str | None = None) -> list[tuple[int, str]]:
-    """活跃进化洞察（推荐终选定论用），返回 (id, insight) 列表。
-
-    exclude_ranking=True（默认）：过滤排分自纠偏报告——量化诊断文本不混入
-    LLM 定论 prompt 的"历史教训"（Q7 共识：诊断与投资教训语义分离）。
-    regime_label（如"牛市"/"熊市"/"中性"，ticket 13）：当前市场状态——condition
-    或教训文本提及该状态者优先注入（自我认知回流），其余按新近度补足。
-    """
-    sql = ("SELECT id, insight FROM evolution_insights "
-           "WHERE active = 1 AND confidence > 0.3")
-    params: list = []
-    if exclude_ranking:
-        sql += " AND insight_type != 'ranking'"
-    if regime_label:
-        # 提及当前市场状态的洞察优先（COALESCE 兼容 condition 为 NULL）
-        sql += (" ORDER BY CASE WHEN COALESCE(condition, '') LIKE ? "
-                "OR insight LIKE ? THEN 0 ELSE 1 END, created_date DESC")
-        like = f"%{regime_label}%"
-        params += [like, like]
-    else:
-        sql += " ORDER BY created_date DESC"
-    sql += " LIMIT ?"
-    params.append(limit)
-    with db_conn() as conn:
-        rows = conn.execute(sql, params).fetchall()
-    return [(r[0], r[1]) for r in rows]
-
-def get_all_insights() -> list[str]:
-    """全部洞察文本（去重冲突判断用）。"""
-    with db_conn() as conn:
-        rows = conn.execute('SELECT insight FROM evolution_insights').fetchall()
-    return [r[0] for r in rows]
 
 def get_empty_recommendation(date_str: str | None=None) -> dict | None:
     """读取空推荐日记录；date_str 为空时返回最近一条，无则返回 None。
@@ -98,17 +59,6 @@ def get_empty_recommendation(date_str: str | None=None) -> dict | None:
         return None
     return {'date': row[0], 'reasoning': row[1] or '', 'reason_type': row[2] or ''}
 
-
-def clear_empty_recommendation(date_str: str) -> None:
-    """清除指定日期的空推荐记录（同日推荐成功入库后调用，避免与成功推荐并存）。"""
-    with db_conn() as conn:
-        conn.execute('DELETE FROM empty_recommendations WHERE date = ?', (date_str,))
-
-def get_entry(code: str, statuses: tuple[str, ...]=('HOLD', 'BUY_MORE', 'WARNING')) -> dict | None:
-    placeholders = ','.join('?' * len(statuses))
-    with db_conn() as conn:
-        row = conn.execute(f'SELECT id, code, recommend_date, entry_nav, status FROM recommend_log WHERE code = ? AND status IN ({placeholders}) ORDER BY id DESC LIMIT 1', (code, *statuses)).fetchone()
-    return {'id': row[0], 'code': row[1], 'recommend_date': row[2], 'entry_nav': row[3], 'status': row[4]} if row else None
 
 def get_entry_nav(code: str, date: str) -> float | None:
     with db_conn() as conn:
@@ -157,88 +107,6 @@ def get_holding_codes(statuses: tuple[str, ...]=('HOLD', 'BUY_MORE', 'WARNING'))
             statuses,
         ).fetchall()
     return [{'code': r[0], 'name': r[1], 'reco_date': r[2], 'buy_reason': r[3], 'sector': r[4]} for r in rows]
-
-
-def get_entry_score(code: str) -> float | None:
-    """买入时模型分数（recommend_log.score），无记录返回 None。
-
-    架构深化 B：展示副作用隔离——原实现借道 get_fund_detail（连带 buy_reason 切片），
-    监控装配只取 score，现经窄读直达，不再消费展示层副作用。
-    """
-    with db_conn() as conn:
-        row = conn.execute('SELECT score FROM recommend_log WHERE code = ? ORDER BY id DESC LIMIT 1', (code,)).fetchone()
-    return row[0] if row else None
-
-
-def get_entry_sector_anchor(code: str,
-                            statuses: tuple[str, ...]=('HOLD', 'BUY_MORE', 'WARNING')) -> tuple[list[str], list[str], str] | None:
-    """买入时推荐赛道锚点 (recommended_sectors, risk_sectors, sector_reasoning)。
-
-    读 sector_selections 中与最新持仓推荐关联的持久化赛道判断——监控赛道锚点
-    （R3a）以此为基准，避免用实时重建的宏观上下文（会随时间漂移）。
-    无关联记录返回 None（该基金无赛道锚点，跳过 R3a）。
-    """
-    placeholders = ','.join('?' * len(statuses))
-    with db_conn() as conn:
-        row = conn.execute(
-            f'SELECT ss.recommended_sectors, ss.risk_sectors, ss.sector_reasoning '
-            f'FROM sector_selections ss '
-            f'JOIN recommend_log rl ON rl.id = ss.recommend_log_id '
-            f'WHERE rl.code = ? AND rl.status IN ({placeholders}) '
-            f'ORDER BY ss.id DESC LIMIT 1',
-            (code, *statuses),
-        ).fetchone()
-    if not row:
-        return None
-    return (_json.loads(row[0] or '[]'), _json.loads(row[1] or '[]'), row[2] or '')
-
-def get_entry_feature_snapshot(code: str, statuses: tuple[str, ...]=('HOLD', 'BUY_MORE', 'WARNING')) -> dict | None:
-    """最近一条持仓状态推荐的 feature_snapshot（解析后的 dict）；无记录/无快照返回 None。
-
-    监控风格漂移防线的买入基准读取：推荐时已把完整 RBSA 持久化到快照。
-    """
-    with db_conn() as conn:
-        row = conn.execute(
-            'SELECT feature_snapshot FROM recommend_log '
-            'WHERE code = ? AND status IN ({}) AND feature_snapshot IS NOT NULL '
-            'ORDER BY id DESC LIMIT 1'.format(','.join('?' * len(statuses))),
-            (code, *statuses)).fetchone()
-    if not row or not row[0]:
-        return None
-    try:
-        parsed = _json.loads(row[0])
-        return parsed if isinstance(parsed, dict) else None
-    except (TypeError, ValueError):
-        return None
-
-
-def get_holding_log_id(code: str, statuses: tuple[str, ...]) -> int | None:
-    placeholders = ','.join('?' * len(statuses))
-    with db_conn() as conn:
-        row = conn.execute(f'SELECT id FROM recommend_log WHERE code = ? AND status IN ({placeholders}) ORDER BY id DESC LIMIT 1', (code, *statuses)).fetchone()
-    return row[0] if row else None
-
-def get_latest_macro_news() -> dict | None:
-    """读取最近一条宏观摘要（Web 面板展示用，推荐决策域的一部分）。"""
-    with db_conn() as conn:
-        row = conn.execute('SELECT news_summary, top_gainers, top_losers, etf_net_flow, flow_json, context_json, date, news_date FROM macro_news ORDER BY date DESC LIMIT 1').fetchone()
-    if not row:
-        return None
-    flow = _json.loads(row[4]) if row[4] else {}
-    ctx = _json.loads(row[5]) if row[5] else {}
-    # news_date：新闻条目实际归属日期；旧行无该列时回退行日期（行为不变）
-    return {'news_summary': row[0] or '', 'top_gainers': row[1] or '', 'top_losers': row[2] or '', 'etf_net_flow': row[3] or '', 'flow_inflows': flow.get('top_flows', []), 'flow_outflows': flow.get('top_outflows', []), 'flow_net_total': flow.get('total_net'), 'recommended_sectors': ctx.get('recommended_sectors', []), 'risk_sectors': ctx.get('risk_sectors', []), 'sector_reasoning': ctx.get('sector_reasoning', ''), 'regime_label': ctx.get('regime_label', 'NEUTRAL'), 'date': row[6] or '', 'news_date': row[7] or row[6] or ''}
-
-
-def get_recent_macro_news(days: int = 7) -> list[tuple]:
-    """近 N 日财经要闻回顾（Ticket 07 LLM 素材聚合源）：(date, news_summary) 升序，
-    跳过无摘要或过短的历史行（避免噪声进入 prompt）。"""
-    with db_conn() as conn:
-        rows = conn.execute(
-            "SELECT date, news_summary FROM macro_news "
-            "WHERE news_summary IS NOT NULL AND news_summary != '' "
-            "ORDER BY date DESC LIMIT ?", (days,)).fetchall()
-    return list(reversed([(d, s) for d, s in rows if s.strip()]))
 
 
 def get_purchase_status(code: str) -> str | None:
@@ -312,56 +180,6 @@ def get_latest_recommendations(limit: int=2) -> list[dict]:
         if len(out) >= limit:
             break
     return out
-
-def get_settled_cases_after(ss_id: int, limit: int = 300) -> list[dict]:
-    """已结算（outcome 非待定）且 id > ss_id 的推荐案例（元分析增量收集）。
-
-    与历史按月收集同列结构，但不按月过滤：结算由 FORWARD_DAYS 净值窗口决定，
-    晚满窗的案例在下次元分析时按 id 游标自然补入——修复「月 1 号未满窗、
-    下月按月查不到」导致月中推荐永久丢失的时间窗错位（get_monthly_cases 已删除）。
-    """
-    with db_conn() as conn:
-        rows = conn.execute(
-            "SELECT ss.id, ss.recommend_log_id, ss.recommended_sectors, ss.sector_reasoning, "
-            "ss.regime_label, ss.outcome, ss.outcome_note, rl.buy_reason, rl.code, rl.name, "
-            "rl.recommend_date, "
-            "me.signal, me.trigger_trailing, me.trigger_drift, me.trigger_sector_adv, "
-            "me.logic_verdict, me.sector_risk, me.holding_risk, me.detail "
-            "FROM sector_selections ss "
-            "LEFT JOIN recommend_log rl ON rl.id = ss.recommend_log_id "
-            "LEFT JOIN monitor_events me ON me.recommend_log_id = rl.id "
-            "WHERE ss.id > ? AND ss.outcome != '待定' ORDER BY ss.id LIMIT ?",
-            (ss_id, limit)).fetchall()
-    cols = ["id", "recommend_log_id", "recommended_sectors", "sector_reasoning",
-            "regime_label", "outcome", "outcome_note", "buy_reason", "code", "name",
-            "date",
-            "signal", "trigger_trailing", "trigger_drift", "trigger_sector_adv",
-            "logic_verdict", "sector_risk", "holding_risk", "detail"]
-    return [dict(zip(cols, r, strict=False)) for r in rows]
-
-def get_vetoed_audit_rows(limit: int = 300) -> list[tuple]:
-    """T07 否决审计数据：推荐日 + 选中代码 + 结构化否决记录 (date, code, name, vetoed_json)。
-
-    否决审计（LLM 决策质量闭环）：结算后回查被否决基金的表现，
-    度量 LLM 否决是否系统性错杀上涨基金（否决正确率的数据基础）。
-    """
-    with db_conn() as conn:
-        return conn.execute(
-            "SELECT recommend_date, code, name, vetoed_json FROM recommend_log "
-            "WHERE vetoed_json IS NOT NULL AND vetoed_json != '' "
-            "ORDER BY recommend_date DESC LIMIT ?", (limit,)).fetchall()
-
-
-def get_pending_sector_selections() -> list[tuple]:
-    """全部待结算的赛道选择，返回 (id, recommend_log_id, used_insight_ids, pool_sectors)。
-
-    不按月过滤：进化引擎每月结算"全部待定"，幂等且防跨月遗漏
-    （某月漏跑进化时，遗留的待定记录仍会在下次结算中被处理）。
-    pool_sectors（P1-5）：量化池内候选赛道 JSON，结算时逐赛道回看 40 日收益。
-    """
-    with db_conn() as conn:
-        rows = conn.execute("SELECT id, recommend_log_id, used_insight_ids, pool_sectors FROM sector_selections WHERE (outcome = '待定' OR outcome IS NULL)").fetchall()
-    return list(rows)
 
 def get_purchase_statuses(codes: list[str]) -> dict[str, str]:
     """候选批量申购状态：{code: status}（T10 批量原语，N+1 收敛）。
@@ -464,34 +282,6 @@ def get_ranking_cfg() -> domain.RankingConfig:
             pass
     return cfg
 
-def get_reco_date_of(code: str, statuses: tuple[str, ...]=('HOLD', 'BUY_MORE', 'WARNING')) -> str | None:
-    placeholders = ','.join('?' * len(statuses))
-    with db_conn() as conn:
-        row = conn.execute(f'SELECT recommend_date FROM recommend_log WHERE code = ? AND status IN ({placeholders}) ORDER BY id DESC LIMIT 1', (code, *statuses)).fetchone()
-    return row[0] if row else None
-
-def get_recommendation_by_id(log_id: int) -> tuple[str, str, float | None, str, float | None] | None:
-    """按 id 读取推荐记录 (code, status, return_rate, recommend_date, entry_nav)。"""
-    with db_conn() as conn:
-        row = conn.execute('SELECT code, status, return_rate, recommend_date, entry_nav FROM recommend_log WHERE id = ?', (log_id,)).fetchone()
-    return row if row else None
-
-def get_sector_insights(limit: int=5) -> list[tuple[int, str]]:
-    """活跃赛道洞察（选赛道 LLM prompt 用），返回 (id, insight) 列表。"""
-    with db_conn() as conn:
-        rows = conn.execute("SELECT id, insight FROM evolution_insights WHERE insight_type = 'sector' AND active = 1 AND confidence > 0.3 ORDER BY created_date DESC LIMIT ?", (limit,)).fetchall()
-    return [(r[0], r[1]) for r in rows]
-
-
-def get_sector_insights_dated(limit: int = 10) -> list[tuple[int, str, str]]:
-    """活跃赛道洞察含生效日（因果验证用），返回 (id, insight, created_date)。"""
-    with db_conn() as conn:
-        rows = conn.execute(
-            "SELECT id, insight, created_date FROM evolution_insights "
-            "WHERE insight_type = 'sector' AND active = 1 AND confidence > 0.3 "
-            "ORDER BY created_date DESC LIMIT ?", (limit,)).fetchall()
-    return [(r[0], r[1], r[2]) for r in rows]
-
 def get_tracking_list() -> list[dict]:
     """追踪监控列表：每基金一行，rec_count = 被推荐引擎选中的累计运行次数。
 
@@ -502,21 +292,6 @@ def get_tracking_list() -> list[dict]:
     with db_conn() as conn:
         rows = conn.execute('SELECT r.code, fb.name, MIN(r.recommend_date) AS first_date, SUM(COALESCE(r.rec_count, 1)) AS rec_count, MAX(r.status) AS status, MAX(r.exit_date) AS exit_date FROM recommend_log r LEFT JOIN fund_basic fb ON fb.code = r.code GROUP BY r.code ORDER BY MAX(r.recommend_date) DESC').fetchall()
     return [{'code': r[0], 'name': r[1] or '', 'first_date': r[2] or '', 'rec_count': r[3], 'status': r[4] or 'HOLD', 'exit_date': r[5] or ''} for r in rows]
-
-def insert_insight(insight: str, insight_type: str, created_date: str, active: int=1,
-                   confidence: float | None = None, condition: str | None = None) -> None:
-    """写入一条进化洞察（confidence/condition 供元分析透传；旧调用不带则存 NULL）。"""
-    with db_conn() as conn:
-        conn.execute('INSERT INTO evolution_insights (insight, insight_type, created_date, active, confidence, condition) VALUES (?, ?, ?, ?, ?, ?)',
-                     (insight, insight_type, created_date, active, confidence, condition))
-
-def insert_monitor_event(code: str, date: str, signal: str, trailing: bool, drift: bool, sector_adv: bool, logic_verdict: str, sector_risk: bool, holding_risk: bool, detail: str, log_id: int | None, is_stale: bool = False) -> None:
-    """写入监控事件。同 (code, date) 幂等：同日重复运行（手动+调度双跑）覆盖旧行，
-    避免 WARNING 升级序列把同一天的重复记录当多个监控日计数。"""
-    with db_conn() as conn:
-        conn.execute('DELETE FROM monitor_events WHERE code = ? AND date = ?', (code, date))
-        conn.execute('INSERT INTO monitor_events (code, date, signal, trigger_trailing, trigger_drift, trigger_sector_adv, logic_verdict, sector_risk, holding_risk, detail, recommend_log_id, is_stale) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (code, date, signal, trailing, drift, sector_adv, logic_verdict, sector_risk, holding_risk, detail, log_id, 1 if is_stale else 0))
-
 
 def insert_llm_audit(caller: str, prompt: str, raw_output: str, parsed_json: str | None,
                   duration_ms: float, tokens: int, ok: bool, max_rows: int = 5000) -> None:
@@ -564,35 +339,6 @@ def get_recent_audits(limit: int = 10) -> list[dict]:
     return out
 
 
-def insert_monitor_score(code: str, date: str, score: float, model_version: str = "") -> None:
-    """写入当日模型预测分（幂等：同 code+date 覆盖）。R1 模型序列确认期的数据源。"""
-    with db_conn() as conn:
-        conn.execute('INSERT OR REPLACE INTO monitor_scores (code, date, score, model_version) VALUES (?, ?, ?, ?)',
-                     (code, date, score, model_version))
-
-
-def get_recent_scores(code: str, limit: int = 5) -> list[tuple]:
-    """最近 limit 条预测序列 (date, score, model_version)，按日期倒序。"""
-    with db_conn() as conn:
-        return conn.execute(
-            'SELECT date, score, model_version FROM monitor_scores WHERE code = ? ORDER BY date DESC LIMIT ?',
-            (code, limit)).fetchall()
-
-
-def get_recent_monitor_signals(code: str, limit: int = 25,
-                                include_stale: bool = False) -> list[tuple]:
-    """最近 limit 条监控信号 (date, signal)，按日期倒序（WARNING 升级用）。
-
-    include_stale=False（默认）：排除数据告警事件（净值陈旧是数据问题，
-    不计入信号升级序列——数据问题与信号问题语义分离）。
-    """
-    sql = "SELECT date, signal FROM monitor_events WHERE code = ?"
-    if not include_stale:
-        sql += " AND is_stale = 0"
-    sql += " ORDER BY date DESC LIMIT ?"
-    with db_conn() as conn:
-        return conn.execute(sql, (code, limit)).fetchall()
-
 def insert_recommendation(date_str: str, code: str, name: str, rank: int, score: float, combo: float, regime: str, buy_reason: str, status: str='HOLD', feature_snapshot: str | None=None, entry_nav: float | None=None, candidate_codes: list | None=None, vetoed: list | None=None, reco_path: str='sector', decision_logic: str = '') -> int:
     """写入推荐记录，返回新行 id。status 覆盖 HOLD（正常）/REJECT（风控拦截）。
 
@@ -625,115 +371,6 @@ def insert_recommendation(date_str: str, code: str, name: str, rank: int, score:
             return row[0]
         cur = conn.execute('INSERT INTO recommend_log (recommend_date, code, name, rank, score, combo, regime, buy_reason, status, feature_snapshot, entry_nav, candidate_codes, vetoed_json, reco_path, decision_logic) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (date_str, code, name, rank, score, combo, regime, buy_reason, status, feature_snapshot, entry_nav, cand_json, veto_json, reco_path, decision_logic))
         return cur.lastrowid or 0
-
-def insert_sector_selection(date_str: str, log_id: int, recommended_sectors: list, risk_sectors: list, sector_reasoning: str, regime_label: str, used_insight_ids: list | None = None, pool_sectors: list | None = None) -> None:
-    """写入当日赛道选择快照。used_insight_ids：选赛道时实际携带的 sector 洞察 id（Q4 反馈回路关联）。
-
-    pool_sectors（P1-5）：量化池内全部候选赛道——结算时逐赛道回看 40 日收益，
-    度量 LLM 否决/未选是否系统性错过上涨赛道（否决反事实）。
-    """
-    used_json = _json.dumps(used_insight_ids or [], ensure_ascii=False)
-    with db_conn() as conn:
-        conn.execute('INSERT INTO sector_selections (date, recommend_log_id, recommended_sectors, risk_sectors, sector_reasoning, regime_label, used_insight_ids, pool_sectors) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', (date_str, log_id, _json.dumps(recommended_sectors, ensure_ascii=False), _json.dumps(risk_sectors, ensure_ascii=False), sector_reasoning, regime_label, used_json, _json.dumps(pool_sectors or [], ensure_ascii=False)))
-
-
-def get_empty_reco_dates(days: int = 60) -> list[str]:
-    """近 N 天的空推荐日日期（P1-5 空仓率监控）。"""
-    from datetime import datetime as _dt
-    from datetime import timedelta as _td
-    since = (_dt.now() - _td(days=days)).strftime("%Y-%m-%d")
-    with db_conn() as conn:
-        rows = conn.execute("SELECT date FROM empty_recommendations WHERE date >= ?", (since,)).fetchall()
-    return [r[0] for r in rows]
-
-
-def get_reco_dates(days: int = 60) -> list[str]:
-    """近 N 天有实际推荐入库的日期（P1-5 空仓率监控分母）。"""
-    from datetime import datetime as _dt
-    from datetime import timedelta as _td
-    since = (_dt.now() - _td(days=days)).strftime("%Y-%m-%d")
-    with db_conn() as conn:
-        rows = conn.execute("SELECT DISTINCT recommend_date FROM recommend_log WHERE recommend_date >= ?", (since,)).fetchall()
-    return [r[0] for r in rows]
-
-
-def get_pool_outcomes_rows() -> list[tuple]:
-    """已结算且带池内反事实收益的赛道选择行 (id, date, recommended_sectors, pool_sectors, pool_outcomes)。"""
-    with db_conn() as conn:
-        return conn.execute(
-            "SELECT id, date, recommended_sectors, pool_sectors, pool_outcomes "
-            "FROM sector_selections WHERE outcome != '待定' AND pool_outcomes IS NOT NULL"
-        ).fetchall()
-
-
-def mark_insights_applied(insight_ids: list[int], date: str) -> None:
-    """标记洞察进入 prompt 使用（apply_count+1、last_applied_date 更新，Q4 反馈回路）。"""
-    if not insight_ids:
-        return
-    ph = ','.join('?' * len(insight_ids))
-    with db_conn() as conn:
-        conn.execute(f'UPDATE evolution_insights SET apply_count = apply_count + 1, last_applied_date = ? WHERE id IN ({ph})', (date, *insight_ids))
-
-
-def adjust_insight_confidence(insight_id: int, delta: float) -> None:
-    """按采纳结果调整洞察置信度，clamp 到 [0,1]（Q4 反馈回路：胜 +、负 -，
-    幅度由调用方传 _INSIGHT_REWARD_DELTA=±0.10）。"""
-    with db_conn() as conn:
-        conn.execute('UPDATE evolution_insights SET confidence = MIN(MAX(confidence + ?, 0.0), 1.0) WHERE id = ?', (delta, insight_id))
-
-def list_active_insights() -> list[tuple]:
-    """活跃洞察（置信度衰减用），返回 (id, confidence, apply_count)。"""
-    with db_conn() as conn:
-        rows = conn.execute('SELECT id, confidence, apply_count FROM evolution_insights WHERE active = 1').fetchall()
-    return list(rows)
-
-def record_empty_recommendation(date_str: str, reasoning: str,
-                                reason_type: str = "no_opportunity") -> None:
-    """记录一个空推荐日（每天一条，可回溯历史）。
-
-    reason_type 分层（审计 P1-2）：no_opportunity=市场/量化判断无机会（合法决策）；
-    data_failure=数据故障导致空推（特征陈旧/缺失），便于面板区分"今日确实无机会"
-    与"系统没数据而假装无机会"。
-    """
-    with db_conn() as conn:
-        conn.execute('INSERT INTO empty_recommendations (date, reasoning, reason_type) VALUES (?, ?, ?) '
-                     'ON CONFLICT(date) DO UPDATE SET reasoning = excluded.reasoning, reason_type = excluded.reason_type',
-                     (date_str, reasoning, reason_type))
-
-def save_context(date_str: str, context_json: dict) -> None:
-    """写入当日宏观上下文快照（Web 面板"AI赛道分析"展示数据源；覆盖式，非缓存）。"""
-    with db_conn() as conn:
-        conn.execute('INSERT INTO macro_news (date, context_json) VALUES (?, ?) ON CONFLICT(date) DO UPDATE SET context_json = excluded.context_json', (date_str, _json.dumps(context_json, ensure_ascii=False)))
-
-def save_flow_data(date_str: str, flow_json: dict) -> None:
-    """写入当日资金流数据（推荐决策域的一部分）。"""
-    with db_conn() as conn:
-        conn.execute('INSERT INTO macro_news (date, flow_json) VALUES (?, ?) ON CONFLICT(date) DO UPDATE SET flow_json = excluded.flow_json', (date_str, _json.dumps(flow_json, ensure_ascii=False)))
-
-
-def save_sector_snapshot(date_str: str, sectors: list[dict]) -> None:
-    """持久化当日全行业板块快照（涨跌幅+主力净流入），量化定池面板数据源。
-
-    sectors 为东财板块行（n=名称, c=代码, u=涨跌幅%, zjl=主力净流入万元）；
-    覆盖式 upsert，同一 (date, sector_code) 只保留最新一次抓取结果。
-    """
-    rows = [(
-        date_str,
-        str(d.get('c') or ''),
-        str(d.get('n') or ''),
-        float(d.get('u') or 0) if d.get('u') not in (None, '') else None,
-        float(d.get('zjl') or 0) if d.get('zjl') not in (None, '') else None,
-    ) for d in sectors if d.get('c') and d.get('n')]
-    if not rows:
-        return
-    with db_conn() as conn:
-        conn.executemany(
-            'INSERT INTO sector_daily_snapshot (date, sector_code, sector_name, pct_chg, net_flow) '
-            'VALUES (?, ?, ?, ?, ?) '
-            'ON CONFLICT(date, sector_code) DO UPDATE SET '
-            'sector_name = excluded.sector_name, pct_chg = excluded.pct_chg, net_flow = excluded.net_flow',
-            rows)
-
 
 def save_sector_history_batch(rows: list[tuple[str, str, str, float]]) -> int:
     """批量写入板块历史日线（成分股合成回填，ticket 02）。
@@ -776,48 +413,6 @@ def get_sector_pct_map(start: str, end: str) -> dict[str, dict[str, float]]:
     return by_sector
 
 
-def save_fund_style(fund_code: str, trade_date: str, top: list[tuple[str, float]],
-                    r_squared: float) -> None:
-    """写入净值反推风格暴露（Top-2 行业 + 拟合优度），同 (fund_code, trade_date) 覆盖。"""
-    i1, w1 = top[0] if len(top) > 0 else (None, None)
-    i2, w2 = top[1] if len(top) > 1 else (None, None)
-    with db_conn() as conn:
-        conn.execute(
-            'INSERT INTO fund_style_track '
-            '(fund_code, trade_date, industry_1, weight_1, industry_2, weight_2, r_squared) '
-            'VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(fund_code, trade_date) DO UPDATE SET '
-            'industry_1 = excluded.industry_1, weight_1 = excluded.weight_1, '
-            'industry_2 = excluded.industry_2, weight_2 = excluded.weight_2, '
-            'r_squared = excluded.r_squared',
-            (fund_code, trade_date, i1, w1, i2, w2, r_squared))
-
-
-def get_fund_style(fund_code: str, limit: int = 1,
-                   as_of: str | None = None) -> list[dict]:
-    """最近 N 条风格反推结果（最新在前）；as_of 限定 trade_date <= as_of（取截至该日的最近一条）。"""
-    sql = ('SELECT trade_date, industry_1, weight_1, industry_2, weight_2, r_squared '
-           'FROM fund_style_track WHERE fund_code = ?')
-    params: list = [fund_code]
-    if as_of:
-        sql += ' AND trade_date <= ?'
-        params.append(as_of)
-    sql += ' ORDER BY trade_date DESC LIMIT ?'
-    params.append(limit)
-    with db_conn() as conn:
-        rows = conn.execute(sql, params).fetchall()
-    return [{"trade_date": r[0], "industry_1": r[1], "weight_1": r[2],
-             "industry_2": r[3], "weight_2": r[4], "r_squared": r[5]} for r in rows]
-
-def save_macro_news(date_str: str, news: str, top_gainers: str, top_losers: str, etf_net_flow: str,
-                    news_date: str = "") -> None:
-    """写入当日宏观摘要（新闻/领涨领跌/资金流，推荐决策域的一部分）。
-
-    news_date：新闻条目实际归属日期（跨日回退时为 T-1），供 UI 区分展示；
-    行主键仍是决策日期 date_str。
-    """
-    with db_conn() as conn:
-        conn.execute('INSERT INTO macro_news (date, news_summary, top_gainers, top_losers, etf_net_flow, news_date) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(date) DO UPDATE SET news_summary=excluded.news_summary, top_gainers=excluded.top_gainers, top_losers=excluded.top_losers, etf_net_flow=excluded.etf_net_flow, news_date=excluded.news_date', (date_str, news, top_gainers, top_losers, etf_net_flow, news_date))
-
 def save_quality_metrics(m: dict) -> None:
     """保存一次质量度量结果（同区间幂等：重复运行覆盖）。"""
     points_json = _json.dumps(m.get('points', []), ensure_ascii=False)
@@ -826,36 +421,6 @@ def save_quality_metrics(m: dict) -> None:
     e2e_points_json = _json.dumps(m.get('e2e_points', []), ensure_ascii=False)
     with db_conn() as conn:
         conn.execute('INSERT INTO quality_metrics (computed_date, period_start, period_end, ic, excess_win_rate, mean_excess, cum_excess, profit_rate, mean_abs_ret, payoff_ratio, sample_count, decision_loss, decision_gap_best, points_json, by_path_json, by_score_bucket_json, e2e_profit_rate, e2e_mean_ret, e2e_payoff_ratio, timing_contribution, e2e_sample_count, e2e_points_json, e2e_mean_hold_days, e2e_mean_max_drawdown) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(period_start, period_end) DO UPDATE SET computed_date = excluded.computed_date, ic = excluded.ic, excess_win_rate = excluded.excess_win_rate, mean_excess = excluded.mean_excess, cum_excess = excluded.cum_excess, profit_rate = excluded.profit_rate, mean_abs_ret = excluded.mean_abs_ret, payoff_ratio = excluded.payoff_ratio, sample_count = excluded.sample_count, decision_loss = excluded.decision_loss, decision_gap_best = excluded.decision_gap_best, points_json = excluded.points_json, by_path_json = excluded.by_path_json, by_score_bucket_json = excluded.by_score_bucket_json, e2e_profit_rate = excluded.e2e_profit_rate, e2e_mean_ret = excluded.e2e_mean_ret, e2e_payoff_ratio = excluded.e2e_payoff_ratio, timing_contribution = excluded.timing_contribution, e2e_sample_count = excluded.e2e_sample_count, e2e_points_json = excluded.e2e_points_json, e2e_mean_hold_days = excluded.e2e_mean_hold_days, e2e_mean_max_drawdown = excluded.e2e_mean_max_drawdown', (m['computed_date'], m.get('period_start'), m.get('period_end'), m.get('ic'), m.get('excess_win_rate'), m.get('mean_excess'), m.get('cum_excess'), m.get('profit_rate'), m.get('mean_abs_ret'), m.get('payoff_ratio'), m.get('sample_count', 0), m.get('decision_loss'), m.get('decision_gap_best'), points_json, by_path_json, by_score_bucket_json, m.get('e2e_profit_rate'), m.get('e2e_mean_ret'), m.get('e2e_payoff_ratio'), m.get('timing_contribution'), m.get('e2e_sample_count', 0), e2e_points_json, m.get('e2e_mean_hold_days'), m.get('e2e_mean_max_drawdown')))
-
-def save_ranking_cfg(weights: dict) -> None:
-    """写入排序权重（进化自纠偏用）。"""
-    save_meta(META.RANKING_CFG, _json.dumps(weights))
-
-def update_highest_nav(code: str, highest: float, statuses: tuple[str, ...]) -> None:
-    placeholders = ','.join('?' * len(statuses))
-    with db_conn() as conn:
-        conn.execute(f'UPDATE recommend_log SET highest_nav = ? WHERE code = ? AND status IN ({placeholders})', (highest, code, *statuses))
-
-def update_insight_confidence(insight_id: int, confidence: float, active: int) -> None:
-    """更新洞察置信度与活跃状态。"""
-    with db_conn() as conn:
-        conn.execute('UPDATE evolution_insights SET confidence = ?, active = ? WHERE id = ?', (confidence, active, insight_id))
-
-def update_sector_selection_outcome(ss_id: int, outcome: str, date: str, note: str, pool_outcomes: dict | None = None) -> None:
-    """回填赛道选择的结算结果。pool_outcomes（P1-5）：池内各赛道代表基金 40 日收益映射。"""
-    with db_conn() as conn:
-        if pool_outcomes is not None:
-            conn.execute('UPDATE sector_selections SET outcome=?, outcome_date=?, outcome_note=?, pool_outcomes=? WHERE id=?',
-                         (outcome, date, note, _json.dumps(pool_outcomes, ensure_ascii=False), ss_id))
-        else:
-            conn.execute('UPDATE sector_selections SET outcome=?, outcome_date=?, outcome_note=? WHERE id=?',
-                         (outcome, date, note, ss_id))
-
-def update_status(code: str, signal: str, statuses: tuple[str, ...]) -> None:
-    placeholders = ','.join('?' * len(statuses))
-    with db_conn() as conn:
-        conn.execute(f'UPDATE recommend_log SET status = ? WHERE code = ? AND status IN ({placeholders})', (signal, code, *statuses))
-
 
 def get_candidate_nav_summaries(items: list[tuple[str, str]]) -> dict[str, dict]:
     """候选列表批量汇总（_candidate_summary N+1 收敛为 4 次查询）。
@@ -899,7 +464,7 @@ def get_candidate_nav_summaries(items: list[tuple[str, str]]) -> dict[str, dict]
 
 
 
-__all__ = ["clear_recommendations", "clear_empty_recommendation", "count_recommendation_domain", "exit_position", "get_active_insights", "get_all_insights", "get_empty_recommendation", "get_e2e_sample_rows", "get_entry", "get_entry_nav", "get_entry_score", "get_first_reco_date", "get_fund_detail", "get_holding_codes", "get_holding_log_id", "get_entry_feature_snapshot", "get_entry_sector_anchor", "get_latest_macro_news", "get_recent_macro_news", "get_latest_monitor_event", "get_latest_reco_id", "get_latest_recommendations", "get_settled_cases_after", "get_pending_sector_selections", "get_pool_outcomes_rows", "get_purchase_status", "get_purchase_statuses", "get_candidate_nav_summaries", "save_purchase_restriction", "get_quality_metrics", "get_quality_sample_rows", "get_ranking_cfg", "get_reco_date_of", "get_recommendation_by_id", "get_sector_insights", "get_sector_insights_dated", "get_tracking_list", "get_vetoed_audit_rows", "insert_insight", "insert_llm_audit", "get_recent_audits", "get_all_tracked_states", "get_signal_stats", "insert_monitor_event", "insert_monitor_score", "get_recent_scores", "get_recent_monitor_signals", "insert_recommendation", "insert_sector_selection", "get_empty_reco_dates", "get_reco_dates", "list_active_insights", "record_empty_recommendation", "save_flow_data", "save_macro_news", "save_quality_metrics", "save_context", "save_ranking_cfg", "save_sector_snapshot", "save_sector_history_batch", "get_sector_pct_map", "get_sector_pct_series", "save_fund_style", "get_fund_style", "update_highest_nav", "update_insight_confidence", "update_sector_selection_outcome", "update_status", "mark_insights_applied", "adjust_insight_confidence"]
+__all__ = ["clear_recommendations", "count_recommendation_domain", "get_all_tracked_states", "get_candidate_nav_summaries", "get_e2e_sample_rows", "get_empty_recommendation", "get_entry_nav", "get_first_reco_date", "get_fund_detail", "get_holding_codes", "get_latest_monitor_event", "get_latest_reco_id", "get_latest_recommendations", "get_purchase_status", "get_purchase_statuses", "get_quality_metrics", "get_quality_sample_rows", "get_ranking_cfg", "get_recent_audits", "get_recommend_v2", "get_recommend_v2_codes", "get_screen_candidates", "get_sector_pct_map", "get_sector_pct_series", "get_signal_history", "get_signal_stats", "get_tracked_state", "get_tracking_list", "insert_llm_audit", "insert_recommendation", "record_signal_trigger", "save_purchase_restriction", "save_quality_metrics", "save_recommend_v2", "save_screen_candidates", "save_sector_history_batch", "save_tracked_state", "settle_signal"]
 
 
 def get_tracked_state(object_type: str, object_id: str) -> dict | None:

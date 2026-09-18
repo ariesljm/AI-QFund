@@ -317,13 +317,6 @@ class TestRankingRowsLatestSnapshotOnly:
         assert len(rows) == 1
         assert rows[0]["momentum_20d"] == 12.7
 
-    def test_get_sector_candidates_latest_only(self, monkeypatch, tmp_path):
-        """赛道内路径：每基金仅最新快照一行，不混入历史行。"""
-        base_mod = self._seed(monkeypatch, tmp_path)
-        rows = base_mod.get_sector_candidates(["煤炭开采"])
-        assert len(rows) == 1
-        assert rows[0]["momentum_20d"] == 12.7
-
 
 class TestMigrateLegacyUpgrade:
     """migrate 历史补列全分支测试（架构审查候选 7）。
