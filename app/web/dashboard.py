@@ -4,7 +4,6 @@ FastAPI 路由层只调用 index_context()；区块函数独立可测。
 """
 
 from datetime import datetime
-from pathlib import Path
 from typing import NamedTuple
 
 import app.repo as repo
@@ -188,20 +187,6 @@ class PortfolioBlock(NamedTuple):
     max_drawdown: float | None
 
 
-def model_trained_at() -> str | None:
-    """模型实际训练时刻：模型文件 mtime（比 meta 记录更真实，训练失败不落 meta）。
-
-    mtime 口径与 app/model.py 的 MODEL_PATH 一致（相对项目根）；无模型文件时回退 meta 记录。
-    """
-    try:
-        p = Path("models/lgb_model.txt")
-        if p.exists():
-            return datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
-    except OSError:
-        pass
-    return repo.get_model_last_trained()
-
-
 def quality_block() -> QualityBlock:
     """质量度量块：最近 6 期度量 + 累计超额曲线 SVG + 最新一期指标（模板上下文用）。"""
     quality_metrics = repo.get_quality_metrics(6)
@@ -321,7 +306,6 @@ def index_context() -> dict[str, object]:
         "now": now_str,
         "today": today,
         "data_latest_date": repo.get_data_latest_date(),
-        "model_last_trained": model_trained_at(),
         "sector_list": sector_list,
         "nav_pcts": nav_pcts,
         "nav_dates": nav_dates,

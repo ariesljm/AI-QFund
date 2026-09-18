@@ -488,12 +488,6 @@ def get_data_latest_date() -> str | None:
     return row[0] if row and row[0] else None
 
 
-def get_model_last_trained() -> str | None:
-    """读取最近一次模型训练日期（meta 表），无则返回 None。"""
-    with db_conn() as conn:
-        return meta_get(conn, META.MODEL_LAST_TRAINED)
-
-
 
 def get_sector_heatmap(limit: int=6) -> list[dict]:
     """行业热力图：平均 RBSA 权重与平均动量的 Top 行业（结构化行）。"""
@@ -564,4 +558,4 @@ def get_uptime_days() -> int:
     return 365
 
 
-__all__ = ["FEATURE_COLS", "FORWARD_WINDOW", "MARKET_COLS", "_ema250_latest", "_latest_feature_join", "check_data_ready", "get_all_ranking_rows", "get_buyable_codes", "get_codes_missing_rbsa", "get_data_latest_date", "get_feature_codes_before", "get_feature_dates_map", "get_fund_basics", "get_fund_pool_stats", "get_holdings", "get_holdings_at_report", "get_holdings_report_dates", "get_holdings_report_dates_all", "get_holdings_summaries", "get_holdings_two_periods", "get_index_close", "get_index_rows", "get_index_series", "get_industry_map", "get_industry_map_gap_count", "get_industry_map_stats", "get_industry_map_targets", "get_int_cursor", "get_interval_days", "get_latest_feature_date_before", "get_latest_features", "get_latest_features_batch", "get_latest_holdings_rows", "get_market_regime", "get_meta", "get_model_last_trained", "get_nav_time_state", "get_pe_histories", "get_restriction_facts", "get_sector_heatmap", "get_settings_all", "get_stock_daily", "get_system_logs", "get_uptime_days", "has_index_data", "has_nav_data", "save_meta", "save_settings_all"]
+__all__ = ["FEATURE_COLS", "FORWARD_WINDOW", "MARKET_COLS", "_ema250_latest", "_latest_feature_join", "check_data_ready", "get_all_ranking_rows", "get_buyable_codes", "get_codes_missing_rbsa", "get_data_latest_date", "get_feature_codes_before", "get_feature_dates_map", "get_fund_basics", "get_fund_pool_stats", "get_holdings", "get_holdings_at_report", "get_holdings_report_dates", "get_holdings_report_dates_all", "get_holdings_summaries", "get_holdings_two_periods", "get_index_close", "get_index_rows", "get_index_series", "get_industry_map", "get_industry_map_gap_count", "get_industry_map_stats", "get_industry_map_targets", "get_int_cursor", "get_interval_days", "get_latest_feature_date_before", "get_latest_features", "get_latest_features_batch", "get_latest_holdings_rows", "get_market_regime", "get_meta", "get_nav_time_state", "get_pe_histories", "get_restriction_facts", "get_sector_heatmap", "get_settings_all", "get_stock_daily", "get_system_logs", "get_uptime_days", "has_index_data", "has_nav_data", "save_meta", "save_settings_all"]
