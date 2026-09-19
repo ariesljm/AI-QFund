@@ -40,30 +40,14 @@ def _challenger_windows(challenger_version: str) -> list[float]:
 
 
 def _promote(challenger_version: str) -> bool:
-    """把 settings.toml [llm] model 切到 challenger（上线；保留 base_url/api_key）。"""
-    from pathlib import Path
-    p = Path("config/settings.toml")
-    if not p.exists():
-        return False
+    """把 settings.toml [llm] model 切到 challenger（走 config.save_settings 写 seam）。"""
+    from app.config import save_settings
     model = challenger_version.split("@", 1)[0]
-    lines = p.read_text(encoding="utf-8").splitlines()
-    out, changed = [], False
-    in_llm = False
-    for ln in lines:
-        if ln.strip().startswith("[llm]"):
-            in_llm = True
-            out.append(ln)
-            continue
-        if in_llm and ln.strip().startswith("["):
-            in_llm = False
-        if in_llm and ln.strip().startswith("model"):
-            out.append(f'model = "{model}"')
-            changed = True
-            continue
-        out.append(ln)
-    if changed:
-        p.write_text("\n".join(out) + "\n", encoding="utf-8")
-    return changed
+    try:
+        save_settings({"llm": {"model": model}})
+        return True
+    except Exception:
+        return False
 
 
 def run_shadow_gate(cid: str = "") -> dict:

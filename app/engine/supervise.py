@@ -16,62 +16,15 @@
 
 from typing import Any
 
-import numpy as np
-
 from app.engine.state_machine import apply_transition
-from app.features.calculator import _ema_series
-from app.features.excess import daily_returns, daily_excess
+from app.features.excess import daily_returns
+from app.features.signals import ALPHA_NEG_STREAK, alpha_neg_streak, ema20_below, momentum_pos, valuation_high
 from app.utils.log import get_logger
 
 logger = get_logger("supervise")
 
-# Alpha 连续负天数的观察阈值（relative_weak 子条件；唯一来源，勿在别处重复定义）
-ALPHA_NEG_STREAK = 5
-# 动量观察窗口（交易日）
-MOMENTUM_DAYS = 5
-# 基准指数（代理同类；RBSA 行业 proxy 为后续增强）
+# 基准指数（宽基代理同类；非主标尺同类口径，RBSA 行业 proxy 为后续增强）
 BENCH_INDEX = "sh000300"
-
-
-# ── 纯函数信号（可注入数据直测）─────────────────────────────
-
-def ema20_below(navs: list[float]) -> bool:
-    """最新净值是否 < EMA20（跌破均线 → 离场信号）。"""
-    if not navs or len(navs) < 20:
-        return False                      # 序列不足，不判定
-    ema = _ema_series(np.asarray(navs, dtype=float), span=20)
-    return bool(navs[-1] < ema[-1])
-
-
-def alpha_neg_streak(fund_navs: list[float], bench_navs: list[float],
-                     n: int = 5) -> int:
-    """重叠日相对基准的超额（fund_ret − bench_ret）连续负天数（最新往回数）。"""
-    ex = daily_excess(fund_navs, bench_navs)
-    overlap = len(ex)
-    if overlap < n:
-        return 0
-    streak = 0
-    for i in range(overlap - 1, 0, -1):
-        if ex[i] < 0:
-            streak += 1
-        else:
-            break
-    return streak
-
-
-def momentum_pos(fund_navs: list[float], window: int = MOMENTUM_DAYS) -> bool:
-    """最近 window 个交易日累计收益 > 0（转正 = 非离场条件）。"""
-    if len(fund_navs) < window + 1:
-        return False
-    seg = fund_navs[-(window + 1):]
-    if seg[0] <= 0:
-        return False
-    return seg[-1] / seg[0] - 1.0 > 0
-
-
-def valuation_high(weighted_pctile: float | None, high: float = 85.0) -> bool:
-    """估值分位 ≥ 高阈值 → 观察信号。无分位不触发。"""
-    return weighted_pctile is not None and weighted_pctile >= high
 
 
 # ── 数据装配（接线层）─────────────────────────────────────

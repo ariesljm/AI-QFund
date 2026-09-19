@@ -24,3 +24,12 @@ def daily_excess(fund_navs: list[float], bench_navs: list[float]) -> list[float]
     b = daily_returns(bench_navs)
     overlap = min(len(f), len(b))
     return [f[i] - b[i] for i in range(overlap)]
+
+
+def window_excess(fund_ret: float, bench_ret: float) -> float:
+    """窗口累计超额 = 同期基金收益 − 基准收益（两侧须同一窗口）。
+
+    基准选择（宽基代理 / 同类 RBSA 中性化）由调用方决定——这里是减法单一来源，
+    未来同类中性化接线时只改调用方的基准数据获取，不改此函数。
+    """
+    return fund_ret - bench_ret

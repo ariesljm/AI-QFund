@@ -160,6 +160,7 @@ def alpha_series(candidates: list[dict]) -> list[float]:
                     end_nav = repo.nav.at_or_before(c["code"], end_str)
                     if end_nav and c["first_nav"] and c["first_nav"] > 0:
                         fund_ret = round((end_nav / c["first_nav"] - 1) * 100, 2)
-                cum_alpha += fund_ret - hs_ret
+                from app.features.excess import window_excess
+                cum_alpha += window_excess(fund_ret, hs_ret)
                 alpha_pcts.append(round(cum_alpha, 2))
     return alpha_pcts

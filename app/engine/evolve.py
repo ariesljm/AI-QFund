@@ -2,8 +2,9 @@
 
 每日 supervise 后由 pipeline._run_evolve_safely 调用 run_evolve(date, cid)：
 
-1. settle：未结算信号按「40 交易日超额收益 < 0」判命中（对齐主标尺超额口径，
+1. settle：未结算信号按「40 交易日超额收益 < 0」判命中（宽基代理口径，
    避免绝对跌幅把 beta 当 alpha）；超额<0 = 信号说对了（风险兑现=跑输基准）。
+   注：宽基（沪深300）是同类中性化的代理；主标尺同类口径待 RBSA 同类组接线。
 2. assess：各信号 get_signal_history → calibration.assess → 降权/停用判定（记录，
    状态机/信号权重消费待后续接线）。
 3. knowledge：今日进入 EXIT 的推荐对象 → make_case(bad) → save_case（喂给已就绪
@@ -25,12 +26,14 @@ SIGNAL_IDS = ("below_ema20", "relative_weak", "valuation_high", "fatal_news", "d
 
 
 def _excess_negative(fund: str, date: str) -> bool | None:
-    """基金自 date 起 FORWARD_DAYS 交易日超额收益（相对沪深300）是否 < 0。
+    """基金自 date 起 FORWARD_DAYS 交易日超额收益（相对沪深300 宽基代理）是否 < 0。
 
+    基准为宽基代理（与监控 BENCH_INDEX 同口径）；同类 RBSA 中性化待接线。
     None = 数据不足（nav 序列不足 40 日 / 基准缺失），跳过不结算。
     """
     from app.repo.nav import series as nav_series
     from app.repo.base import get_index_series
+    from app.features.excess import window_excess
 
     navs = nav_series(fund)
     if not navs or len(navs) < 2:
@@ -48,7 +51,7 @@ def _excess_negative(fund: str, date: str) -> bool | None:
     if d0 not in idx or d40 not in idx:
         return None
     bench_ret = idx[d40] / idx[d0] - 1.0
-    return (fund_ret - bench_ret) < 0
+    return window_excess(fund_ret, bench_ret) < 0
 
 
 def _settle_pending(cid: str) -> None:
@@ -77,9 +80,9 @@ def _settle_pending(cid: str) -> None:
 
 
 def _calibration_assess(cid: str) -> None:
-    """各信号命中率 → calibration.assess 降权/停用判定（记录，状态机消费待后续）。"""
+    """各信号命中率 → calibration.assess 降权/停用判定，落库留痕（消费待状态机接线）。"""
     from app.engine.calibration import assess
-    from app.repo.tracked_state import get_signal_history
+    from app.repo.tracked_state import get_signal_history, save_calibration
     log = logger.with_cid(cid)
     for sid in SIGNAL_IDS:
         hist = get_signal_history(sid)
@@ -88,6 +91,7 @@ def _calibration_assess(cid: str) -> None:
         r = assess(hist)
         action = r.get("action", "")
         hit_rate = r.get("hit_rate")
+        save_calibration(sid, hit_rate, len(hist), action)
         log.info_event("calibration_assess",
                        f"{sid} 命中率 {hit_rate}（{len(hist)} 样本）{action}",
                        extra={"signal": sid, "hit_rate": hit_rate,

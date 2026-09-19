@@ -109,6 +109,25 @@ def get_signal_stats() -> list[dict]:
             for r in rows]
 
 
+def save_calibration(signal_id: str, hit_rate: float | None, samples: int,
+                     action: str) -> None:
+    """校准判定落库（assess 输出有去向，不再只进日志；状态机消费读此表）。"""
+    from datetime import datetime as _dt
+    with db_conn() as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS calibration_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            signal_id TEXT NOT NULL,
+            hit_rate REAL,
+            samples INTEGER,
+            action TEXT)""")
+        conn.execute(
+            "INSERT INTO calibration_log (ts, signal_id, hit_rate, samples, action) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (_dt.now().strftime("%Y-%m-%d %H:%M:%S"), signal_id, hit_rate, samples, action))
+        conn.commit()
+
+
 def get_latest_monitor_event(code: str) -> dict | None:
     """持仓基金最新监控事件（结构化行，调用方按键取，不再按位置解包裸元组）。"""
     with db_conn() as conn:
@@ -119,4 +138,4 @@ def get_latest_monitor_event(code: str) -> dict | None:
     return dict(zip(keys, row, strict=False))
 
 
-__all__ = ["get_tracked_state", "save_tracked_state", "get_all_tracked_states", "record_signal_trigger", "settle_signal", "get_signal_history", "get_signal_stats", "get_latest_monitor_event", "get_pending_settlements"]
+__all__ = ["get_tracked_state", "save_tracked_state", "get_all_tracked_states", "record_signal_trigger", "settle_signal", "get_signal_history", "get_signal_stats", "save_calibration", "get_latest_monitor_event", "get_pending_settlements"]
