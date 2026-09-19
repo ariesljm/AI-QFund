@@ -20,6 +20,9 @@ import numpy as np
 
 from app.engine.state_machine import apply_transition
 from app.features.calculator import _ema_series
+from app.utils.log import get_logger
+
+logger = get_logger("supervise")
 
 # Alpha 连续负天数的观察阈值（状态机默认 ALPHA_NEG_DAYS=5；此处允许接线层收紧）
 ALPHA_NEG_STREAK = 5
@@ -154,15 +157,18 @@ def assemble_signals(code: str, bench_navs: list[float] | None = None) -> dict[s
     return build_signals(code, fund_navs, bench_navs, _pe_pctile(code))
 
 
-def run_supervision(date: str, limit: int = 50) -> dict:
+def run_supervision(date: str, limit: int = 50, cid: str = "") -> dict:
     """每日监控接线：recommend_v2 全部推荐对象 → 装配信号 → 状态机转移落库。
 
     返回 {"tracked": n, "moved": {code: (old, new)}, "empty": bool}。
     无推荐对象 → 空（监控没有分母，正常静默）。
+    cid: correlation id，贯穿 pipeline，供 web 报告按批次聚合。
     """
+    log = logger.with_cid(cid)
     from app.repo import decision
     codes = decision.get_recommend_v2_codes(limit)
     if not codes:
+        log.info_event("supervise_empty", "无推荐对象，监控空跑")
         return {"tracked": 0, "moved": {}, "empty": True}
     bench_navs = _index_navs()
     moved: dict[str, tuple[str, str]] = {}
@@ -173,4 +179,13 @@ def run_supervision(date: str, limit: int = 50) -> dict:
         n += 1
         if old != new:
             moved[code] = (old, new)
+            triggers = []
+            if s.get("below_ema20"): triggers.append("跌破EMA20")
+            if s.get("alpha_neg_days", 0) >= ALPHA_NEG_STREAK: triggers.append(f"Alpha连负{s['alpha_neg_days']}日")
+            if s.get("valuation_pctile") is not None and s["valuation_pctile"] >= 85: triggers.append(f"估值{s['valuation_pctile']:.0f}分位")
+            if s.get("fatal_news"): triggers.append("致命公告")
+            log.info_event("state_transition", f"{code} {old}→{new} 触发：{','.join(triggers) or '阈值'}",
+                           extra={"code": code, "old": old, "new": new, "triggers": triggers})
+    log.info_event("supervise_done", f"监控 {n} 只对象，{len(moved)} 只状态转移",
+                   extra={"tracked": n, "moved_count": len(moved), "moved": {c: f"{o}>{n2}" for c, (o, n2) in moved.items()}})
     return {"tracked": n, "moved": moved, "empty": False}

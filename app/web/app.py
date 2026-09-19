@@ -94,6 +94,31 @@ async def get_logs(lines: int = 200, after: int = 0, before: int = 0) -> dict[st
     return {"lines": out, "total": total, "last_id": last_id}
 
 
+@app.get("/api/daily-report")
+async def daily_report(date: str | None = None) -> dict:
+    """每日投研报告：当日业务叙事日志（数据/推荐/监控/进化），按时间线返回，前端分段渲染。
+
+    与 /api/logs 区别：只取业务叙事 logger（pipeline/recommend_v2/supervise/quality/...
+    ），过滤掉 data 子模块事无巨细的过程日志——后者仍进 system.log 文件供排查。
+    """
+    from datetime import datetime
+    from app.database import db_conn
+    date = date or datetime.now().strftime("%Y-%m-%d")
+    REPORT_LOGGERS = {"pipeline", "recommend_v2", "supervise", "quality",
+                      "knowledge", "calibration", "drift", "screen_pipeline"}
+    with db_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, ts, level, logger, event, message, correlation_id "
+            "FROM system_logs WHERE date(ts)=? ORDER BY id",
+            (date,),
+        ).fetchall()
+    return {"date": date, "lines": [
+        {"id": r[0], "timestamp": r[1], "level": r[2], "logger": r[3],
+         "event": r[4], "message": r[5], "correlation_id": r[6]}
+        for r in rows if r[3] in REPORT_LOGGERS
+    ]}
+
+
 @app.get("/api/settings")
 async def get_settings() -> dict:
     s = _load_settings()

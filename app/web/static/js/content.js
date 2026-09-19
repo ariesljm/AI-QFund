@@ -216,3 +216,39 @@ setInterval(function() {
     })
     .catch(function() {});
 }, 30000);
+// ===== 每日投研报告（tab-logs 默认显示，替代原始日志流；原始日志仍进 system.log 文件供排查）=====
+async function fetchDailyReport() {
+    try {
+        var r = await fetch('/api/daily-report');
+        var d = await r.json();
+        renderReport(d.lines || []);
+        var lc = document.getElementById('logCount');
+        if (lc) lc.textContent = (d.lines || []).length + ' 条';
+    } catch(e) { console.error('report fetch fail', e); }
+}
+
+function renderReport(lines) {
+    var data = [], reco = [], sup = [], evo = [];
+    lines.forEach(function(l) {
+        var m = (l.message || ''), lg = (l.logger || '');
+        if (lg === 'recommend_v2' || /推荐|排雷|审计|剪枝|复合分/.test(m)) reco.push(l);
+        else if (lg === 'supervise' || /监控|转移|状态机|信号/.test(m)) sup.push(l);
+        else if (['quality','knowledge','calibration','drift'].indexOf(lg) >= 0) evo.push(l);
+        else data.push(l);
+    });
+    var html = '';
+    function sec(title, arr) {
+        if (!arr.length) return;
+        html += '<div style="margin-bottom:16px"><div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--color-accent);margin-bottom:6px;border-bottom:1px solid var(--color-rule);padding-bottom:4px;font-weight:700">' + _esc(title) + '</div>';
+        arr.forEach(function(l) {
+            html += '<div style="display:flex;gap:12px;font-size:13px;line-height:1.7;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.04)"><span style="color:var(--color-muted);font-family:var(--font-mono);font-size:11px;flex-shrink:0;white-space:nowrap">' + (l.timestamp || '').slice(11,19) + '</span><span style="color:var(--color-log-ink)">' + _esc(l.message) + '</span></div>';
+        });
+        html += '</div>';
+    }
+    sec('数据基座', data);
+    sec('今日推荐', reco);
+    sec('追踪监控', sup);
+    sec('自我进化', evo);
+    var ll = document.getElementById('logLines');
+    if (ll) ll.innerHTML = html || '<p style="color:var(--color-muted);padding:24px;text-align:center">今日暂无报告数据（管线运行后生成）</p>';
+}

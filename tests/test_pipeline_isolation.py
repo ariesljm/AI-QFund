@@ -33,9 +33,9 @@ class TestRecommendFailureKeepsSupervise:
         from datetime import datetime
         order = []
         monkeypatch.setattr("app.engine.recommend_v2.recommend_top5",
-                            lambda today: (_ for _ in ()).throw(RuntimeError("LLM失败")))
+                            lambda today, cid="": (_ for _ in ()).throw(RuntimeError("LLM失败")))
         monkeypatch.setattr("app.engine.supervise.run_supervision",
-                            lambda today, limit=50: order.append("supervise"))
+                            lambda today, limit=50, cid="": order.append("supervise"))
         pipeline.run_recommend(datetime(2026, 8, 10))
         assert order == ["supervise"]
 
@@ -46,9 +46,9 @@ class TestRecommendFailureKeepsSupervise:
         monkeypatch.setattr(pipeline, "run_data_foundation",
                             lambda steps=None: (_ for _ in ()).throw(RuntimeError("网络失败")))
         monkeypatch.setattr("app.engine.recommend_v2.recommend_top5",
-                            lambda today: order.append("recommend"))
+                            lambda today, cid="": order.append("recommend"))
         monkeypatch.setattr("app.engine.supervise.run_supervision",
-                            lambda today, limit=50: order.append("supervise"))
+                            lambda today, limit=50, cid="": order.append("supervise"))
         pipeline.run(datetime(2026, 8, 10))
         assert order == ["recommend", "supervise"]
 
@@ -57,9 +57,9 @@ class TestRecommendFailureKeepsSupervise:
         from datetime import datetime
         order = []
         monkeypatch.setattr("app.engine.recommend_v2.recommend_top5",
-                            lambda today: order.append("recommend"))
+                            lambda today, cid="": order.append("recommend"))
         monkeypatch.setattr("app.engine.supervise.run_supervision",
-                            lambda today, limit=50: order.append("supervise"))
+                            lambda today, limit=50, cid="": order.append("supervise"))
         pipeline.run_recommend(datetime(2026, 8, 10))
         assert order == ["recommend", "supervise"]
 
@@ -70,16 +70,16 @@ class TestRecommendFailureKeepsSupervise:
         monkeypatch.setattr(pipeline, "run_data_foundation",
                             lambda steps=None: order.append("data"))
         monkeypatch.setattr("app.engine.recommend_v2.recommend_top5",
-                            lambda today: order.append("recommend"))
+                            lambda today, cid="": order.append("recommend"))
         monkeypatch.setattr("app.engine.supervise.run_supervision",
-                            lambda today, limit=50: order.append("supervise"))
+                            lambda today, limit=50, cid="": order.append("supervise"))
         pipeline.run(datetime(2026, 8, 10))
         assert order == ["data", "recommend", "supervise"]
 
     def test_supervise_exception_swallowed(self, monkeypatch):
         """监控自身异常 → 不向调用方抛出（槽位容错）。"""
         from datetime import datetime
-        monkeypatch.setattr("app.engine.recommend_v2.recommend_top5", lambda today: None)
+        monkeypatch.setattr("app.engine.recommend_v2.recommend_top5", lambda today, cid="": None)
         monkeypatch.setattr("app.engine.supervise.run_supervision",
-                            lambda today, limit=50: (_ for _ in ()).throw(RuntimeError("DB锁")))
+                            lambda today, limit=50, cid="": (_ for _ in ()).throw(RuntimeError("DB锁")))
         pipeline.run_recommend(datetime(2026, 8, 10))   # 不抛即通过

@@ -61,7 +61,7 @@ def _run_recommend_safely(cid: str, today: str) -> None:
                                             f"数据新鲜度闸门拦截推荐：{reason}")
             return
         from app.engine.recommend_v2 import recommend_top5
-        recommend_top5(today)
+        recommend_top5(today, cid=cid)
     _run_phase_safely("推荐引擎", _run, cid)
 
 
@@ -72,14 +72,7 @@ def _run_supervise_safely(cid: str, today: str) -> None:
     """
     def _run() -> None:
         from app.engine.supervise import run_supervision
-        r = run_supervision(today)
-        moved = r.get("moved") or {}
-        tracked = r.get("tracked") or 0
-        if moved:
-            logger.info("2.0 监控: %d 只对象状态转移（%s）",
-                        len(moved), ", ".join(f"{c}:{o}>{n}" for c, (o, n) in list(moved.items())[:5]))
-        elif tracked:
-            logger.info("2.0 监控: %d 只对象无转移", tracked)
+        run_supervision(today, cid=cid)
     _run_phase_safely("2.0 监控", _run, cid)
 
 

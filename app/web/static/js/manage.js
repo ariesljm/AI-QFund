@@ -16,27 +16,11 @@ function openModal(id) {
 // 系统日志 tab 初始化（原 openModal('systemLogModal') 分支提取，供 switchTab('logs') 调用）
 function initLogs() {
     if (logInterval) { clearInterval(logInterval); logInterval = null; }
-    _logCount = 0;
-    _lastId = 0;
-    _minId = 0;
-    _noMoreLogs = false;
-    var ll = document.getElementById('logLines');
-    if (ll) ll.innerHTML = '';
-    if (typeof resetLogFilter === 'function') resetLogFilter();
-    if (typeof fetchLogs === 'function') fetchLogs();
-    logInterval = setInterval(function() { if (typeof fetchLogs === 'function') fetchLogs(); }, 5000);
-    var container = document.getElementById('logContainer');
-    if (container) {
-        container.addEventListener('scroll', function() {
-            var btn = document.getElementById('logScrollBtn');
-            if (!btn) return;
-            var atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
-            if (atBottom) btn.classList.add('hidden');
-            else btn.classList.remove('hidden');
-            // 滚动到顶部附近：自动加载更早日志
-            if (container.scrollTop < 40 && typeof loadOlderLogs === 'function') loadOlderLogs();
-        });
-    }
+    // 报告模式：隐藏原始日志过滤器，调 /api/daily-report 渲染分段报告（30s 刷新）
+    var lf = document.getElementById('logFilters');
+    if (lf) lf.style.display = 'none';
+    if (typeof fetchDailyReport === 'function') fetchDailyReport();
+    logInterval = setInterval(function() { if (typeof fetchDailyReport === 'function') fetchDailyReport(); }, 30000);
 }
 
 // 系统日志 tab 切走：停轮询
