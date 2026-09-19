@@ -141,6 +141,9 @@ def _monthly_quality(cid: str, today: str) -> None:
         from app.repo.quality_metric import save_quality_metrics
         m = compute_quality_metrics(start, today)
         save_quality_metrics(m)
+        # 影子闸门 2.0（票 19）：月末有足够窗口数据，跑一次 LLM 模型版本 Challenger 判定
+        from app.engine.gate_runner import run_shadow_gate
+        run_shadow_gate(cid)
         log.info_event("quality_monthly",
                        f"月末质量度量 {start}~{today} IC={m.get('ic')}",
                        extra={"period_start": start, "period_end": today, "ic": m.get("ic")})
