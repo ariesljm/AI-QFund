@@ -137,20 +137,6 @@ def _migrate(conn: sqlite3.Connection) -> None:
         if pending:
             conn.commit()
 
-    if "monitor_events" in tables:
-        me_cols = {r[1] for r in conn.execute("PRAGMA table_info(monitor_events)").fetchall()}
-        # C5：净值陈旧等数据告警与信号语义分离——stale 事件不计入 WARNING 升级序列
-        if "is_stale" not in me_cols:
-            conn.execute("ALTER TABLE monitor_events ADD COLUMN is_stale BOOLEAN DEFAULT 0")
-            conn.commit()
-
-    if "empty_recommendations" in tables:
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(empty_recommendations)").fetchall()}
-        if "reason_type" not in cols:
-            # 审计 P1-2：空推荐语义分层（no_opportunity=市场判断 / data_failure=数据故障）
-            conn.execute("ALTER TABLE empty_recommendations ADD COLUMN reason_type TEXT DEFAULT 'no_opportunity'")
-            conn.commit()
-
     if "macro_news" in tables:
         macro_cols = {r[1] for r in conn.execute("PRAGMA table_info(macro_news)").fetchall()}
         for col, typ in [("flow_json", "TEXT"), ("context_json", "TEXT"),

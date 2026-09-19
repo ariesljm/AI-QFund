@@ -193,23 +193,7 @@ CREATE TABLE IF NOT EXISTS signal_outcomes (
 
 
 
--- 监控事件记录
-CREATE TABLE IF NOT EXISTS monitor_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    code TEXT NOT NULL,
-    date TEXT NOT NULL,
-    signal TEXT NOT NULL,
-    trigger_trailing BOOLEAN DEFAULT 0,
-    trigger_drift BOOLEAN DEFAULT 0,
-    trigger_sector_adv BOOLEAN DEFAULT 0,
-    logic_verdict TEXT,
-    sector_risk BOOLEAN,
-    holding_risk BOOLEAN,
-    detail TEXT,
-    recommend_log_id INTEGER,
-    is_stale BOOLEAN DEFAULT 0,
-    created_at TEXT DEFAULT (datetime('now'))
-);
+
 
 
 
@@ -269,15 +253,7 @@ CREATE TABLE IF NOT EXISTS quality_metrics (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_quality_metrics_period
     ON quality_metrics (period_start, period_end);
 
--- 空推荐日历史（每天一条）
-CREATE TABLE IF NOT EXISTS empty_recommendations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    date TEXT NOT NULL UNIQUE,
-    reasoning TEXT,
-    -- 审计 P1-2（2026-09）：空推荐语义分层，区分"市场判断无机会"与"数据故障导致空推"
-    reason_type TEXT DEFAULT 'no_opportunity',
-    created_at TEXT DEFAULT (datetime('now'))
-);
+
 
 -- 行业板块每日快照（全板块涨跌+主力净流入，量化定池面板数据源；覆盖式）
 CREATE TABLE IF NOT EXISTS sector_daily_snapshot (

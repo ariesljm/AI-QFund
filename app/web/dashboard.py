@@ -31,7 +31,7 @@ def candidate_summary(candidates: list[dict]) -> tuple[list[dict], float, int, f
         name = c["name"] or ""
         rec_count = c["rec_count"]
         s = summaries[code]
-        # 展示状态与基金详情一致：取 monitor_events 最新监控信号（无信号时回退推荐状态）
+        # 展示状态与基金详情一致：取 tracked_states 状态机状态（无记录时回退推荐状态）
         status = s["signal"] or (c["status"] or "HOLD")
         exit_date = c["exit_date"] or ""
         # 首次推荐净值 = 推荐当日的 fund_nav 净值（盘中运行当天净值未出时无记录，显示 --，不回退前一日）
@@ -99,22 +99,14 @@ def alpha_block(candidate_list: list[dict], total_return: float) -> tuple[float 
     return alpha, alpha_svg, alpha_baseline_y
 
 
-def build_reco_status(latest_date: str | None, empty: dict | None, today: str) -> dict:
+def build_reco_status(latest_date: str | None, today: str) -> dict:
     """今日推荐状态（纯函数，便于测试）。
 
-    ticket 25 把特征新鲜度改成**硬闸门**后，“数据基座停摆”的后果从“悄悄用旧特征
-    出推荐”变成“今天没有推荐”。如果 Web 只照旧渲染上一份推荐，用户看到的仍是
-    静默陈旧——正是本轮重构要消灭的东西，只是从后端搬到了 UI 层。
-
-    而且必须**区分 data_failure 与 no_opportunity**：前者是系统故障（要修），
-    后者是市场判断（正常）。混为一谈要么让人白紧张，要么把真故障当正常。
+    2.0 推荐空态不落库（recommend_top5 的 empty reason 仅日志），故只有
+    fresh / pending 两态；无 1.x 的 empty_recommendations 空推荐日记录。
     """
     if latest_date == today:
         return {"state": "fresh", "reason_type": "", "message": ""}
-    if empty:
-        reason_type = empty.get("reason_type") or "no_opportunity"
-        return {"state": "empty", "reason_type": reason_type,
-                "message": empty.get("reasoning") or ""}
     return {"state": "pending", "reason_type": "", "message": ""}
 
 
@@ -253,11 +245,9 @@ def index_context() -> dict[str, object]:
     # 今日推荐（最新 2 条 recommend_log）
     recs = repo.get_latest_recommendations(2)
     latest, latest_list, latest_rec_id = build_latest_recos(recs, today)
-    # 今日推荐状态：拿原始 report 日期比对（不能用 latest["date"]，它带 `or today` 回退），
-    # 并读今天的空推荐日记录——“今天为什么没有推荐”必须说出来。
+    # 今日推荐状态：拿原始 report 日期比对（不能用 latest["date"]，它带 `or today` 回退）
     reco_status = build_reco_status(
         recs[0]["date"] if recs else None,
-        repo.get_empty_recommendation(today),
         today,
     )
 

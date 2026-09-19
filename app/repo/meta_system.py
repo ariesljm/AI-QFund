@@ -73,11 +73,11 @@ def get_uptime_days() -> int:
 
 
 def get_data_latest_date() -> str | None:
-    """核心数据表的最新日期（净值/特征/指数/宏观/监控），无数据返回 None。
+    """核心数据表的最新日期（净值/特征/指数/宏观），无数据返回 None。
 
     各表 date 均为 YYYY-MM-DD；取跨表最大值即「数据更新到哪天」。
     """
-    tables = ("fund_nav", "fund_features", "index_daily", "macro_news", "monitor_events")
+    tables = ("fund_nav", "fund_features", "index_daily", "macro_news")
     sql = " UNION ALL ".join(f"SELECT MAX(date) AS d FROM {t}" for t in tables)
     with db_conn() as conn:
         row = conn.execute(f"SELECT MAX(d) FROM ({sql})").fetchone()

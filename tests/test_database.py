@@ -50,7 +50,6 @@ class TestMigrateNoFallbackCreates:
             conn.close()
 
         assert "quality_metrics" in tables
-        assert "empty_recommendations" in tables
 
 
 class TestMetaNarrowReads:
@@ -340,8 +339,6 @@ class TestMigrateLegacyUpgrade:
                 PRIMARY KEY (code, date));
             CREATE TABLE recommend_log (id INTEGER PRIMARY KEY, code TEXT, date TEXT,
                 status TEXT, rec_count INTEGER, return_rate REAL);
-            CREATE TABLE monitor_events (id INTEGER PRIMARY KEY, code TEXT, signal TEXT);
-            CREATE TABLE empty_recommendations (id INTEGER PRIMARY KEY, date TEXT);
             CREATE TABLE macro_news (id INTEGER PRIMARY KEY, title TEXT);
             INSERT INTO recommend_log (code, date, status, rec_count) VALUES
                 ('000001', '2026-01-01', 'BUY', NULL),
@@ -371,20 +368,6 @@ class TestMigrateLegacyUpgrade:
                 "SELECT code, rec_count FROM recommend_log ORDER BY id").fetchall()
         # NULL → 1 回填；非 NULL（3）保持不动
         assert rows == [("000001", 1), ("000002", 3)]
-
-    def test_monitor_events_gains_is_stale(self, tmp_path, monkeypatch):
-        self._migrate_db(tmp_path, monkeypatch)
-        with db_mod.db_conn() as conn:
-            cols = {r[1] for r in conn.execute(
-                "PRAGMA table_info(monitor_events)").fetchall()}
-        assert "is_stale" in cols
-
-    def test_empty_recommendations_gains_reason_type(self, tmp_path, monkeypatch):
-        self._migrate_db(tmp_path, monkeypatch)
-        with db_mod.db_conn() as conn:
-            cols = {r[1] for r in conn.execute(
-                "PRAGMA table_info(empty_recommendations)").fetchall()}
-        assert "reason_type" in cols
 
     def test_macro_news_gains_flow_columns(self, tmp_path, monkeypatch):
         self._migrate_db(tmp_path, monkeypatch)

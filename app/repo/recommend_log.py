@@ -1,4 +1,4 @@
-"""推荐记录生命周期 seam：recommend_log / empty_recommendations 读写 + 候选批量汇总（跨表，主键 recommend_log）+ 质量度量样本抽取。
+"""推荐记录生命周期 seam：recommend_log 读写 + 候选批量汇总（跨表，主键 recommend_log）+ 质量度量样本抽取。
 """
 
 import json as _json
@@ -21,7 +21,7 @@ def clear_recommendations() -> dict:
     """
     counts: dict[str, int] = {}
     with db_conn() as conn:
-        for table in ('recommend_log', 'monitor_events', 'quality_metrics', 'macro_news', 'empty_recommendations'):
+        for table in ('recommend_log', 'quality_metrics', 'macro_news'):
             cur = conn.execute(f'DELETE FROM {table}')
             counts[table] = cur.rowcount
     # llm_audit 是技术审计记录（P0-3），不随决策域清除，保留历史供排查
@@ -32,35 +32,8 @@ def clear_recommendations() -> dict:
 def count_recommendation_domain() -> dict[str, int]:
     """推荐决策域各表行数（清除确认 dry-run 用）。"""
     with db_conn() as conn:
-        counts = {'recommend_log': conn.execute('SELECT COUNT(*) FROM recommend_log').fetchone()[0], 'monitor_events': conn.execute('SELECT COUNT(*) FROM monitor_events').fetchone()[0], 'quality_metrics': conn.execute('SELECT COUNT(*) FROM quality_metrics').fetchone()[0], 'macro_news': conn.execute('SELECT COUNT(*) FROM macro_news').fetchone()[0], 'empty_recommendations': conn.execute('SELECT COUNT(*) FROM empty_recommendations').fetchone()[0]}
+        counts = {'recommend_log': conn.execute('SELECT COUNT(*) FROM recommend_log').fetchone()[0], 'quality_metrics': conn.execute('SELECT COUNT(*) FROM quality_metrics').fetchone()[0], 'macro_news': conn.execute('SELECT COUNT(*) FROM macro_news').fetchone()[0]}
     return counts
-
-
-def get_empty_recommendation(date_str: str | None=None) -> dict | None:
-    """读取空推荐日记录；date_str 为空时返回最近一条，无则返回 None。
-
-    若指定日期当天已存在实际推荐（recommend_log 有条目），空推荐记录视为残留，
-    返回 None——修复同日先记录空推荐、后又推荐成功导致的矛盾显示。
-    """
-    with db_conn() as conn:
-        if date_str:
-            has_reco = conn.execute(
-                'SELECT 1 FROM recommend_log WHERE recommend_date = ? LIMIT 1',
-                (date_str,),
-            ).fetchone()
-            if has_reco:
-                return None
-            row = conn.execute(
-                'SELECT date, reasoning, COALESCE(reason_type, \'no_opportunity\') FROM empty_recommendations WHERE date = ?',
-                (date_str,),
-            ).fetchone()
-        else:
-            row = conn.execute(
-                'SELECT date, reasoning, COALESCE(reason_type, \'no_opportunity\') FROM empty_recommendations ORDER BY date DESC LIMIT 1',
-            ).fetchone()
-    if not row:
-        return None
-    return {'date': row[0], 'reasoning': row[1] or '', 'reason_type': row[2] or ''}
 
 
 def get_entry_nav(code: str, date: str) -> float | None:
@@ -190,7 +163,7 @@ def insert_recommendation(date_str: str, code: str, name: str, rank: int, score:
     decision_logic（P2-7 决策与文案解耦）：内部决策依据独立列，审计用，
     buy_reason 只存展示文案（不再拼否决/决策尾巴，展示层魔法分隔符退役）。
     （同日幂等）同日多次运行推荐引擎（重试/手动重跑）时，同 (recommend_date, code)
-    更新原行而非追加——id 保持稳定，避免 monitor_events 引用悬空，
+    更新原行而非追加——同日同基金幂等（id 稳定），
     也杜绝同日同一基金重复推荐记录；同时刷新 created_at 为本次运行时间，
     供 get_latest_recommendations 按“最近一次推荐”排序（UI 今日精选），
     并把 rec_count +1（该基金被推荐引擎选中的运行次数，追踪监控“推荐次数”列）。
@@ -245,9 +218,7 @@ def get_candidate_nav_summaries(items: list[tuple[str, str]]) -> dict[str, dict]
             f"SELECT code, entry_nav FROM recommend_log WHERE (code, recommend_date) IN ({pair_ph})",
             pairs).fetchall():
             out[code]["entry_nav"] = nav
-        # 最新监控信号（排序口径 date DESC, id DESC，与 get_latest_monitor_event 一致）；
-        # 2.0 状态机状态（US22-28 迁移：监控信号源 monitor_events → tracked_states，
-        # 状态词 HOLD/WATCH/EXIT 由 state_machine 定义；无记录时 dashboard 回退推荐状态）
+        # 2.0 状态机状态（tracked_states；无记录时 dashboard 回退推荐状态）
         for code, st in conn.execute(
             f"SELECT object_id, state FROM tracked_states "
             f"WHERE object_type = 'fund' AND object_id IN ({code_ph})",
@@ -277,4 +248,4 @@ def get_e2e_sample_rows(period_start: str, period_end: str) -> list[tuple]:
     return list(rows)
 
 
-__all__ = ["clear_recommendations", "count_recommendation_domain", "get_empty_recommendation", "get_entry_nav", "get_first_reco_date", "get_fund_detail", "get_holding_codes", "get_latest_reco_id", "get_latest_recommendations", "get_ranking_cfg", "get_tracking_list", "insert_recommendation", "get_candidate_nav_summaries", "get_quality_sample_rows", "get_e2e_sample_rows"]
+__all__ = ["clear_recommendations", "count_recommendation_domain", "get_entry_nav", "get_first_reco_date", "get_fund_detail", "get_holding_codes", "get_latest_reco_id", "get_latest_recommendations", "get_ranking_cfg", "get_tracking_list", "insert_recommendation", "get_candidate_nav_summaries", "get_quality_sample_rows", "get_e2e_sample_rows"]

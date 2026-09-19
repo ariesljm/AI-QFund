@@ -213,6 +213,30 @@ async def get_pipeline_log(since: int = 0) -> dict[str, object]:
     return {"lines": items[since:], "total": len(items)}
 
 
+def _signal_reason(signals_json: str | None) -> str:
+    """tracked_states.signals_json → 触发信号的中文描述（基金详情展示用）。"""
+    if not signals_json:
+        return ""
+    import json as _json
+    try:
+        s = _json.loads(signals_json)
+    except Exception:
+        return ""
+    parts = []
+    if s.get("below_ema20"):
+        parts.append("跌破EMA20")
+    if s.get("relative_weak"):
+        parts.append("相对弱势")
+    pct = s.get("valuation_pctile")
+    if pct is not None and pct >= 85:
+        parts.append(f"估值{pct:.0f}分位")
+    if s.get("fatal_news"):
+        parts.append("致命公告")
+    if s.get("drawdown_stop"):
+        parts.append("止损8%")
+    return "；".join(parts)
+
+
 @app.get("/api/fund-detail/{code}")
 async def get_fund_detail(code: str) -> dict[str, object]:
     """返回指定基金的首次推荐分析、理由、十大持仓、净值走势数据。"""
@@ -245,18 +269,17 @@ async def get_fund_detail(code: str) -> dict[str, object]:
         for r in repo.nav.series(code, limit=90)
     ]
 
-    signal = repo.get_latest_monitor_event(code)
+    ts = repo.get_tracked_state("fund", code)
     current_signal = None
-    if signal:
-        # repo 返回结构化行：monitor 写入的是 "; " 拼接的纯文本原因，无需（也无法）按 JSON 解析
+    if ts:
         current_signal = {
-            "signal": signal["signal"],
-            "logic_verdict": signal.get("logic_verdict") or "",
-            "sector_risk": bool(signal.get("sector_risk")),
-            "holding_risk": bool(signal.get("holding_risk")),
-            "reason": signal.get("detail") or "",
-            "date": signal.get("date") or "",
-            "is_stale": bool(signal.get("is_stale")),
+            "signal": ts["state"],
+            "logic_verdict": "",
+            "sector_risk": False,
+            "holding_risk": False,
+            "reason": _signal_reason(ts.get("signals_json")),
+            "date": ts.get("date") or "",
+            "is_stale": False,
         }
 
     return {

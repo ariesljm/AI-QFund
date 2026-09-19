@@ -1,4 +1,4 @@
-"""状态机闭环 seam：tracked_states（HOLD/WATCH/EXIT）+ signal_outcomes（校准层结算）+ monitor_events（1.x 残留读，dashboard 兼容）。
+"""状态机闭环 seam：tracked_states（HOLD/WATCH/EXIT）+ signal_outcomes（校准层结算）。
 """
 
 from app.database import db_conn
@@ -145,14 +145,4 @@ def get_signal_action(signal_id: str) -> str | None:
     return row[0] if row else None
 
 
-def get_latest_monitor_event(code: str) -> dict | None:
-    """持仓基金最新监控事件（结构化行，调用方按键取，不再按位置解包裸元组）。"""
-    with db_conn() as conn:
-        row = conn.execute('SELECT signal, logic_verdict, sector_risk, holding_risk, detail, date, is_stale FROM monitor_events WHERE code=? ORDER BY date DESC, id DESC LIMIT 1', (code,)).fetchone()
-    if not row:
-        return None
-    keys = ["signal", "logic_verdict", "sector_risk", "holding_risk", "detail", "date", "is_stale"]
-    return dict(zip(keys, row, strict=False))
-
-
-__all__ = ["get_tracked_state", "save_tracked_state", "get_all_tracked_states", "record_signal_trigger", "settle_signal", "get_signal_history", "get_signal_stats", "save_calibration", "get_signal_action", "get_latest_monitor_event", "get_pending_settlements"]
+__all__ = ["get_tracked_state", "save_tracked_state", "get_all_tracked_states", "record_signal_trigger", "settle_signal", "get_signal_history", "get_signal_stats", "save_calibration", "get_signal_action", "get_pending_settlements"]
