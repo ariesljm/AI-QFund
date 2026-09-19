@@ -150,8 +150,7 @@ class TestHoldingsSummaries:
         ])
         conn.execute("INSERT INTO stock_industry_map VALUES ('S1', '白酒')")
         conn.commit()
-        monkeypatch.setattr(base_mod, "db_conn", lambda: sqlite3.connect(db))
-        monkeypatch.setattr(repo, "db_conn", lambda: sqlite3.connect(db))
+        monkeypatch.setattr("app.repo.fund_data.db_conn", lambda: sqlite3.connect(db))
 
         res = repo.get_holdings_summaries(["F1", "F2", "F3"], limit=2)
         # F1：最新报告期 2026-06-30，top-2 权重降序（历史期 99% 旧股被排除）

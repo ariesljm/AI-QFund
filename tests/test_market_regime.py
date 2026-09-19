@@ -53,7 +53,7 @@ class TestRepoRegime:
         conn.executemany("INSERT INTO index_daily VALUES (?, ?, ?, ?)", rows)
         conn.commit()
 
-        monkeypatch.setattr(base_mod, "db_conn", lambda: conn)
+        monkeypatch.setattr("app.repo.market.db_conn", lambda: conn)
         regime = base_mod.get_market_regime()
         assert regime in (domain.REGIME_BEAR, domain.REGIME_NEUTRAL)
 
@@ -68,6 +68,6 @@ class TestRepoRegime:
         rows = [("sh000300", f"2026-01-{d:02d}", 100.0 + d, 90.0) for d in range(1, 10)]
         conn.executemany("INSERT INTO index_daily VALUES (?, ?, ?, ?)", rows)
         conn.commit()
-        monkeypatch.setattr(base_mod, "db_conn", lambda: conn)
+        monkeypatch.setattr("app.repo.market.db_conn", lambda: conn)
         # 收盘 108 > ema60 90 → 单周期 BULL
         assert base_mod.get_market_regime() == domain.REGIME_BULL
