@@ -340,15 +340,12 @@ class TestMigrateLegacyUpgrade:
                 PRIMARY KEY (code, date));
             CREATE TABLE recommend_log (id INTEGER PRIMARY KEY, code TEXT, date TEXT,
                 status TEXT, rec_count INTEGER, return_rate REAL);
-            CREATE TABLE sector_selections (id INTEGER PRIMARY KEY, name TEXT);
             CREATE TABLE monitor_events (id INTEGER PRIMARY KEY, code TEXT, signal TEXT);
-            CREATE TABLE evolution_insights (id INTEGER PRIMARY KEY, content TEXT);
             CREATE TABLE empty_recommendations (id INTEGER PRIMARY KEY, date TEXT);
             CREATE TABLE macro_news (id INTEGER PRIMARY KEY, title TEXT);
             INSERT INTO recommend_log (code, date, status, rec_count) VALUES
                 ('000001', '2026-01-01', 'BUY', NULL),
                 ('000002', '2026-01-02', 'BUY', 3);
-            INSERT INTO sector_selections (name) VALUES ('半导体');
         """)
         conn.commit()
         conn.close()
@@ -375,26 +372,12 @@ class TestMigrateLegacyUpgrade:
         # NULL → 1 回填；非 NULL（3）保持不动
         assert rows == [("000001", 1), ("000002", 3)]
 
-    def test_sector_selections_gains_pool_columns(self, tmp_path, monkeypatch):
-        self._migrate_db(tmp_path, monkeypatch)
-        with db_mod.db_conn() as conn:
-            cols = {r[1] for r in conn.execute(
-                "PRAGMA table_info(sector_selections)").fetchall()}
-        assert {"used_insight_ids", "pool_sectors", "pool_outcomes"} <= cols
-
     def test_monitor_events_gains_is_stale(self, tmp_path, monkeypatch):
         self._migrate_db(tmp_path, monkeypatch)
         with db_mod.db_conn() as conn:
             cols = {r[1] for r in conn.execute(
                 "PRAGMA table_info(monitor_events)").fetchall()}
         assert "is_stale" in cols
-
-    def test_evolution_insights_gains_condition(self, tmp_path, monkeypatch):
-        self._migrate_db(tmp_path, monkeypatch)
-        with db_mod.db_conn() as conn:
-            cols = {r[1] for r in conn.execute(
-                "PRAGMA table_info(evolution_insights)").fetchall()}
-        assert "condition" in cols
 
     def test_empty_recommendations_gains_reason_type(self, tmp_path, monkeypatch):
         self._migrate_db(tmp_path, monkeypatch)

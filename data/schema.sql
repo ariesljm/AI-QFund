@@ -191,26 +191,7 @@ CREATE TABLE IF NOT EXISTS signal_outcomes (
 );
 
 
--- 赛道选择记录（进化闭环用）
-CREATE TABLE IF NOT EXISTS sector_selections (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    date TEXT NOT NULL,
-    recommend_log_id INTEGER,
-    recommended_sectors TEXT,
-    risk_sectors TEXT,
-    sector_reasoning TEXT,
-    regime_label TEXT,
-    key_news_snippet TEXT,
-    used_insight_ids TEXT,
-    outcome TEXT DEFAULT '待定',
-    outcome_date TEXT,
-    outcome_note TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
-    -- P1-5 否决反事实度量：量化池内全部候选赛道（JSON 数组，结算时逐赛道回看 20 日收益）
-    pool_sectors TEXT,
-    -- P1-5 池内各赛道代表基金 20 日收益（JSON：{赛道: 收益}，结算时回填，度量否决正确率）
-    pool_outcomes TEXT
-);
+
 
 -- 监控事件记录
 CREATE TABLE IF NOT EXISTS monitor_events (
@@ -230,15 +211,7 @@ CREATE TABLE IF NOT EXISTS monitor_events (
     created_at TEXT DEFAULT (datetime('now'))
 );
 
--- 模型预测序列（阶段二：R1 模型序列退出的跨日确认期数据源）
-CREATE TABLE IF NOT EXISTS monitor_scores (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    code TEXT NOT NULL,
-    date TEXT NOT NULL,
-    score REAL NOT NULL,
-    model_version TEXT,
-    UNIQUE (code, date)
-);
+
 
 -- LLM 决策审计（P0-3）：prompt 输入快照 + 原始输出 + 解析结果，可复现排查
 CREATE TABLE IF NOT EXISTS llm_audit (
@@ -257,20 +230,7 @@ CREATE TABLE IF NOT EXISTS llm_audit (
 -- 终选定论质量观测（P1-4 回滚后收敛为裁决损耗扩展，见 quality.decision_gap_best）：
 -- LLM 终选 vs 候选池最优的 20 日收益差，随质量度量月度入库，不再单独建表。
 
--- 进化洞察（替代旧 evolution_rules）
-CREATE TABLE IF NOT EXISTS evolution_insights (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    insight TEXT NOT NULL,
-    insight_type TEXT NOT NULL,
-    source_ids TEXT,
-    confidence REAL DEFAULT 1.0,
-    created_date TEXT NOT NULL,
-    last_applied_date TEXT,
-    apply_count INTEGER DEFAULT 0,
-    active INTEGER DEFAULT 1,
-    -- P3-11 洞察结构化：可选的可判定前置条件（JSON，如 {"condition": "重仓第一行业∈回避赛道", "action": "评分归零"}）
-    condition TEXT
-);
+
 
 -- 推荐质量度量（月度进化闭环）
 CREATE TABLE IF NOT EXISTS quality_metrics (
@@ -329,17 +289,7 @@ CREATE TABLE IF NOT EXISTS sector_daily_snapshot (
     PRIMARY KEY (date, sector_code)
 );
 
--- 净值反推风格暴露（ticket 05）：每日 RBSA 结果，Top-2 行业 + 拟合优度
-CREATE TABLE IF NOT EXISTS fund_style_track (
-    fund_code TEXT NOT NULL,
-    trade_date TEXT NOT NULL,
-    industry_1 TEXT,
-    weight_1 REAL,
-    industry_2 TEXT,
-    weight_2 REAL,
-    r_squared REAL,
-    PRIMARY KEY (fund_code, trade_date)
-);
+
 
 -- 数据拉取失败记录（全量/增量下载失败追踪与重试恢复）
 CREATE TABLE IF NOT EXISTS data_fetch_failures (
@@ -364,20 +314,4 @@ CREATE TABLE IF NOT EXISTS purchase_restrictions (
     updated_at TEXT DEFAULT (datetime('now'))
 );
 
--- 结算账本（2.0 主标尺记账）：推荐结果的绝对/超额收益，以及三统计量的原料。
--- benchmark_version 是标尺版本守卫的依据：口径改动即换版本号，旧记录不得与新标尺聚合。
--- excess_return 为 NULL 表示同类样本不足（peer_n 记录实际有效样本数），此时绝对收益仍保留。
-CREATE TABLE IF NOT EXISTS settlement_ledger (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    reco_date TEXT NOT NULL,
-    code TEXT NOT NULL,
-    benchmark_version TEXT NOT NULL,
-    settle_date TEXT NOT NULL,
-    abs_return REAL,
-    excess_return REAL,
-    peer_n INTEGER,
-    max_drawdown REAL,
-    confidence REAL,
-    created_at TEXT DEFAULT (datetime('now','localtime')),
-    UNIQUE (reco_date, code, benchmark_version)
-);
+

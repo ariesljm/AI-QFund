@@ -137,31 +137,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         if pending:
             conn.commit()
 
-    if "sector_selections" in tables:
-        ss_cols = {r[1] for r in conn.execute("PRAGMA table_info(sector_selections)").fetchall()}
-        if "used_insight_ids" not in ss_cols:
-            conn.execute("ALTER TABLE sector_selections ADD COLUMN used_insight_ids TEXT")
-            conn.commit()
-        # P1-5 否决反事实度量：量化池内候选赛道 + 结算回填的池内收益
-        if "pool_sectors" not in ss_cols:
-            conn.execute("ALTER TABLE sector_selections ADD COLUMN pool_sectors TEXT")
-            conn.commit()
-        if "pool_outcomes" not in ss_cols:
-            conn.execute("ALTER TABLE sector_selections ADD COLUMN pool_outcomes TEXT")
-            conn.commit()
-
     if "monitor_events" in tables:
         me_cols = {r[1] for r in conn.execute("PRAGMA table_info(monitor_events)").fetchall()}
         # C5：净值陈旧等数据告警与信号语义分离——stale 事件不计入 WARNING 升级序列
         if "is_stale" not in me_cols:
             conn.execute("ALTER TABLE monitor_events ADD COLUMN is_stale BOOLEAN DEFAULT 0")
-            conn.commit()
-
-    if "evolution_insights" in tables:
-        ei_cols = {r[1] for r in conn.execute("PRAGMA table_info(evolution_insights)").fetchall()}
-        # P3-11 洞察结构化：可判定前置条件
-        if "condition" not in ei_cols:
-            conn.execute("ALTER TABLE evolution_insights ADD COLUMN condition TEXT")
             conn.commit()
 
     if "empty_recommendations" in tables:
@@ -178,19 +158,6 @@ def _migrate(conn: sqlite3.Connection) -> None:
             if col not in macro_cols:
                 conn.execute(f"ALTER TABLE macro_news ADD COLUMN {col} {typ}")
                 conn.commit()
-
-    if "evolution_rules" in tables:
-        evolution_rules_exists = True
-    else:
-        evolution_rules_exists = False
-
-    if evolution_rules_exists and "evolution_insights" in tables:
-        old_cnt = conn.execute("SELECT COUNT(*) FROM evolution_rules").fetchone()[0]
-        new_cnt = conn.execute("SELECT COUNT(*) FROM evolution_insights").fetchone()[0]
-        if old_cnt == 0 or new_cnt > 0:
-            conn.execute("DROP TABLE IF EXISTS evolution_rules")
-            conn.commit()
-            logger.info("evolution_rules 旧表已清理 (old=%d, new=%d)", old_cnt, new_cnt)
 
     if "index_daily" in tables:
         idx_cols = {r[1] for r in conn.execute("PRAGMA table_info(index_daily)").fetchall()}

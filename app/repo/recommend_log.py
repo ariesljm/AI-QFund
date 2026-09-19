@@ -21,7 +21,7 @@ def clear_recommendations() -> dict:
     """
     counts: dict[str, int] = {}
     with db_conn() as conn:
-        for table in ('recommend_log', 'sector_selections', 'monitor_events', 'evolution_insights', 'quality_metrics', 'macro_news', 'empty_recommendations'):
+        for table in ('recommend_log', 'monitor_events', 'quality_metrics', 'macro_news', 'empty_recommendations'):
             cur = conn.execute(f'DELETE FROM {table}')
             counts[table] = cur.rowcount
     # llm_audit 是技术审计记录（P0-3），不随决策域清除，保留历史供排查
@@ -32,7 +32,7 @@ def clear_recommendations() -> dict:
 def count_recommendation_domain() -> dict[str, int]:
     """推荐决策域各表行数（清除确认 dry-run 用）。"""
     with db_conn() as conn:
-        counts = {'recommend_log': conn.execute('SELECT COUNT(*) FROM recommend_log').fetchone()[0], 'sector_selections': conn.execute('SELECT COUNT(*) FROM sector_selections').fetchone()[0], 'monitor_events': conn.execute('SELECT COUNT(*) FROM monitor_events').fetchone()[0], 'evolution_insights': conn.execute('SELECT COUNT(*) FROM evolution_insights').fetchone()[0], 'quality_metrics': conn.execute('SELECT COUNT(*) FROM quality_metrics').fetchone()[0], 'macro_news': conn.execute('SELECT COUNT(*) FROM macro_news').fetchone()[0], 'empty_recommendations': conn.execute('SELECT COUNT(*) FROM empty_recommendations').fetchone()[0]}
+        counts = {'recommend_log': conn.execute('SELECT COUNT(*) FROM recommend_log').fetchone()[0], 'monitor_events': conn.execute('SELECT COUNT(*) FROM monitor_events').fetchone()[0], 'quality_metrics': conn.execute('SELECT COUNT(*) FROM quality_metrics').fetchone()[0], 'macro_news': conn.execute('SELECT COUNT(*) FROM macro_news').fetchone()[0], 'empty_recommendations': conn.execute('SELECT COUNT(*) FROM empty_recommendations').fetchone()[0]}
     return counts
 
 
@@ -190,7 +190,7 @@ def insert_recommendation(date_str: str, code: str, name: str, rank: int, score:
     decision_logic（P2-7 决策与文案解耦）：内部决策依据独立列，审计用，
     buy_reason 只存展示文案（不再拼否决/决策尾巴，展示层魔法分隔符退役）。
     （同日幂等）同日多次运行推荐引擎（重试/手动重跑）时，同 (recommend_date, code)
-    更新原行而非追加——id 保持稳定，避免 monitor_events/sector_selections 引用悬空，
+    更新原行而非追加——id 保持稳定，避免 monitor_events 引用悬空，
     也杜绝同日同一基金重复推荐记录；同时刷新 created_at 为本次运行时间，
     供 get_latest_recommendations 按“最近一次推荐”排序（UI 今日精选），
     并把 rec_count +1（该基金被推荐引擎选中的运行次数，追踪监控“推荐次数”列）。
