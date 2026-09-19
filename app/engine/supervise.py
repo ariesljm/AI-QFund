@@ -118,17 +118,49 @@ def _pe_pctile(code: str, limit: int = 10) -> float | None:
     return weighted_valuation_percentile(holdings, pe_histories)
 
 
+def _drift_check(code: str) -> bool:
+    """持仓虚拟组合脱轨检测（票 16）：基金日收益 vs 持仓虚拟组合日收益。
+
+    数据不足（nav<20 / 无持仓 / 无个股日线）→ False（不误报，状态机按未知处理）。
+    """
+    from app.engine.drift import drift_check, proxy_returns, normalize_weights
+    from app.repo.base import get_holdings, get_stock_daily
+    from app.repo import nav as nav_repo
+    nav_rows = nav_repo.series(code, until=None)
+    nav_rows = nav_rows[-120:] if nav_rows else []
+    if not nav_rows or len(nav_rows) < 20:
+        return False
+    fund_rets: dict[str, float] = {}
+    prev = None
+    for d, v in nav_rows:
+        if prev is not None and prev > 0 and v:
+            fund_rets[d] = v / prev - 1.0
+        prev = v
+    holdings = get_holdings(code, 10)
+    weights = normalize_weights([{"stock_code": h["stock_code"], "weight": h["weight"]}
+                                  for h in holdings if h.get("stock_code")])
+    if not weights:
+        return False
+    stock_dailies = {c: get_stock_daily(c, 120) for c in weights}
+    proxy = proxy_returns(weights, stock_dailies)
+    if not proxy:
+        return False
+    r = drift_check(fund_rets, proxy)
+    return bool(r and r.get("is_drifted"))
+
+
 def build_signals(code: str, fund_navs: list[float] | None,
                   bench_navs: list[float] | None,
                   weighted_pctile: float | None = None,
-                  fatal_news: bool = False) -> dict[str, Any]:
+                  fatal_news: bool = False,
+                  drifted: bool = False) -> dict[str, Any]:
     """装配状态机 signals（缺省安全：数据不足的信号不触发，键固定可预测试）。
 
-    drifted 缺省 False：宽基指数 proxy 对主动基金会系统性误报脱轨
-    （风格偏离大盘的基金天然低相关）；RBSA 行业 proxy 为后续增强。
+    drifted 由 assemble_signals 经持仓虚拟组合 proxy（_drift_check）计算——
+    替代 1.x 宽基指数 proxy（对主动基金系统性误报）。
     """
     s: dict[str, Any] = {
-        "drifted": False,
+        "drifted": bool(drifted),
         "below_ema20": False,
         "alpha_neg_days": 0,
         "momentum_pos": False,
@@ -144,17 +176,15 @@ def build_signals(code: str, fund_navs: list[float] | None,
 
 
 def assemble_signals(code: str, bench_navs: list[float] | None = None) -> dict[str, Any]:
-    """跟踪对象 → signals 装配 seam：净值窗口 / PE 分位 / 纯信号一次性收口。
+    """跟踪对象 → signals 装配 seam：净值窗口 / PE 分位 / 纯信号 / 脱轨检测一次性收口。
 
-    把原先散在 run_supervision 循环里的三次接线（基金净值、指数基准、
-    PIT 持仓+PE 分位）下沉为一个调用点。bench_navs 全基金共用，
-    由调用方预取一次传入（不每只重查指数）。drifted 的 RBSA 行业
-    proxy 增强未来挂在此 seam（换适配器而非加 helper）。
-
+    drifted 由持仓虚拟组合 proxy 计算（_drift_check），替代宽基误报。
     _fund_navs / _pe_pctile 保留为模块内部接缝（测试 monkeypatch 兼容）。
     """
     fund_navs = _fund_navs(code)
-    return build_signals(code, fund_navs, bench_navs, _pe_pctile(code))
+    drifted = _drift_check(code)
+    return build_signals(code, fund_navs, bench_navs, _pe_pctile(code),
+                         drifted=drifted)
 
 
 def run_supervision(date: str, limit: int = 50, cid: str = "") -> dict:

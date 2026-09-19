@@ -95,16 +95,22 @@ def _calibration_assess(cid: str) -> None:
 
 
 def _knowledge_trigger(cid: str, today: str) -> None:
-    """今日 EXIT 推荐对象 → Bad-Case 落库（few-shot 回流 audit prompt）。
+    """异常回撤>8% 或 EXIT 的推荐对象 → Bad-Case 落库（few-shot 回流 audit prompt）。
 
-    异常回撤>8% 触发待后续（需 max_drawdown 接线）；EXIT 是不可逆强信号，必生成案例。
+    归因分叉（票 17）：EXIT/回撤>8% 且特征正常 → hidden_risk 案例；特征滞后 → 记特征失效不生成案例。
+    本轮简化：EXIT 或回撤>8% 均生成 bad-case（few-shot 回流）；特征滞后归因待数据新鲜度闸门接线。
     """
     from app.engine.knowledge import make_case
     from app.repo.knowledge import save_case
     from app.repo.tracked_state import get_all_tracked_states
+    from app.repo.recommend_log import get_tracking_list
+    from app.repo.nav import series as nav_series
+    from app.engine.valuation import max_drawdown
     log = logger.with_cid(cid)
+
+    # 1) EXIT 触发（不可逆强信号，必生成案例）
     states = get_all_tracked_states(limit=100)
-    n = 0
+    exit_codes = set()
     for s in states:
         if s.get("state") != "EXIT" or s.get("date") != today:
             continue
@@ -113,12 +119,35 @@ def _knowledge_trigger(cid: str, today: str) -> None:
             continue
         case = make_case("bad", today, code, None, None, {"exit": True, "state": "EXIT"})
         save_case(case)
-        n += 1
+        exit_codes.add(code)
         log.info_event("knowledge_case",
                        f"{code} EXIT → Bad-Case 落库（回流排雷 prompt）",
-                       extra={"code": code})
-    if n:
-        log.info_event("knowledge_done", f"今日新增 {n} 条 Bad-Case", extra={"count": n})
+                       extra={"code": code, "trigger": "EXIT"})
+
+    # 2) 异常回撤>8% 触发（非 EXIT 对象，避免重复）
+    DRAWDOWN_THRESHOLD = 8.0
+    for t in get_tracking_list():
+        code = t.get("code"); date = t.get("first_date") or t.get("date")
+        if not code or not date or code in exit_codes:
+            continue
+        navs = nav_series(code)
+        pts = [r[1] for r in navs if r[0] >= date]
+        if len(pts) < 2 or not pts[0]:
+            continue
+        pcts = [p / pts[0] * 100 for p in pts]
+        mdd = max_drawdown(pcts)
+        if mdd > DRAWDOWN_THRESHOLD:
+            case = make_case("bad", today, code, None, None,
+                            {"drawdown": mdd, "trigger": "drawdown>8%"})
+            save_case(case)
+            log.info_event("knowledge_case",
+                           f"{code} 回撤 {mdd}% > {DRAWDOWN_THRESHOLD}% → Bad-Case 落库",
+                           extra={"code": code, "drawdown": mdd, "trigger": "drawdown"})
+
+    if exit_codes:
+        log.info_event("knowledge_done",
+                       f"今日新增 {len(exit_codes)} 条 EXIT Bad-Case",
+                       extra={"count": len(exit_codes)})
 
 
 def _is_month_end(today: str) -> bool:
