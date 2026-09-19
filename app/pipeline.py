@@ -76,12 +76,24 @@ def _run_supervise_safely(cid: str, today: str) -> None:
     _run_phase_safely("2.0 监控", _run, cid)
 
 
+def _run_evolve_safely(cid: str, today: str) -> None:
+    """进化槽位（B 接线）：settle 超额<0 命中 + calibration 降权评估 + knowledge EXIT 回流 + 月末 quality。
+
+    各步独立容错（数据不足/某信号失败不阻断其他），与槽位互不阻断一致。
+    """
+    def _run() -> None:
+        from app.engine.evolve import run_evolve
+        run_evolve(today, cid=cid)
+    _run_phase_safely("自我进化", _run, cid)
+
+
 def run(today: datetime | None = None) -> None:
     """全流程（手动触发）：数据基座 → 推荐 → 2.0 监控，各槽位互不阻断。"""
     today, cid = _run_slot("管线", today)
     _run_phase_safely("数据基座", lambda: run_data_foundation(steps=daily_steps()), cid)
     _run_recommend_safely(cid, today.strftime("%Y-%m-%d"))
     _run_supervise_safely(cid, today.strftime("%Y-%m-%d"))
+    _run_evolve_safely(cid, today.strftime("%Y-%m-%d"))
 
 
 def run_data(today: datetime | None = None) -> None:
@@ -97,3 +109,4 @@ def run_recommend(today: datetime | None = None) -> None:
     today, cid = _run_slot("推荐槽位", today)
     _run_recommend_safely(cid, today.strftime("%Y-%m-%d"))
     _run_supervise_safely(cid, today.strftime("%Y-%m-%d"))
+    _run_evolve_safely(cid, today.strftime("%Y-%m-%d"))

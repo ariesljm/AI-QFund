@@ -180,10 +180,15 @@ def run_supervision(date: str, limit: int = 50, cid: str = "") -> dict:
         if old != new:
             moved[code] = (old, new)
             triggers = []
-            if s.get("below_ema20"): triggers.append("跌破EMA20")
-            if s.get("alpha_neg_days", 0) >= ALPHA_NEG_STREAK: triggers.append(f"Alpha连负{s['alpha_neg_days']}日")
-            if s.get("valuation_pctile") is not None and s["valuation_pctile"] >= 85: triggers.append(f"估值{s['valuation_pctile']:.0f}分位")
-            if s.get("fatal_news"): triggers.append("致命公告")
+            sig_ids = []
+            if s.get("below_ema20"): triggers.append("跌破EMA20"); sig_ids.append("below_ema20")
+            if s.get("alpha_neg_days", 0) >= ALPHA_NEG_STREAK: triggers.append(f"Alpha连负{s['alpha_neg_days']}日"); sig_ids.append("alpha_neg_days")
+            if s.get("valuation_pctile") is not None and s["valuation_pctile"] >= 85: triggers.append(f"估值{s['valuation_pctile']:.0f}分位"); sig_ids.append("valuation_high")
+            if s.get("fatal_news"): triggers.append("致命公告"); sig_ids.append("fatal_news")
+            # 校准层记账：触发信号落 signal_outcomes，evolve T+40 按超额<0 结算命中
+            from app.repo.tracked_state import record_signal_trigger
+            for sid in sig_ids:
+                record_signal_trigger(sid, date, code)
             log.info_event("state_transition", f"{code} {old}→{new} 触发：{','.join(triggers) or '阈值'}",
                            extra={"code": code, "old": old, "new": new, "triggers": triggers})
     log.info_event("supervise_done", f"监控 {n} 只对象，{len(moved)} 只状态转移",

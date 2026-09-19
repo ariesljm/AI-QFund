@@ -36,14 +36,34 @@ def get_all_tracked_states(limit: int = 50) -> list[dict]:
             for r in rows]
 
 
-def record_signal_trigger(signal_id: str, date: str) -> None:
-    """校准层记账（票 18 决策周期入口）：信号触发记一行（outcome 待结算）。"""
+def _ensure_signal_outcomes_table() -> None:
+    """建表兑底（schema.sql 主建，此处 IF NOT EXISTS 兑底 + 旧表补 fund 列）。"""
+    with db_conn() as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS signal_outcomes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            signal_id TEXT NOT NULL,
+            ts TEXT NOT NULL,
+            date TEXT,
+            fund TEXT,
+            outcome INTEGER)""")
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(signal_outcomes)")}
+        if "fund" not in cols:
+            try: conn.execute("ALTER TABLE signal_outcomes ADD COLUMN fund TEXT")
+            except Exception: pass
+        conn.commit()
+
+
+def record_signal_trigger(signal_id: str, date: str, fund: str = "") -> None:
+    """校准层记账（票 18 决策周期入口）：信号触发记一行（outcome 待结算）。
+
+    fund: 触发该信号的基金代码（settle 时算 40 日超额用；空则无法结算超额）。"""
+    _ensure_signal_outcomes_table()
     from datetime import datetime as _dt
     with db_conn() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO signal_outcomes (signal_id, ts, date, outcome) "
-            "VALUES (?, ?, ?, NULL)",
-            (signal_id, _dt.now().strftime("%Y-%m-%d %H:%M:%S.%f"), date))
+            "INSERT OR REPLACE INTO signal_outcomes (signal_id, ts, date, fund, outcome) "
+            "VALUES (?, ?, ?, ?, NULL)",
+            (signal_id, _dt.now().strftime("%Y-%m-%d %H:%M:%S.%f"), date, fund))
         conn.commit()
 
 
@@ -57,11 +77,22 @@ def settle_signal(signal_id: str, ts: str, hit: bool) -> None:
 
 def get_signal_history(signal_id: str) -> list[bool]:
     """某信号已结算的历史结果（旧→新，末尾=最新；calibration.assess 消费）。"""
+    _ensure_signal_outcomes_table()
     with db_conn() as conn:
         rows = conn.execute(
             "SELECT outcome FROM signal_outcomes WHERE signal_id = ? AND outcome IS NOT NULL "
             "ORDER BY ts ASC", (signal_id,)).fetchall()
     return [bool(r[0]) for r in rows]
+
+
+def get_pending_settlements() -> list[dict]:
+    """未结算信号（outcome IS NULL）：供 evolve 按 40 日超额判定命中后 settle。"""
+    _ensure_signal_outcomes_table()
+    with db_conn() as conn:
+        rows = conn.execute(
+            "SELECT signal_id, ts, date, fund FROM signal_outcomes WHERE outcome IS NULL"
+        ).fetchall()
+    return [{"signal_id": r[0], "ts": r[1], "date": r[2], "fund": r[3]} for r in rows]
 
 
 def get_signal_stats() -> list[dict]:
@@ -88,4 +119,4 @@ def get_latest_monitor_event(code: str) -> dict | None:
     return dict(zip(keys, row, strict=False))
 
 
-__all__ = ["get_tracked_state", "save_tracked_state", "get_all_tracked_states", "record_signal_trigger", "settle_signal", "get_signal_history", "get_signal_stats", "get_latest_monitor_event"]
+__all__ = ["get_tracked_state", "save_tracked_state", "get_all_tracked_states", "record_signal_trigger", "settle_signal", "get_signal_history", "get_signal_stats", "get_latest_monitor_event", "get_pending_settlements"]
