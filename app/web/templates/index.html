@@ -24,19 +24,19 @@
 <!-- ============ 顶部导航（设计稿 Institutional Intelligence：固定 56px + 指数块 + 用户区） ============ -->
 <header class="fixed top-0 w-full z-[100] h-14 bg-surface-container-lowest/95 backdrop-blur-md shadow-[0_1px_8px_rgba(0,0,0,0.04)] border-b border-surface-border flex items-center justify-between">
   <div class="max-w-[1440px] mx-auto w-full h-full flex items-center justify-between px-margin-page gap-4 min-w-0">
-    <div class="flex items-center gap-6 min-w-0">
+    <div class="flex items-center gap-3 sm:gap-6 min-w-0">
       <div class="flex items-center gap-2.5 shrink-0">
         <span class="w-8 h-8 rounded-full flex items-center justify-center shrink-0" style="background:linear-gradient(135deg,var(--color-accent),#c8852e);box-shadow:0 0 0 1px rgba(232,164,76,.3)"><svg viewBox="0 0 16 16" class="w-[17px] h-[17px]"><polyline points="2,13 6,9 9,11 14,4" fill="none" stroke="#1a1714" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="14" cy="4" r="1.6" fill="#1a1714"/></svg></span>
         <span class="font-headline-sm text-headline-sm text-primary tracking-tight whitespace-nowrap hidden sm:inline">AI 量化投研终端</span>
       </div>
-      <nav class="flex items-center gap-4 lg:gap-5 h-full min-w-0" aria-label="主导航">
-        <button id="tabBtn-today" onclick="switchTab('today')" aria-current="page" class="tab-nav-btn active h-full flex items-center gap-1 border-b-2 border-transparent font-body-md text-body-md font-bold whitespace-nowrap">
+      <nav class="flex items-center gap-2 sm:gap-4 lg:gap-5 h-full min-w-0" aria-label="主导航">
+        <button id="tabBtn-today" onclick="switchTab('today')" aria-current="page" class="tab-nav-btn active h-full flex items-center gap-1 border-b-2 border-transparent font-body-sm text-body-sm sm:font-body-md sm:text-body-md font-bold whitespace-nowrap">
           今日投研
         </button>
-        <button id="tabBtn-quality" onclick="switchTab('quality')" class="tab-nav-btn h-full flex items-center gap-1 border-b-2 border-transparent font-body-md text-body-md font-bold whitespace-nowrap">
+        <button id="tabBtn-quality" onclick="switchTab('quality')" class="tab-nav-btn h-full flex items-center gap-1 border-b-2 border-transparent font-body-sm text-body-sm sm:font-body-md sm:text-body-md font-bold whitespace-nowrap">
           推荐质量
         </button>
-        <button id="tabBtn-logs" onclick="switchTab('logs')" class="tab-nav-btn h-full flex items-center gap-1 border-b-2 border-transparent font-body-md text-body-md font-bold whitespace-nowrap">
+        <button id="tabBtn-logs" onclick="switchTab('logs')" class="tab-nav-btn h-full flex items-center gap-1 border-b-2 border-transparent font-body-sm text-body-sm sm:font-body-md sm:text-body-md font-bold whitespace-nowrap">
           系统日志
         </button>
       </nav>
@@ -237,10 +237,10 @@
                     <th class="px-3 py-2 whitespace-nowrap">代码</th>
                     <th class="px-3 py-2 whitespace-nowrap">名称</th>
                     <th class="px-3 py-2 text-right whitespace-nowrap">推荐日期</th>
-                    <th class="px-3 py-2 text-right whitespace-nowrap">推荐净值</th>
-                    <th class="px-3 py-2 text-right whitespace-nowrap">当前净值</th>
+                    <th class="px-3 py-2 text-right whitespace-nowrap hidden sm:table-cell">推荐净值</th>
+                    <th class="px-3 py-2 text-right whitespace-nowrap hidden sm:table-cell">当前净值</th>
                     <th class="px-3 py-2 text-right whitespace-nowrap">累计收益</th>
-                    <th class="px-3 py-2 text-center whitespace-nowrap">推荐次数</th>
+                    <th class="px-3 py-2 text-center whitespace-nowrap hidden sm:table-cell">推荐次数</th>
                     <th class="px-3 py-2 text-center whitespace-nowrap">信号</th>
                   </tr>
                 </thead>
@@ -250,12 +250,12 @@
                     <td class="px-3 py-1.5 text-accent whitespace-nowrap font-data-tabular">{{ c.code }}</td>
                     <td class="px-3 py-1.5 font-semibold text-on-surface truncate max-w-[80px] sm:max-w-[120px]" title="{{ c.name }}">{{ c.name }}</td>
                     <td class="px-3 py-1.5 text-on-surface-variant text-right font-data-tabular">{{ c.first_date[:10] if c.first_date else '--' }}</td>
-                    <td class="px-3 py-1.5 text-right font-data-tabular">{% if c.first_nav is not none %}{{ "%.4f"|format(c.first_nav) }}{% else %}--{% endif %}</td>
-                    <td class="px-3 py-1.5 text-right font-data-tabular">{% if c.cur_nav is not none %}{{ "%.4f"|format(c.cur_nav) }}{% else %}--{% endif %}</td>
+                    <td class="px-3 py-1.5 text-right font-data-tabular hidden sm:table-cell">{% if c.first_nav is not none %}{{ "%.4f"|format(c.first_nav) }}{% else %}--{% endif %}</td>
+                    <td class="px-3 py-1.5 text-right font-data-tabular hidden sm:table-cell">{% if c.cur_nav is not none %}{{ "%.4f"|format(c.cur_nav) }}{% else %}--{% endif %}</td>
                     <td class="px-3 py-1.5 text-right font-bold whitespace-nowrap font-data-tabular {% if c.return is not none and c.return >= 0 %}text-up{% elif c.return is not none %}text-down{% endif %}">
                       {% if c.return is not none %}{{ "%+.2f"|format(c.return) }}%{% else %}--{% endif %}
                     </td>
-                    <td class="px-3 py-1.5 text-center font-data-tabular">{{ c.rec_count }}</td>
+                    <td class="px-3 py-1.5 text-center font-data-tabular hidden sm:table-cell">{{ c.rec_count }}</td>
                     <td class="px-3 py-1.5 text-center">
                       {% if c.status == 'HOLD' or c.status == 'PASS' %}
                       <span class="badge badge--hold px-1.5 py-0.5">{{ signal_labels.get(c.status, '持有') }}</span>
@@ -486,7 +486,7 @@
         <p class="font-body-sm text-body-sm text-on-surface-variant">© 2026 AI 量化投研终端 · Institutional Grade License</p>
         <p class="font-body-sm text-body-sm text-outline-strong">风险提示：投资有风险，入市需谨慎。AI模型预测仅供参考，不作为投资依据。</p>
       </div>
-      <div class="border-l border-surface-border pl-5 min-w-[360px]">
+      <div class="border-l border-surface-border pl-5 min-w-0 sm:min-w-[360px]">
         <div class="flex items-center gap-1.5 text-body-sm text-on-surface-variant"><span id="pipeStateDot" class="w-2 h-2 rounded-full bg-accent"></span><span id="pipeStateText" class="text-accent font-bold">--</span> · 上次 <span id="pipeLastRun" class="font-data-tabular text-on-surface">--</span> · 下次 <span id="pipeNextRun" class="font-data-tabular text-on-surface">--</span></div>
         <div class="text-label-caps text-outline-strong mt-2 leading-relaxed">基金池 <span class="font-data-tabular text-on-surface">{{ fund_pool }}</span> · 数据 <span class="font-data-tabular text-on-surface">{{ data_latest_date or '--' }}</span> · 模型 <span class="font-data-tabular text-on-surface">{{ model_last_trained or '--' }}</span> · 运行 <span id="pipeUptime" class="font-data-tabular text-on-surface">--</span></div>
       </div>
