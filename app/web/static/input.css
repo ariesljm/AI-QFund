@@ -211,7 +211,7 @@ button, a, input, select { transition-property: background-color, border-color, 
 }
 .data-table tbody tr { border-bottom: 1px solid var(--color-rule-soft); transition: background-color var(--dur-micro) var(--ease-out); }
 .data-table tbody tr:hover { background: var(--color-paper-2); }
-.data-table td { font-family: var(--font-body); font-size: 13px; }
+.data-table td { font-family: var(--font-body); font-size: 14px; }
 /* 主题语义类：值取自 --color-* 变量，供 app.js 动态注入的类名使用。 */
 .tab-nav-btn { color: var(--color-ink-2); }
 .tab-nav-btn:hover { color: var(--color-accent-2); }
