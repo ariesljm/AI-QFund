@@ -41,6 +41,8 @@ ignore = ["E501"]  # 行长由 line-length 软约束，长 SQL/URL 不硬报错
 [tool.ruff.lint.per-file-ignores]
 # 测试文件顶部 sys.path.insert 引导是项目约定风格（AGENTS.md），非顶层 import 属预期
 "tests/**" = ["E402"]
+# re-export 门面：star import + __all__ 的名字 ruff 静态无法确认（运行时可达，测试覆盖）
+"app/repo/decision.py" = ["F401", "F403", "F405"]
 
 [tool.mypy]
 python_version = "3.12"

@@ -34,3 +34,29 @@ def holdings_change_snapshot(current: list[dict], previous: list[dict]) -> str:
              f"集中度 {conc_prev:.1f}% → {conc_cur:.1f}%（{conc_cur - conc_prev:+.1f}pp）"]
     return "；".join(parts)
 
+
+def assemble_audit_slices(code: str) -> dict[str, str]:
+    """排雷审计四组切片装配单一来源（ADR-0003：素材装配收敛在 llm/context）。
+
+    接口：传入基金代码 → 返回 {holdings_change, risk_radar, management, sentiment}
+    四段文本。两期持仓抓取与各 text 调用是本模块内部接缝（私有实现），
+    引擎层只见这一个调用点；新增/裁掉一段切片只改这里。
+
+    缺失显式可见（不静默填空）——由各 text 函数自行标注缺失侧。
+    """
+    from app.data.announcements import risk_radar_text
+    from app.data.manager import manager_text
+    from app.data.sentiment import sentiment_text
+    from app.repo.base import get_holdings_two_periods
+
+    cur, prev = get_holdings_two_periods(code, 10)
+    # risk_radar / sentiment 只需 code/name（不取 weight/industry），在此剥形
+    holdings_for_news = [{"stock_code": h["stock_code"],
+                          "stock_name": h["stock_name"]} for h in cur]
+    return {
+        "holdings_change": holdings_change_snapshot(cur, prev),
+        "risk_radar": risk_radar_text(holdings_for_news),
+        "management": manager_text(code),
+        "sentiment": sentiment_text(holdings_for_news),
+    }
+

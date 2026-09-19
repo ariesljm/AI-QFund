@@ -69,7 +69,8 @@ class TestPurchaseStatusesBatch:
                          [("F1", "normal"), ("F2", "limited"), ("F3", "suspended")])
         conn.commit()
         monkeypatch.setattr(base_mod, "db_conn", lambda: sqlite3.connect(db))
-        monkeypatch.setattr(dec, "db_conn", lambda: sqlite3.connect(db))
+        import app.repo.purchase_restriction as pr_mod
+        monkeypatch.setattr(pr_mod, "db_conn", lambda: sqlite3.connect(db))
 
         assert dec.get_purchase_statuses(["F1", "F2", "F3"]) == {
             "F1": "normal", "F2": "limited", "F3": "suspended"}

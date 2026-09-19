@@ -54,6 +54,31 @@ def profit_stats(rets: Sequence[float | None], threshold: float = domain.PROFIT_
     }
 
 
+def decision_loss_metrics(code: str, abs_ret: float,
+                           candidate_codes_json: str | None,
+                           reco_date: str) -> tuple[float | None, float | None]:
+    """Q5 裁决损耗 sub-module：LLM 选中基金 vs 候选池的收益差。
+
+    返回 (decision_loss, decision_gap_best)：
+    - decision_loss = 选中基金绝对收益 − 候选池均值（排除选中基金自比）；
+    - decision_gap_best = 选中 − 候选池最优（回答“LLM 是否不如纯量化最优”）。
+    无候选 / 候选全无净值 → (None, None)。候选绝对收益单一来源 repo.nav.forward_return。
+    """
+    if not candidate_codes_json:
+        return None, None
+    cand_rets: list[float] = []
+    for cc in json.loads(candidate_codes_json):
+        if cc == code:
+            continue
+        cr = repo.nav.forward_return(cc, reco_date)
+        if cr is not None and np.isfinite(cr):
+            cand_rets.append(cr)
+    if not cand_rets:
+        return None, None
+    cand_mean = sum(cand_rets) / len(cand_rets)
+    return abs_ret - cand_mean, abs_ret - max(cand_rets)
+
+
 def compute_metrics_from_pairs(pairs: list[tuple[float, float]]) -> dict:
     """从 (预测分, 实现绝对收益) 序列计算质量指标（阶段5：赚钱口径）。
 
@@ -106,27 +131,13 @@ def compute_quality_metrics(period_start: str, period_end: str) -> dict:
             continue
         if not np.isfinite(abs_ret):
             continue
-        # Q5 裁决损耗：LLM 选中基金 vs 候选池均值（回查候选 40 日收益，排除选中基金自比）；
-        # P1-4 回滚后扩展：同时算选中 vs 候选池最优（combo 最高的候选，若其净值可查）——
-        # 回答"LLM 是否不如纯量化最优"，与均值口径同一套月度样本，零新增表。
-        decision_loss = None
-        decision_gap_best = None
-        if candidate_codes:
-            cand_rets = []
-            for cc in json.loads(candidate_codes):
-                if cc == code:
-                    continue
-                # 40 日绝对收益单一来源（架构深化 C）：与结算/反事实同口径
-                cr = repo.nav.forward_return(cc, reco_date)
-                if cr is not None and np.isfinite(cr):
-                    cand_rets.append(cr)
-            if cand_rets:
-                cand_mean = sum(cand_rets) / len(cand_rets)
-                decision_loss = abs_ret - cand_mean
-                decision_losses.append(decision_loss)
-                cand_best = max(cand_rets)
-                decision_gap_best = abs_ret - cand_best
-                gaps_best.append(decision_gap_best)
+        # Q5 裁决损耗 sub-module（候选池均值差 / 最优差，排除自比）
+        decision_loss, decision_gap_best = decision_loss_metrics(
+            code, abs_ret, candidate_codes, reco_date)
+        if decision_loss is not None:
+            decision_losses.append(decision_loss)
+        if decision_gap_best is not None:
+            gaps_best.append(decision_gap_best)
         pairs.append((float(score), abs_ret))
         pairs_by_path.setdefault(reco_path or "sector", []).append((float(score), abs_ret))
         points.append({"date": reco_date, "code": code, "reco_path": reco_path or "sector",

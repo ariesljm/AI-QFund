@@ -147,3 +147,29 @@ class TestComputeQualityMetricsDB:
         assert len(rows) == 1
         assert rows[0]["ic"] == 0.7
 
+
+class TestDecisionLossMetrics:
+    """Q5 裁决损耗 sub-module 直测（forward_return 打桩）。"""
+
+    def test_no_candidates_returns_none(self, monkeypatch):
+        monkeypatch.setattr("app.repo.nav.forward_return", lambda c, d: 0.05)
+        loss, gap = quality.decision_loss_metrics("000001", 0.05, None, "2026-01-01")
+        assert loss is None and gap is None
+
+    def test_excludes_self_and_computes_mean_and_best(self, monkeypatch):
+        # 选中 +10%，候选 [000002 +0%, 000003 +20%（自比应排除）, 000004 +4%]
+        fr = {"000002": 0.0, "000004": 0.04}
+        monkeypatch.setattr("app.repo.nav.forward_return",
+                            lambda c, d: fr.get(c))
+        loss, gap = quality.decision_loss_metrics(
+            "000001", 0.10, '["000002","000003","000004"]', "2026-01-01")
+        cand = [0.0, 0.04]
+        assert loss == pytest.approx(0.10 - sum(cand) / len(cand), abs=1e-6)
+        assert gap == pytest.approx(0.10 - max(cand), abs=1e-6)
+
+    def test_all_candidates_missing_nav_returns_none(self, monkeypatch):
+        monkeypatch.setattr("app.repo.nav.forward_return", lambda c, d: None)
+        loss, gap = quality.decision_loss_metrics(
+            "000001", 0.10, '["000002","000003"]', "2026-01-01")
+        assert loss is None and gap is None
+

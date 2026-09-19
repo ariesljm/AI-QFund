@@ -140,6 +140,20 @@ def build_signals(code: str, fund_navs: list[float] | None,
     return s
 
 
+def assemble_signals(code: str, bench_navs: list[float] | None = None) -> dict[str, Any]:
+    """跟踪对象 → signals 装配 seam：净值窗口 / PE 分位 / 纯信号一次性收口。
+
+    把原先散在 run_supervision 循环里的三次接线（基金净值、指数基准、
+    PIT 持仓+PE 分位）下沉为一个调用点。bench_navs 全基金共用，
+    由调用方预取一次传入（不每只重查指数）。drifted 的 RBSA 行业
+    proxy 增强未来挂在此 seam（换适配器而非加 helper）。
+
+    _fund_navs / _pe_pctile 保留为模块内部接缝（测试 monkeypatch 兼容）。
+    """
+    fund_navs = _fund_navs(code)
+    return build_signals(code, fund_navs, bench_navs, _pe_pctile(code))
+
+
 def run_supervision(date: str, limit: int = 50) -> dict:
     """每日监控接线：recommend_v2 全部推荐对象 → 装配信号 → 状态机转移落库。
 
@@ -154,8 +168,7 @@ def run_supervision(date: str, limit: int = 50) -> dict:
     moved: dict[str, tuple[str, str]] = {}
     n = 0
     for code in codes:
-        fund_navs = _fund_navs(code)
-        s = build_signals(code, fund_navs, bench_navs, _pe_pctile(code))
+        s = assemble_signals(code, bench_navs)
         old, new = apply_transition("fund", code, s, date)
         n += 1
         if old != new:

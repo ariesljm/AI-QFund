@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import app.database as db_mod
 from app.engine.supervise import (
     alpha_neg_streak,
+    assemble_signals,
     build_signals,
     daily_returns,
     ema20_below,
@@ -74,6 +75,29 @@ class TestBuildSignals:
     def test_fatal_news_passthrough(self):
         s = build_signals("F1", None, None, fatal_news=True)
         assert s["fatal_news"] is True
+
+
+class TestAssembleSignals:
+    """assemble_signals seam：净值/PE 接线下沉为一个调用点（drifted 留作 RBSA 适配器位）。"""
+
+    def test_missing_data_safe_defaults(self, monkeypatch):
+        monkeypatch.setattr("app.engine.supervise._fund_navs", lambda code, days=250: None)
+        monkeypatch.setattr("app.engine.supervise._pe_pctile", lambda code, limit=10: None)
+        s = assemble_signals("F1", bench_navs=None)
+        assert s["below_ema20"] is False
+        assert s["alpha_neg_days"] == 0
+        assert "valuation_pctile" not in s
+        assert s["drifted"] is False          # RBSA proxy 未接入位
+
+    def test_wires_nav_and_pe_into_signals(self, monkeypatch):
+        down = [100.0 - i * 0.8 for i in range(60)]
+        flat = [100.0] * 60
+        monkeypatch.setattr("app.engine.supervise._fund_navs", lambda code, days=250: down)
+        monkeypatch.setattr("app.engine.supervise._pe_pctile", lambda code, limit=10: 88.0)
+        s = assemble_signals("F1", bench_navs=flat)
+        assert s["below_ema20"] is True       # 下行跌破
+        assert s["valuation_pctile"] == 88.0
+        assert s["alpha_neg_days"] >= 1      # 基准走平、基金下行 → 负超额
 
 
 class TestRunSupervision:

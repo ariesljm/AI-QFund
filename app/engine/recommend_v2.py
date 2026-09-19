@@ -67,23 +67,9 @@ def recommend_top5(today: str, audit_fn=None, scorer=None) -> dict:
 
 
 def _slices_for(cand: dict) -> dict:
-    """四组切片装配（票 12；缺失切片明示）。测试可整体替换 audit_fn 绕过。"""
-    code = cand["code"]
-    from app.data.announcements import risk_radar_text
-    from app.data.manager import manager_text
-    from app.data.sentiment import sentiment_text
-    from app.llm.context import holdings_change_snapshot
-    from app.repo.base import get_holdings_two_periods
-
-    cur, prev = get_holdings_two_periods(code, 10)   # 最近两期（04 回填后真实对比）
-    return {
-        "holdings_change": holdings_change_snapshot(cur, prev),
-        "risk_radar": risk_radar_text([{"stock_code": h["stock_code"],
-                                        "stock_name": h["stock_name"]} for h in cur]),
-        "management": manager_text(code),   # 切片三（US17）：经理负荷与稳定性（天天 F10）
-        "sentiment": sentiment_text([{"stock_code": h["stock_code"],
-                                      "stock_name": h["stock_name"]} for h in cur]),
-    }
+    """四组切片装配委托 llm/context 单一来源（ADR-0003）；测试可整体替换 audit_fn 绕过。"""
+    from app.llm.context import assemble_audit_slices
+    return assemble_audit_slices(cand["code"])
 
 
 def recommend_v2_enabled() -> bool:

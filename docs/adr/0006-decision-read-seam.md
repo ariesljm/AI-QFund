@@ -28,3 +28,19 @@
 - `repo/base.py` 只读可重建域表（fund_*/index_daily 等）；领域承诺与读侧现实一致。
 - 与 0001（写不变式）/0005（读与连接收敛）互补：0001 管谁写、0005 管读收敛、本 ADR 管
   决策域读归属。
+
+## 落地（2026-09-19，子结构拆分）
+
+- `repo/decision.py` 按表族拆为子模块（`recommend_log` / `screening` / `tracked_state` /
+  `quality_metric` / `llm_audit` / `purchase_restriction` / `sector_daily`），`decision.py`
+  退成 re-export 门面：`from .submod import *` + 合并 `__all__` + re-export 模块级
+  `db_conn`/`get_meta`/`domain`/`META`/`logger`（保既有 `decision_mod.db_conn` /
+  `from app.repo.decision import db_conn` 可达）。
+- **外部 seam 不变**：`from app.repo import decision` / `repo.X` / `decision.X` /
+  `from app.repo.decision import X`（如 `app/data/restriction.py` 的 `save_purchase_restriction`）
+  全部零改动；门面 `__all__` 仍是 38 名全集。
+- 新增决策域读仍先进 `decision` 门面查对应子模块有无语义聚合服务；本 ADR 约束的是
+  「决策域读归一 decision seam」，re-export 保住 seam，不在「必须单文件」之列。
+- 测试 seam 随边界移动：`monkeypatch.setattr(decision, "db_conn")` 对已迁入子模块的
+  函数不再生效（`from import` 绑定不随原模块 patch 移动），patch 目标改为对应子模块
+  （`app.repo.purchase_restriction.db_conn` 等）；`test_purchase_restriction` 已随之调整。
