@@ -25,7 +25,6 @@ def _isolated_cache():
 
 def _isolate_env(monkeypatch, tmp_path):
     monkeypatch.setattr(config_mod, "_ENV_OVERRIDE_MAP", {})
-    monkeypatch.setattr(config_mod, "DB_PATH", tmp_path / "nope.db")
 
 
 class TestConfigCache:
@@ -69,6 +68,17 @@ class TestConfigCache:
         # 模拟用户运行期编辑文件设置密码（进程不重启）
         cfg.write_text('[web]\nsettings_password = "secret"\n', encoding="utf-8")
         assert config_mod.load_settings()["web"]["settings_password"] == "secret"
+
+    def test_save_settings_appends_missing_key(self, tmp_path, monkeypatch):
+        """键在 toml 中无实际行（仅注释）时，save 应在所属 section 追加而非静默失败。"""
+        cfg = tmp_path / "settings.toml"
+        cfg.write_text('[llm]\n# model = "commented"\nbase_url = "x"\n', encoding="utf-8")
+        monkeypatch.setattr(config_mod, "SETTINGS_PATH", cfg)
+        _isolate_env(monkeypatch, tmp_path)
+
+        config_mod.save_settings({"llm": {"model": "new-model"}})
+        assert config_mod.load_settings()["llm"]["model"] == "new-model"
+        assert 'model = "new-model"' in cfg.read_text(encoding="utf-8")
 
 
 class TestMetaSeamGuard:

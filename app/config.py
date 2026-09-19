@@ -2,14 +2,11 @@
 
 import copy
 import hashlib
-import json
 import os as _os
 import re
 import tomllib as _tomllib
 from pathlib import Path
 
-from app.database import DB_PATH
-from app.repo.base import get_settings_all, save_settings_all
 from app.utils.log import get_logger
 
 logger = get_logger("config")
@@ -55,15 +52,6 @@ def load_settings() -> dict:
             settings.setdefault(section, {})
             if key not in settings[section]:
                 settings[section][key] = val
-    try:
-        rows = get_settings_all()
-        for key, value in rows.items():
-            parts = key.split(":", 2)
-            if len(parts) == 3:
-                _, section, name = parts
-                settings.setdefault(section, {})[name] = json.loads(value)
-    except Exception:
-        pass
     _settings_cache = settings
     _settings_digest = digest
     # 返回副本，调用方变异（如 web 层剔除密码）不会污染缓存。
@@ -71,47 +59,47 @@ def load_settings() -> dict:
 
 
 def save_settings(settings: dict) -> bool:
-    global _settings_cache
-    toml_ok = False
-    try:
-        text = SETTINGS_PATH.read_text(encoding="utf-8")
-        for _section, values in settings.items():
-            for key, value in values.items():
-                if isinstance(value, bool):
-                    line = f'{key} = {"true" if value else "false"}'
-                elif isinstance(value, int):
-                    line = f'{key} = {value}'
-                elif isinstance(value, float):
-                    line = f'{key} = {value}'
-                else:
-                    line = f'{key} = "{value}"'
-                text = re.sub(rf'^{re.escape(key)}\s*=.*$', line, text, flags=re.MULTILINE)
-        SETTINGS_PATH.write_text(text, encoding="utf-8")
-        toml_ok = True
-    except OSError:
-        pass
+    """把 settings 写回 settings.toml（唯一事实来源，不再双写 DB meta）。
 
-    if toml_ok:
-        if DB_PATH.exists():
-            try:
-                save_settings_all({
-                    f"settings:{section}:{key}": json.dumps(value, ensure_ascii=False)
-                    for section, values in settings.items()
-                    for key, value in values.items()
-                })
-            except Exception:
-                pass
-    else:
-        if not DB_PATH.exists():
-            raise
-        save_settings_all({
-            f"settings:{section}:{key}": json.dumps(value, ensure_ascii=False)
-            for section, values in settings.items()
-            for key, value in values.items()
-        })
+    按 section 定位键行替换；键不存在时在该 section 下追加（覆盖"仅注释无实际行"
+    的首次配置场景）。写失败抛 OSError，由调用方决定兜底。
+    """
+    global _settings_cache
+    text = SETTINGS_PATH.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    for section, values in settings.items():
+        header = f"[{section}]"
+        start = next((i for i, ln in enumerate(lines) if ln.strip() == header), None)
+        if start is None:
+            # section 不存在：追加到文件末尾
+            if lines and lines[-1].strip():
+                lines.append("")
+            lines.append(header)
+            start = len(lines) - 1
+        end = next((i for i in range(start + 1, len(lines))
+                    if re.match(r'^\s*\[[^\[\]]+\]\s*$', lines[i])), len(lines))
+        for key, value in values.items():
+            new_line = _format_value(key, value)
+            idx = next((i for i in range(start + 1, end)
+                        if re.match(rf'^\s*{re.escape(key)}\s*=', lines[i])), None)
+            if idx is not None:
+                lines[idx] = new_line
+            else:
+                lines.insert(end, new_line)
+                end += 1
+    SETTINGS_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
     _settings_cache = None
     logger.info("配置已保存: %s", {k: list(v.keys()) for k, v in settings.items()})
     return True
+
+
+def _format_value(key: str, value) -> str:
+    """键值格式化（bool/int/float/字符串）。"""
+    if isinstance(value, bool):
+        return f'{key} = {"true" if value else "false"}'
+    if isinstance(value, (int, float)):
+        return f'{key} = {value}'
+    return f'{key} = "{value}"'
 
 
 _LABEL_LAMBDA_DEFAULT = 1.0
