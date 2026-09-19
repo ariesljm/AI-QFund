@@ -20,6 +20,7 @@ import numpy as np
 
 from app.engine.state_machine import apply_transition
 from app.features.calculator import _ema_series
+from app.features.excess import daily_returns, daily_excess
 from app.utils.log import get_logger
 
 logger = get_logger("supervise")
@@ -42,27 +43,16 @@ def ema20_below(navs: list[float]) -> bool:
     return bool(navs[-1] < ema[-1])
 
 
-def daily_returns(navs: list[float]) -> list[float]:
-    """净值序列 → 日收益序列（同长度首元素 0，与 1.x 口径一致）。"""
-    out: list[float] = [0.0]
-    for i in range(1, len(navs)):
-        prev = navs[i - 1]
-        out.append(float(navs[i] / prev - 1.0) if prev > 0 else 0.0)
-    return out
-
-
 def alpha_neg_streak(fund_navs: list[float], bench_navs: list[float],
                      n: int = 5) -> int:
     """重叠日相对基准的超额（fund_ret − bench_ret）连续负天数（最新往回数）。"""
-    f = daily_returns(fund_navs)
-    b = daily_returns(bench_navs)
-    # 按日期对齐：两者取自同一交易日序列（ts 同日），直接取共同尾部
-    overlap = min(len(f), len(b))
+    ex = daily_excess(fund_navs, bench_navs)
+    overlap = len(ex)
     if overlap < n:
         return 0
     streak = 0
     for i in range(overlap - 1, 0, -1):
-        if f[i] - b[i] < 0:
+        if ex[i] < 0:
             streak += 1
         else:
             break
