@@ -291,24 +291,11 @@ class SectorPolicy:
         return set(self.resolve(names))
 
 
-# ── 信号枚举（监控引擎/推荐引擎/质量度量共用） ──────────
-SIGNAL_HOLD = "HOLD"
-SIGNAL_BUY_MORE = "BUY_MORE"
-SIGNAL_WARNING = "WARNING"
+# ── 信号/状态枚举（监控引擎/推荐引擎/质量度量共用） ──────────
+# 1.x 防线动作（SIGNAL_HOLD/BUY_MORE/WARNING + SIGNAL_PRIORITY + HOLDING_STATES）
+# 已随 2.0 状态机（HOLD/WATCH/EXIT，文案见 STATE_LABELS）作废；仅保留仍被引用的两词。
 SIGNAL_EXIT = "EXIT"
 SIGNAL_REJECT = "REJECT"
-
-# 信号合并优先级（监控防线链聚合单一来源）：数值越大优先级越高。
-# EXIT > WARNING > BUY_MORE > HOLD：HOLD 视为无信号基底（优先级最低），
-# 保证警惕/离场恒优先于加仓（风控优先），同时加仓建议不被无信号压制。
-SIGNAL_PRIORITY = {
-    SIGNAL_HOLD: 1,
-    SIGNAL_BUY_MORE: 2,
-    SIGNAL_WARNING: 3,
-    SIGNAL_EXIT: 4,
-}
-# 持仓状态集合（监控引擎与 repo 查询共用）
-HOLDING_STATES = (SIGNAL_HOLD, SIGNAL_BUY_MORE, SIGNAL_WARNING)
 
 # ── 模型预测门槛 ─────────────
 # 「模型看好」= 模型预测未来 FORWARD_DAYS 日风险调整收益为正（ticket 09：
@@ -321,19 +308,6 @@ MIN_PREDICTED_ALPHA = 0.0
 # （风险调整值 ≤ 纯收益），阈值取值应随 λ 标定复核。
 # 与监控「转负」边界（0）是不同语义，勿混用。
 MIN_ENTRY_ALPHA = PROFIT_THRESHOLD
-
-# ── 信号/大盘状态中文文案（Web 展示单一来源） ────────────
-# 模板与前端 JS 均从此映射取文案，避免四处硬编码漂移（历史遗留 PASS/ADD/CAUTION 兼容映射）
-SIGNAL_LABELS = {
-    SIGNAL_HOLD: "持有",
-    SIGNAL_BUY_MORE: "加仓",
-    SIGNAL_WARNING: "警惕",
-    SIGNAL_EXIT: "离场",
-    SIGNAL_REJECT: "否决",
-    "PASS": "持有",
-    "ADD": "加仓",
-    "CAUTION": "警惕",
-}
 
 # ── 2.0 状态机文案（US22-28 迁移后 Web 展示单一来源） ────────
 # 状态词 HOLD/WATCH/EXIT 由 state_machine 定义；模板 badge 分支与 JS 共用此映射

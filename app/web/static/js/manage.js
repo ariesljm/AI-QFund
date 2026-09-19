@@ -192,8 +192,7 @@ async function fetchFundDetail(code) {
                 '<div class="flex items-center gap-2 mb-1">' +
                 '<span class="badge ' + (
                     d.current_signal.signal === 'HOLD' ? 'badge--hold' :
-                    d.current_signal.signal === 'BUY_MORE' ? 'badge--add' :
-                    d.current_signal.signal === 'WARNING' ? 'badge--warn' :
+                    d.current_signal.signal === 'WATCH' ? 'badge--warn' :
                     d.current_signal.signal === 'EXIT' ? 'badge--exit' :
                     'badge--muted'
                 ) + '">' + (

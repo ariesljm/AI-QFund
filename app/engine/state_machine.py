@@ -22,7 +22,6 @@ EXIT = "EXIT"
 # 默认阈值（票 15）
 VALUATION_HIGH_PCT = 85.0    # HOLD→WATCH：估值分位 ≥ 85%
 VALUATION_EXTREME_PCT = 90.0  # WATCH→EXIT：估值 > 90% 且 5 日动量由正转负
-ALPHA_NEG_DAYS = 5            # HOLD→WATCH：Alpha 连续 5 日为负
 
 
 def is_watch_signal(s: dict) -> bool:

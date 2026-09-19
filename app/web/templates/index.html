@@ -259,9 +259,7 @@
                     <td class="px-3 py-1.5 text-center">
                       {% if c.status == 'HOLD' or c.status == 'PASS' %}
                       <span class="badge badge--hold text-[10px] px-1.5 py-0.5">{{ signal_labels.get(c.status, '持有') }}</span>
-                      {% elif c.status == 'ADD' or c.status == 'BUY_MORE' %}
-                      <span class="badge badge--add text-[10px] px-1.5 py-0.5">{{ signal_labels.get(c.status, '加仓') }}</span>
-                      {% elif c.status == 'WATCH' or c.status == 'CAUTION' or c.status == 'WARNING' %}
+                      {% elif c.status == 'WATCH' %}
                       <span class="badge badge--warn text-[10px] px-1.5 py-0.5">{{ signal_labels.get(c.status, '观察') }}</span>
                       {% elif c.status == 'EXIT' or c.status == 'REJECT' %}
                       <span class="badge badge--exit text-[10px] px-1.5 py-0.5">{{ signal_labels.get(c.status, '离场') }}</span>

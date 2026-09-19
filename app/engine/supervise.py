@@ -24,7 +24,7 @@ from app.utils.log import get_logger
 
 logger = get_logger("supervise")
 
-# Alpha 连续负天数的观察阈值（状态机默认 ALPHA_NEG_DAYS=5；此处允许接线层收紧）
+# Alpha 连续负天数的观察阈值（relative_weak 子条件；唯一来源，勿在别处重复定义）
 ALPHA_NEG_STREAK = 5
 # 动量观察窗口（交易日）
 MOMENTUM_DAYS = 5
