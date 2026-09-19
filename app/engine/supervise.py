@@ -149,42 +149,87 @@ def _drift_check(code: str) -> bool:
     return bool(r and r.get("is_drifted"))
 
 
+def _fatal_news(code: str) -> bool:
+    """重仓股致命负面公告（事件风险，触发直通 EXIT）。
+
+    fetch_announcements 成本高（东财 np-anotice API），取 top5 重仓 + 近 14 天控制；容错失败返回 False。
+    """
+    try:
+        from app.data.announcements import fetch_announcements, is_negative
+        from app.repo.base import get_holdings
+        for h in get_holdings(code, 5):
+            sc = h.get("stock_code")
+            if not sc:
+                continue
+            for a in (fetch_announcements(sc, days=14) or []):
+                if is_negative(a.get("title", "")):
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def _drawdown_stop(code: str) -> bool:
+    """推荐日至今最大峰谷回撤 > 8% → 止损（保护本金，触发直通 EXIT）。"""
+    try:
+        from app.repo.recommend_log import get_fund_detail
+        from app.repo.nav import series as nav_series
+        from app.engine.valuation import max_drawdown
+        first = (get_fund_detail(code) or {}).get("first_date")
+        if not first:
+            return False
+        navs = nav_series(code, until=None)
+        pts = [r[1] for r in navs if r[0] >= first]
+        if len(pts) < 2 or not pts[0]:
+            return False
+        return max_drawdown([p / pts[0] * 100 for p in pts]) > 8.0
+    except Exception:
+        return False
+
+
 def build_signals(code: str, fund_navs: list[float] | None,
                   bench_navs: list[float] | None,
                   weighted_pctile: float | None = None,
                   fatal_news: bool = False,
-                  drifted: bool = False) -> dict[str, Any]:
+                  drifted: bool = False,
+                  drawdown_stop: bool = False) -> dict[str, Any]:
     """装配状态机 signals（缺省安全：数据不足的信号不触发，键固定可预测试）。
 
-    drifted 由 assemble_signals 经持仓虚拟组合 proxy（_drift_check）计算——
-    替代 1.x 宽基指数 proxy（对主动基金系统性误报）。
+    relative_weak 合并 drifted（持仓虚拟组合脱轨）与 alpha_neg 连续负（前兆）为单一相对弱势维度——
+    去冗余：一个维度只记一路账（calibration）。drifted/alpha_neg_days 仍保留供溯源但不独立触发。
     """
     s: dict[str, Any] = {
-        "drifted": bool(drifted),
+        "relative_weak": False,
         "below_ema20": False,
         "alpha_neg_days": 0,
         "momentum_pos": False,
         "fatal_news": bool(fatal_news),
+        "drawdown_stop": bool(drawdown_stop),
     }
     if fund_navs and bench_navs:
         s["below_ema20"] = ema20_below(fund_navs)
         s["alpha_neg_days"] = alpha_neg_streak(fund_navs, bench_navs)
         s["momentum_pos"] = momentum_pos(fund_navs)
+    # relative_weak：持仓脱轨 OR 超额连续负（前兆）——合并为单一相对弱势维度
+    if drifted or (s.get("alpha_neg_days", 0) >= ALPHA_NEG_STREAK):
+        s["relative_weak"] = True
     if weighted_pctile is not None:
         s["valuation_pctile"] = weighted_pctile
     return s
 
 
 def assemble_signals(code: str, bench_navs: list[float] | None = None) -> dict[str, Any]:
-    """跟踪对象 → signals 装配 seam：净值窗口 / PE 分位 / 纯信号 / 脱轨检测一次性收口。
+    """跟踪对象 → signals 装配 seam：净值窗口 / PE 分位 / 纯信号 / 脱轨 / 致命公告 / 止损一次性收口。
 
-    drifted 由持仓虚拟组合 proxy 计算（_drift_check），替代宽基误报。
-    _fund_navs / _pe_pctile 保留为模块内部接缝（测试 monkeypatch 兼容）。
+    drifted 由持仓虚拟组合 proxy 计算（_drift_check）；fatal_news 由重仓公告判定（_fatal_news）；
+    drawdown_stop 由推荐日至今回撤判定（_drawdown_stop）。均数据不足 False 不误报。
     """
     fund_navs = _fund_navs(code)
     drifted = _drift_check(code)
+    fatal = _fatal_news(code)
+    dd_stop = _drawdown_stop(code)
     return build_signals(code, fund_navs, bench_navs, _pe_pctile(code),
-                         drifted=drifted)
+                         fatal_news=fatal, drifted=drifted, drawdown_stop=dd_stop)
 
 
 def run_supervision(date: str, limit: int = 50, cid: str = "") -> dict:
@@ -212,9 +257,10 @@ def run_supervision(date: str, limit: int = 50, cid: str = "") -> dict:
             triggers = []
             sig_ids = []
             if s.get("below_ema20"): triggers.append("跌破EMA20"); sig_ids.append("below_ema20")
-            if s.get("alpha_neg_days", 0) >= ALPHA_NEG_STREAK: triggers.append(f"Alpha连负{s['alpha_neg_days']}日"); sig_ids.append("alpha_neg_days")
+            if s.get("relative_weak"): triggers.append("相对弱势"); sig_ids.append("relative_weak")
             if s.get("valuation_pctile") is not None and s["valuation_pctile"] >= 85: triggers.append(f"估值{s['valuation_pctile']:.0f}分位"); sig_ids.append("valuation_high")
             if s.get("fatal_news"): triggers.append("致命公告"); sig_ids.append("fatal_news")
+            if s.get("drawdown_stop"): triggers.append("止损8%"); sig_ids.append("drawdown_stop")
             # 校准层记账：触发信号落 signal_outcomes，evolve T+40 按超额<0 结算命中
             from app.repo.tracked_state import record_signal_trigger
             for sid in sig_ids:

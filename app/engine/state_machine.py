@@ -26,19 +26,31 @@ ALPHA_NEG_DAYS = 5            # HOLD→WATCH：Alpha 连续 5 日为负
 
 
 def is_watch_signal(s: dict) -> bool:
-    """HOLD→WATCH 触发（任一条）：脱轨 / 估值高分位 / Alpha 连续负 5 日。"""
-    if s.get("drifted"):
+    """HOLD→WATCH 触发（任一条）：相对弱势 / 估值高分位。
+
+    relative_weak 合并 drifted（持仓虚拟组合脱轨）与 alpha_neg 连续负（前兆），
+    单一相对弱势维度单路记账（去冗余）。
+    """
+    if s.get("relative_weak"):
         return True
     if (s.get("valuation_pctile") or 0) >= VALUATION_HIGH_PCT:
-        return True
-    if (s.get("alpha_neg_days") or 0) >= ALPHA_NEG_DAYS:
         return True
     return False
 
 
+def is_hard_exit(s: dict) -> bool:
+    """硬性直通 EXIT（任意态→EXIT，不观察）：致命公告 / 止损。
+
+    黑天鹅与本金止损是不可逆重大风险，观察期间继续下跌，不走 WATCH 渐进。
+    """
+    return bool(s.get("fatal_news") or s.get("drawdown_stop"))
+
+
 def is_exit_signal(s: dict) -> bool:
-    """WATCH→EXIT 触发（任一条）：跌破 EMA20 / 极端估值且动量转负 / 致命公告。"""
-    if s.get("below_ema20") or s.get("fatal_news"):
+    """WATCH→EXIT 触发（任一条）：硬性信号 / 跌破 EMA20 / 极端估值且动量转负。"""
+    if is_hard_exit(s):
+        return True
+    if s.get("below_ema20"):
         return True
     if (s.get("valuation_pctile") or 0) > VALUATION_EXTREME_PCT and not s.get("momentum_pos"):
         return True
@@ -46,20 +58,25 @@ def is_exit_signal(s: dict) -> bool:
 
 
 def transition(current: str, s: dict) -> str:
-    """三级状态转移纯函数：current + signals → next_state。"""
+    """三级状态转移纯函数：current + signals → next_state。
+
+    硬性信号（致命公告/止损）任意态直通 EXIT；其余风险信号渐进 HOLD→WATCH→EXIT。
+    """
     if current == EXIT:
         return EXIT
-    exit_sig = is_exit_signal(s)
+    if is_hard_exit(s):
+        return EXIT                      # 致命/止损不观察，直通离场
+    exit_sig = is_exit_signal(s)          # 此时已排除硬性，剩 EMA20/极端估值
     watch_sig = is_watch_signal(s)
     if current == WATCH:
         if exit_sig:
             return EXIT
         if not watch_sig:
-            return HOLD          # 指标修复，解除预警
+            return HOLD                  # 指标修复，解除预警
         return WATCH
     if current == HOLD:
         if exit_sig or watch_sig:
-            return WATCH
+            return WATCH                 # EMA20/相对弱势/估值先观察
         return HOLD
     raise ValueError(f"未知状态: {current!r}")
 

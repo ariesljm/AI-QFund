@@ -21,7 +21,7 @@ logger = get_logger("evolve")
 
 BENCH_INDEX = "sh000300"
 FORWARD_DAYS = 40
-SIGNAL_IDS = ("below_ema20", "alpha_neg_days", "valuation_high", "fatal_news")
+SIGNAL_IDS = ("below_ema20", "relative_weak", "valuation_high", "fatal_news", "drawdown_stop")
 
 
 def _excess_negative(fund: str, date: str) -> bool | None:

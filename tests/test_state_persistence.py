@@ -29,7 +29,7 @@ class TestApplyTransition:
         old, new = apply_transition("recommendation", "F001", _s(), "2026-09-10")
         assert (old, new) == ("HOLD", "HOLD")
         # 脱轨 → WATCH
-        old, new = apply_transition("recommendation", "F001", _s(drifted=True), "2026-09-11")
+        old, new = apply_transition("recommendation", "F001", _s(relative_weak=True), "2026-09-11")
         assert (old, new) == ("HOLD", "WATCH")
         # 跌破 EMA20 → EXIT
         old, new = apply_transition("recommendation", "F001", _s(below_ema20=True), "2026-09-12")
@@ -40,22 +40,22 @@ class TestApplyTransition:
 
     def test_persisted_with_signal_snapshot(self, monkeypatch, tmp_path):
         monkeypatch.setattr(db_mod, "DB_PATH", tmp_path / "sm2.db")
-        apply_transition("recommendation", "F002", _s(drifted=True,
+        apply_transition("recommendation", "F002", _s(relative_weak=True,
                                                       valuation_pctile=90.0), "2026-09-11")
         st = get_tracked_state("recommendation", "F002")
         assert st["state"] == "WATCH" and st["date"] == "2026-09-11"
-        assert '"drifted": true' in st["signals_json"]   # 信号快照可追溯
+        assert '"relative_weak": true' in st["signals_json"]   # 信号快照可追溯
 
     def test_watch_fix_returns_hold(self, monkeypatch, tmp_path):
         monkeypatch.setattr(db_mod, "DB_PATH", tmp_path / "sm3.db")
-        apply_transition("recommendation", "F003", _s(drifted=True), "2026-09-11")
+        apply_transition("recommendation", "F003", _s(relative_weak=True), "2026-09-11")
         old, new = apply_transition("recommendation", "F003", _s(), "2026-09-15")
         assert (old, new) == ("WATCH", "HOLD")
 
     def test_object_type_seam(self, monkeypatch, tmp_path):
         """ADR-0011 留缝：不同 object_type 互不干扰（将来用户持仓加行即可）。"""
         monkeypatch.setattr(db_mod, "DB_PATH", tmp_path / "sm4.db")
-        apply_transition("recommendation", "R1", _s(drifted=True), "2026-09-11")
+        apply_transition("recommendation", "R1", _s(relative_weak=True), "2026-09-11")
         apply_transition("user_position", "U1", _s(), "2026-09-11")
         assert get_tracked_state("recommendation", "R1")["state"] == "WATCH"
         assert get_tracked_state("user_position", "U1")["state"] == "HOLD"
@@ -67,7 +67,7 @@ class TestTrackedStatesBlock:
     def test_block_lists_states(self, monkeypatch, tmp_path):
         monkeypatch.setattr(db_mod, "DB_PATH", tmp_path / "smv.db")
         from app.web.dashboard import tracked_states_block
-        apply_transition("recommendation", "F001", _s(drifted=True), "2026-09-11")
+        apply_transition("recommendation", "F001", _s(relative_weak=True), "2026-09-11")
         block = tracked_states_block()
         assert len(block) == 1
         b = block[0]

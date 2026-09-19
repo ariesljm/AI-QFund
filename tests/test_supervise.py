@@ -83,11 +83,15 @@ class TestAssembleSignals:
     def test_missing_data_safe_defaults(self, monkeypatch):
         monkeypatch.setattr("app.engine.supervise._fund_navs", lambda code, days=250: None)
         monkeypatch.setattr("app.engine.supervise._pe_pctile", lambda code, limit=10: None)
+        monkeypatch.setattr("app.engine.supervise._drift_check", lambda code: False)
+        monkeypatch.setattr("app.engine.supervise._fatal_news", lambda code: False)
+        monkeypatch.setattr("app.engine.supervise._drawdown_stop", lambda code: False)
         s = assemble_signals("F1", bench_navs=None)
         assert s["below_ema20"] is False
         assert s["alpha_neg_days"] == 0
         assert "valuation_pctile" not in s
-        assert s["drifted"] is False          # RBSA proxy 未接入位
+        assert s["relative_weak"] is False   # drifted/alpha_neg 合并为单一维度
+        assert s["drawdown_stop"] is False
 
     def test_wires_nav_and_pe_into_signals(self, monkeypatch):
         down = [100.0 - i * 0.8 for i in range(60)]
