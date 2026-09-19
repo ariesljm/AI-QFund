@@ -8,17 +8,25 @@ function openModal(id) {
     if (_modalCloseTimers[id]) { clearTimeout(_modalCloseTimers[id]); _modalCloseTimers[id] = null; }
     el.classList.remove('modal-closing');
     el.classList.remove('hidden');
-    if (id === 'systemLogModal') {
-        if (logInterval) { clearInterval(logInterval); logInterval = null; }
-        _logCount = 0;
-        _lastId = 0;
-        _minId = 0;
-        _noMoreLogs = false;
-        document.getElementById('logLines').innerHTML = '';
-        resetLogFilter();
-        fetchLogs();
-        logInterval = setInterval(fetchLogs, 5000);
-        var container = document.getElementById('logContainer');
+    if (id === 'settingsModal') {
+        loadSettings();
+    }
+}
+
+// 系统日志 tab 初始化（原 openModal('systemLogModal') 分支提取，供 switchTab('logs') 调用）
+function initLogs() {
+    if (logInterval) { clearInterval(logInterval); logInterval = null; }
+    _logCount = 0;
+    _lastId = 0;
+    _minId = 0;
+    _noMoreLogs = false;
+    var ll = document.getElementById('logLines');
+    if (ll) ll.innerHTML = '';
+    if (typeof resetLogFilter === 'function') resetLogFilter();
+    if (typeof fetchLogs === 'function') fetchLogs();
+    logInterval = setInterval(function() { if (typeof fetchLogs === 'function') fetchLogs(); }, 5000);
+    var container = document.getElementById('logContainer');
+    if (container) {
         container.addEventListener('scroll', function() {
             var btn = document.getElementById('logScrollBtn');
             if (!btn) return;
@@ -26,12 +34,14 @@ function openModal(id) {
             if (atBottom) btn.classList.add('hidden');
             else btn.classList.remove('hidden');
             // 滚动到顶部附近：自动加载更早日志
-            if (container.scrollTop < 40) loadOlderLogs();
+            if (container.scrollTop < 40 && typeof loadOlderLogs === 'function') loadOlderLogs();
         });
     }
-    if (id === 'settingsModal') {
-        loadSettings();
-    }
+}
+
+// 系统日志 tab 切走：停轮询
+function cleanupLogs() {
+    if (logInterval) { clearInterval(logInterval); logInterval = null; }
 }
 
 document.addEventListener('click', function(e) {
@@ -46,10 +56,6 @@ document.addEventListener('click', function(e) {
 function closeModal(id) {
     var el = document.getElementById(id);
     if (!el) return;
-    if (id === 'systemLogModal' && logInterval) {
-        clearInterval(logInterval);
-        logInterval = null;
-    }
     // 关闭快讯弹窗后恢复轮播推进（滚动模式继续滚动 / 短摘要重启停留计时）
     if (id === 'newsModal') {
         _newsPaused = false;
@@ -401,7 +407,7 @@ async function triggerPipeline() {
         if (r.status === 403) { alert('密码已变更，请重新验证'); openPasswordPrompt(); return; }
         var d = await r.json();
         if (d.status === 'started') {
-            openModal('systemLogModal');
+            switchTab('logs');
         } else {
             alert('管线启动失败');
         }

@@ -36,7 +36,7 @@
         <button id="tabBtn-quality" onclick="switchTab('quality')" class="tab-nav-btn h-full flex items-center gap-1 border-b-2 border-transparent font-body-md text-body-md font-bold whitespace-nowrap">
           推荐质量
         </button>
-        <button onclick="openModal('systemLogModal')" class="tab-nav-btn h-full flex items-center gap-1 border-b-2 border-transparent font-body-md text-body-md font-bold whitespace-nowrap">
+        <button id="tabBtn-logs" onclick="switchTab('logs')" class="tab-nav-btn h-full flex items-center gap-1 border-b-2 border-transparent font-body-md text-body-md font-bold whitespace-nowrap">
           系统日志
         </button>
       </nav>
@@ -225,7 +225,7 @@
               <span class="material-symbols-outlined text-accent text-[20px]">radar</span>
               追踪监控
             </h2>
-            <button class="flex items-center gap-1 font-label-caps text-label-caps text-on-surface hover:text-accent transition-colors border border-surface-border px-2 py-1 rounded bg-surface-container-lowest" onclick="openModal('systemLogModal')">
+            <button class="flex items-center gap-1 font-label-caps text-label-caps text-on-surface hover:text-accent transition-colors border border-surface-border px-2 py-1 rounded bg-surface-container-lowest" onclick="switchTab('logs')">
               <span class="material-symbols-outlined text-[14px]">terminal</span> 实时日志
             </button>
           </div>
@@ -500,19 +500,18 @@
 
 
 <!-- 系统日志弹层 -->
-<div class="fixed inset-0 modal-backdrop z-[10000] hidden flex items-center justify-center p-sm" id="systemLogModal">
-  <div class="bg-paper-raised w-full max-w-5xl border border-outline rounded-xl flex flex-col overflow-hidden max-h-[90dvh]">
-    <div class="p-3 border-b border-outline flex justify-between items-center log-shell select-none">
-      <h2 class="font-label-caps text-[12px] sm:text-[13px] uppercase font-bold flex items-center gap-2 tracking-widest text-white">
-        <span class="material-symbols-outlined text-[16px]">terminal</span>
-        系统实时日志
-      </h2>
-      <div class="flex items-center gap-3">
-        <span class="text-[12px] opacity-60 text-white" id="logCount">0 条</span>
-        <button class="text-[12px] font-bold uppercase tracking-wider px-2 py-1 border border-white/30 rounded-md hover:bg-white/10 transition-colors text-white" onclick="clearLogs()">清空</button>
-        <button class="material-symbols-outlined text-white hover:rotate-90 transition-transform" onclick="closeModal('systemLogModal')">close</button>
-      </div>
+<!-- ============ 系统日志 tab（内联，不再弹窗） ============ -->
+<div id="tab-logs" class="hidden flex flex-col gap-stack-md px-margin-page pt-stack-lg pb-16">
+  <div class="flex items-center justify-between border-b border-surface-border pb-2">
+    <h2 class="font-headline-sm text-headline-sm text-primary flex items-center gap-2">
+      <span class="material-symbols-outlined text-accent text-[20px]">terminal</span>系统实时日志
+    </h2>
+    <div class="flex items-center gap-3">
+      <span class="text-[12px] text-on-surface-variant" id="logCount">0 条</span>
+      <button class="text-[12px] font-bold uppercase tracking-wider px-2 py-1 border border-outline rounded-md hover:bg-surface-container transition-colors text-on-surface-variant" onclick="clearLogs()">清空</button>
     </div>
+  </div>
+  <div class="max-w-[1440px] flex flex-col rounded-xl border border-surface-border overflow-hidden bg-surface-container-lowest shadow-sm">
     <div class="flex gap-1 px-3 pt-2 pb-1 border-b border-outline select-none flex-wrap bg-surface" id="logFilters">
       <button class="log-filter text-[12px] font-bold uppercase tracking-wider px-2 py-1 rounded-md border border-outline hover:bg-surface-container transition-colors active" data-level="all" style="background:var(--color-surface-tint)">全部</button>
       <button class="log-filter text-[12px] font-bold uppercase tracking-wider px-2 py-1 rounded-md border border-outline hover:bg-surface-container transition-colors" data-level="ERROR" style="color:var(--color-up)">ERROR</button>
@@ -520,9 +519,9 @@
       <button class="log-filter text-[12px] font-bold uppercase tracking-wider px-2 py-1 rounded-md border border-outline hover:bg-surface-container transition-colors" data-level="INFO" style="color:var(--color-ink-2)">INFO</button>
       <button class="log-filter text-[12px] font-bold uppercase tracking-wider px-2 py-1 rounded-md border border-outline hover:bg-surface-container transition-colors" data-level="DEBUG" style="color:var(--color-muted)">DEBUG</button>
       <div class="flex-1"></div>
-      <input class="text-base sm:text-sm font-mono rounded-md border border-outline bg-paper-raised px-2 py-1 outline-none focus:border-accent w-full sm:w-48" placeholder="搜索日志..." id="logSearch" oninput="applyLogFilter()">
+      <input class="text-base sm:text-sm font-mono rounded-md border border-outline bg-paper-raised px-2 py-1 outline-none focus:border-accent w-full sm:w-48 text-on-surface" placeholder="搜索日志..." id="logSearch" oninput="applyLogFilter()">
     </div>
-    <div class="flex-1 font-mono text-[13px] overflow-y-auto log-shell relative visible-scrollbar" id="logContainer">
+    <div class="font-mono text-[13px] overflow-y-auto log-shell relative visible-scrollbar" id="logContainer" style="min-height:60vh;max-height:70vh">
       <button class="absolute bottom-2 right-2 z-10 w-8 h-8 bg-paper-raised text-graphite rounded-full flex items-center justify-center shadow-lg opacity-70 hover:opacity-100 transition-opacity hidden" id="logScrollBtn" title="滚动到底部" onclick="document.getElementById('logContainer').scrollTop=document.getElementById('logContainer').scrollHeight;document.getElementById('logScrollBtn').classList.add('hidden');">
         <span class="material-symbols-outlined text-[16px]">arrow_downward</span>
       </button>

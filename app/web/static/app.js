@@ -7,25 +7,26 @@ var _lastId = 0;
 var _fetching = false;
 var FUND_SKEL = '<div class="space-y-3"><div class="skel h-5 w-3/4"></div><div class="skel h-4 w-1/2"></div><div class="skel h-4 w-full"></div><div class="skel h-4 w-5/6"></div><div class="skel h-16 w-full"></div><div class="skel h-32 w-full"></div></div>';
 function switchTab(name) {
-  var today = document.getElementById('tab-today');
-  var quality = document.getElementById('tab-quality');
-  var bToday = document.getElementById('tabBtn-today');
-  var bQuality = document.getElementById('tabBtn-quality');
-  if (!today || !quality || !bToday || !bQuality) return;
-  // 仅切换 active 类与 aria-current，不再整串覆盖 className：
-  // 各模板（标准版/浅色版）可自定义 tab 视觉，避免切换后类名被重置跳动
-  var toQuality = name === 'quality';
-  today.classList.toggle('hidden', toQuality);
-  quality.classList.toggle('hidden', !toQuality);
-  bToday.classList.toggle('active', !toQuality);
-  bQuality.classList.toggle('active', toQuality);
-  if (toQuality) {
-    bToday.removeAttribute('aria-current');
-    bQuality.setAttribute('aria-current', 'page');
-  } else {
-    bQuality.removeAttribute('aria-current');
-    bToday.setAttribute('aria-current', 'page');
-  }
+  // 通用三 tab 切换：today / quality / logs；仅切 active + aria，不改 className 串（模板可自定义 tab 视觉）
+  var tabs = { today: 'tab-today', quality: 'tab-quality', logs: 'tab-logs' };
+  var btns = { today: 'tabBtn-today', quality: 'tabBtn-quality', logs: 'tabBtn-logs' };
+  var prevActive = null;
+  Object.keys(tabs).forEach(function(k) {
+    var el = document.getElementById(tabs[k]);
+    if (el && !el.classList.contains('hidden')) prevActive = k;
+  });
+  Object.keys(tabs).forEach(function(k) {
+    var el = document.getElementById(tabs[k]);
+    var b = document.getElementById(btns[k]);
+    if (!el || !b) return;
+    var on = (k === name);
+    el.classList.toggle('hidden', !on);
+    b.classList.toggle('active', on);
+    if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+  });
+  // 系统日志 tab：切走停轮询，切到初始化轮询
+  if (prevActive === 'logs' && name !== 'logs' && typeof cleanupLogs === 'function') cleanupLogs();
+  if (name === 'logs' && typeof initLogs === 'function') initLogs();
 }
 
 function val(id) { return document.getElementById(id).value; }
