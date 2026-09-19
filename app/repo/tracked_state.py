@@ -109,10 +109,8 @@ def get_signal_stats() -> list[dict]:
             for r in rows]
 
 
-def save_calibration(signal_id: str, hit_rate: float | None, samples: int,
-                     action: str) -> None:
-    """校准判定落库（assess 输出有去向，不再只进日志；状态机消费读此表）。"""
-    from datetime import datetime as _dt
+def _ensure_calibration_table() -> None:
+    """校准判定落库表（IF NOT EXISTS 兑底）。"""
     with db_conn() as conn:
         conn.execute("""CREATE TABLE IF NOT EXISTS calibration_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -121,11 +119,30 @@ def save_calibration(signal_id: str, hit_rate: float | None, samples: int,
             hit_rate REAL,
             samples INTEGER,
             action TEXT)""")
+        conn.commit()
+
+
+def save_calibration(signal_id: str, hit_rate: float | None, samples: int,
+                     action: str) -> None:
+    """校准判定落库（assess 输出有去向，不再只进日志；状态机消费读此表）。"""
+    from datetime import datetime as _dt
+    _ensure_calibration_table()
+    with db_conn() as conn:
         conn.execute(
             "INSERT INTO calibration_log (ts, signal_id, hit_rate, samples, action) "
             "VALUES (?, ?, ?, ?, ?)",
             (_dt.now().strftime("%Y-%m-%d %H:%M:%S"), signal_id, hit_rate, samples, action))
         conn.commit()
+
+
+def get_signal_action(signal_id: str) -> str | None:
+    """信号最新校准动作（状态机消费：disable → 该信号不触发转移）；无记录 → None。"""
+    _ensure_calibration_table()
+    with db_conn() as conn:
+        row = conn.execute(
+            "SELECT action FROM calibration_log WHERE signal_id = ? "
+            "ORDER BY ts DESC LIMIT 1", (signal_id,)).fetchone()
+    return row[0] if row else None
 
 
 def get_latest_monitor_event(code: str) -> dict | None:
@@ -138,4 +155,4 @@ def get_latest_monitor_event(code: str) -> dict | None:
     return dict(zip(keys, row, strict=False))
 
 
-__all__ = ["get_tracked_state", "save_tracked_state", "get_all_tracked_states", "record_signal_trigger", "settle_signal", "get_signal_history", "get_signal_stats", "save_calibration", "get_latest_monitor_event", "get_pending_settlements"]
+__all__ = ["get_tracked_state", "save_tracked_state", "get_all_tracked_states", "record_signal_trigger", "settle_signal", "get_signal_history", "get_signal_stats", "save_calibration", "get_signal_action", "get_latest_monitor_event", "get_pending_settlements"]

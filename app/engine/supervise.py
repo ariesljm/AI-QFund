@@ -161,18 +161,39 @@ def build_signals(code: str, fund_navs: list[float] | None,
     return s
 
 
+# 校准层 disable 消费：SIGNAL_ID → signals 键映射（disable 时该键强制不触发）
+_DISABLE_KEY_MAP = {
+    "below_ema20": "below_ema20",
+    "relative_weak": "relative_weak",
+    "valuation_high": "valuation_pctile",  # 估值信号对应分位键，disable → None 不触发
+    "fatal_news": "fatal_news",
+    "drawdown_stop": "drawdown_stop",
+}
+
+
+def _apply_disabled(s: dict[str, Any]) -> dict[str, Any]:
+    """校准层停用的信号强制不触发（票 18 兜底：连续失灵 5 次 → disable）。"""
+    from app.repo.tracked_state import get_signal_action
+    for sid, key in _DISABLE_KEY_MAP.items():
+        if get_signal_action(sid) == "disable":
+            s[key] = None if key == "valuation_pctile" else False
+    return s
+
+
 def assemble_signals(code: str, bench_navs: list[float] | None = None) -> dict[str, Any]:
     """跟踪对象 → signals 装配 seam：净值窗口 / PE 分位 / 纯信号 / 脱轨 / 致命公告 / 止损一次性收口。
 
     drifted 由持仓虚拟组合 proxy 计算（_drift_check）；fatal_news 由重仓公告判定（_fatal_news）；
     drawdown_stop 由推荐日至今回撤判定（_drawdown_stop）。均数据不足 False 不误报。
+    末尾 _apply_disabled：校准层停用的信号强制不触发。
     """
     fund_navs = _fund_navs(code)
     drifted = _drift_check(code)
     fatal = _fatal_news(code)
     dd_stop = _drawdown_stop(code)
-    return build_signals(code, fund_navs, bench_navs, _pe_pctile(code),
-                         fatal_news=fatal, drifted=drifted, drawdown_stop=dd_stop)
+    s = build_signals(code, fund_navs, bench_navs, _pe_pctile(code),
+                      fatal_news=fatal, drifted=drifted, drawdown_stop=dd_stop)
+    return _apply_disabled(s)
 
 
 def run_supervision(date: str, limit: int = 50, cid: str = "") -> dict:

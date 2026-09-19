@@ -104,6 +104,33 @@ class TestAssembleSignals:
         assert s["alpha_neg_days"] >= 1      # 基准走平、基金下行 → 负超额
 
 
+class TestApplyDisabled:
+    def test_disable_forces_signals_off(self, monkeypatch):
+        from app.engine.supervise import _apply_disabled
+        monkeypatch.setattr("app.repo.tracked_state.get_signal_action", lambda sid: "disable")
+        s = {"below_ema20": True, "relative_weak": True, "valuation_pctile": 90.0,
+             "fatal_news": True, "drawdown_stop": True, "momentum_pos": False}
+        out = _apply_disabled(s)
+        assert out["below_ema20"] is False
+        assert out["relative_weak"] is False
+        assert out["valuation_pctile"] is None
+        assert out["fatal_news"] is False
+        assert out["drawdown_stop"] is False
+        assert out["momentum_pos"] is False   # 非信号键不受影响
+
+    def test_non_disable_leaves_signals_untouched(self, monkeypatch):
+        from app.engine.supervise import _apply_disabled
+        monkeypatch.setattr("app.repo.tracked_state.get_signal_action", lambda sid: "hold")
+        s = {"below_ema20": True, "relative_weak": True, "valuation_pctile": 90.0,
+             "fatal_news": True, "drawdown_stop": True}
+        out = _apply_disabled(s)
+        assert out["below_ema20"] is True
+        assert out["relative_weak"] is True
+        assert out["valuation_pctile"] == 90.0
+        assert out["fatal_news"] is True
+        assert out["drawdown_stop"] is True
+
+
 class TestRunSupervision:
     def _seed(self, monkeypatch, tmp_path):
         monkeypatch.setattr(db_mod, "DB_PATH", tmp_path / "supervise.db")
