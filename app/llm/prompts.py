@@ -156,6 +156,16 @@ def audit_user_prompt(fund: dict, slices: dict) -> str:
                        ("management", "管理团队变动"), ("sentiment", "舆情争议")):
         txt = slices.get(key)
         lines.append(f"▸ {label}: {txt if txt else '【缺失——不得猜测，据此无法评估该维度】'}")
+    # 活跃案例 few-shot 回流（票 17）：知识库案例表空时注入空串，等价无回流，不破坏现有审计
+    try:
+        from app.repo.knowledge import get_active_cases
+        from app.engine.knowledge import retrieve_cases, assemble_few_shot
+        _cases = retrieve_cases(get_active_cases(), case_type="bad")
+        _few_shot = assemble_few_shot(_cases)
+        if _few_shot:
+            lines += ["", "【历史排雷案例（Bad-Case 回流，参考而非套用）】", _few_shot]
+    except Exception:
+        pass  # 知识库未就绪不阻断审计
     lines += [
         "",
         "【审查任务】按四个维度逐一评估并输出 JSON：",
