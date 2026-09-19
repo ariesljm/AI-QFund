@@ -294,7 +294,7 @@
     <div class="flex items-end justify-between gap-4 flex-wrap">
       <div class="min-w-0">
         <h1 class="font-headline-sm text-headline-sm text-primary mb-1.5 tracking-tight [overflow-wrap:anywhere]">推荐质量评估</h1>
-        <p class="font-body-md text-body-md text-on-surface-variant max-w-2xl">本页面展示最新统计周期内推荐组合的表现评估，包括信息系数（Rank IC）、赚钱胜率、累计收益与回撤等核心指标，数据每日盘后更新。</p>
+        <p class="font-body-sm text-body-sm text-on-surface-variant max-w-2xl">本页面展示最新统计周期内推荐组合的表现评估，包括信息系数（Rank IC）、赚钱胜率、累计收益与回撤等核心指标，数据每日盘后更新。</p>
       </div>
     </div>
 
@@ -306,7 +306,7 @@
             <div class="w-2 h-2 rounded-full bg-accent animate-pulse"></div>
             <h2 class="font-headline-sm text-headline-sm text-primary">Alpha 累计收益曲线</h2>
           </div>
-          <div class="flex gap-4 font-label-xs text-label-xs text-on-surface-variant">
+          <div class="flex gap-4 font-label-caps text-label-caps text-on-surface-variant">
             <span class="flex items-center gap-1.5"><span class="w-3 h-1 bg-accent rounded-full"></span>组合策略</span>
             <span class="flex items-center gap-1.5"><span class="w-3 h-1 border border-dashed border-outline-strong rounded-full bg-transparent"></span>沪深300基准</span>
           </div>
@@ -332,11 +332,11 @@
           {% endif %}
           <div class="absolute bottom-3 left-3 md:left-4 flex flex-wrap gap-2">
             <div class="bg-surface-container-lowest border border-surface-border rounded-md px-2.5 py-1.5">
-              <span class="font-label-xs text-label-xs text-on-surface-variant block">IC 信息系数</span>
+              <span class="font-label-caps text-label-caps text-on-surface-variant block">IC 信息系数</span>
               <span class="font-data-tabular text-data-tabular font-bold text-on-surface">{% if latest_ic is not none %}{{ "%.3f"|format(latest_ic) }}{% else %}--{% endif %}</span>
             </div>
             <div class="bg-surface-container-lowest border border-surface-border rounded-md px-2.5 py-1.5">
-              <span class="font-label-xs text-label-xs text-on-surface-variant block">赚钱胜率</span>
+              <span class="font-label-caps text-label-caps text-on-surface-variant block">赚钱胜率</span>
               <span class="font-data-tabular text-data-tabular font-bold text-on-surface">{% if latest_profit_rate is not none %}{{ "%.1f"|format(latest_profit_rate * 100) }}%{% else %}--{% endif %}</span>
             </div>
           </div>
@@ -517,7 +517,7 @@
       <button class="log-filter text-body-sm font-bold uppercase tracking-wider px-2 py-1 rounded-md border border-outline hover:bg-surface-container transition-colors" data-level="INFO" style="color:var(--color-ink-2)">INFO</button>
       <button class="log-filter text-body-sm font-bold uppercase tracking-wider px-2 py-1 rounded-md border border-outline hover:bg-surface-container transition-colors" data-level="DEBUG" style="color:var(--color-muted)">DEBUG</button>
       <div class="flex-1"></div>
-      <input class="text-body-md sm:text-body-sm font-mono rounded-md border border-outline bg-paper-raised px-2 py-1 outline-none focus:border-accent w-full sm:w-48 text-on-surface" placeholder="搜索日志..." id="logSearch" oninput="applyLogFilter()">
+      <input class="text-body-sm font-mono rounded-md border border-outline bg-paper-raised px-2 py-1 outline-none focus:border-accent w-full sm:w-48 text-on-surface" placeholder="搜索日志..." id="logSearch" oninput="applyLogFilter()">
     </div>
     <div class="font-mono text-body-sm overflow-y-auto log-shell relative visible-scrollbar" id="logContainer" style="min-height:60vh;max-height:70vh">
       <button class="absolute bottom-2 right-2 z-10 w-8 h-8 bg-paper-raised text-graphite rounded-full flex items-center justify-center shadow-lg opacity-70 hover:opacity-100 transition-opacity hidden" id="logScrollBtn" title="滚动到底部" onclick="document.getElementById('logContainer').scrollTop=document.getElementById('logContainer').scrollHeight;document.getElementById('logScrollBtn').classList.add('hidden');">
