@@ -15,6 +15,7 @@ from app.engine.screen import (
     POOL_SIZE,
     active_equity_pool,
     apply_hard_filters,
+    select_diversified,
     top_n,
 )
 
@@ -82,3 +83,66 @@ class TestTopN:
 
     def test_pool_size_30(self):
         assert POOL_SIZE == 30
+
+
+class TestSelectDiversified:
+    """票 02：贪心去相关 + 同类≤2 纯函数。"""
+
+    @staticmethod
+    def _ranked(codes_scores):
+        return [{"code": c, "final_score": s} for c, s in codes_scores]
+
+    def test_no_constraint_falls_back_to_topn(self):
+        """无相关性、无同类 → 等价于纯分数 TopN。"""
+        ranked = self._ranked([("A", 0.9), ("B", 0.8), ("C", 0.7),
+                              ("D", 0.6), ("E", 0.5)])
+        got = select_diversified(ranked, lambda *_: None, lambda *_: None, n=5)
+        assert [g["code"] for g in got] == ["A", "B", "C", "D", "E"]
+
+    def test_same_peer_capped_at_two(self):
+        """同类超限跳过 → 高分同行业者被低分异行业者顶替（拆散聚堆）。"""
+        # 3 白酒（高分）+ 3 医药 + 3 科技，n=5、同类≤2：白酒只取 A/B，
+        # C 被拆，由 G（科技）顶替。
+        ranked = self._ranked([("A", 0.90), ("B", 0.85), ("C", 0.80),
+                              ("D", 0.75), ("E", 0.70), ("F", 0.65),
+                              ("G", 0.60), ("H", 0.55), ("I", 0.50)])
+        peers = {"A": "白酒", "B": "白酒", "C": "白酒",
+                 "D": "医药", "E": "医药", "F": "医药",
+                 "G": "科技", "H": "科技", "I": "科技"}
+        got = select_diversified(ranked, lambda *_: None, lambda c: peers[c],
+                                 max_same_peer=2, n=5)
+        codes = [g["code"] for g in got]
+        assert codes[:2] == ["A", "B"]
+        assert "C" not in codes    # 白酒满 2 被拆
+        assert "G" in codes        # 低分科技顶替高分白酒
+        assert len(codes) == 5
+
+    def test_high_correlation_skipped(self):
+        """相关性超阈跳过 → 高相关聚堆被拆，低相关者入选。"""
+        # A 与 B 高相关（0.95）；C/D/E/F 互不相关、与 A 也不相关。
+        ranked = self._ranked([("A", 0.90), ("B", 0.80), ("C", 0.70),
+                              ("D", 0.60), ("E", 0.50), ("F", 0.40)])
+        def corr(c1, c2):
+            if {c1, c2} == {"A", "B"}:
+                return 0.95
+            return 0.0
+        got = select_diversified(ranked, corr, lambda *_: None, max_corr=0.85, n=5)
+        codes = [g["code"] for g in got]
+        assert codes[0] == "A"
+        assert "B" not in codes    # 与 A 高相关被拆
+        assert "F" in codes        # 低分低相关者顶替
+        assert len(codes) == 5
+
+    def test_fallback_fills_when_constraints_block(self):
+        """约束卡死凑不齐 → 回退纯分数补满（不因约束推荐不足）。"""
+        ranked = self._ranked([("A", 0.9), ("B", 0.8), ("C", 0.7)])
+        peer = lambda c: "白酒"  # 全同类，max 2 后卡死
+        got = select_diversified(ranked, lambda *_: None, peer, max_same_peer=2, n=5)
+        codes = [g["code"] for g in got]
+        assert len(codes) == 3   # 只有 3 只可入选，全部补满
+
+    def test_none_corr_no_constraint(self):
+        """corr_fn 返回 None → 不约束（数据缺失不误杀）。"""
+        ranked = self._ranked([("A", 0.9), ("B", 0.8)])
+        got = select_diversified(ranked, lambda *_: None, lambda *_: None, n=2)
+        assert [g["code"] for g in got] == ["A", "B"]

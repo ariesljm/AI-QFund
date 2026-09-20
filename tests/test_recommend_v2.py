@@ -16,8 +16,17 @@ from app.repo.base import db_conn
 
 
 def _seed(monkeypatch, tmp_path, n=8):
-    """种子：n 只主动权益基金（特征齐）+ 无暂停/短历史。"""
+    """种子：n 只主动权益基金（特征齐）+ 无暂停/短历史。
+
+    默认关闭组合层 diversify（测审计/剪枝/复合分语义，不测组合约束）；
+    diversify 的测试见 TestSelectDiversified / 独立接线测试。
+    """
     monkeypatch.setattr(db_mod, "DB_PATH", tmp_path / "rv2.db")
+    import app.config as cfg
+    monkeypatch.setattr(cfg, "_settings_cache", None)
+    monkeypatch.setattr(cfg, "load_settings",
+                       lambda: {"recommend_v2": {"enabled": True,
+                                                  "portfolio_diversify": False}})
     with db_conn() as conn:
         for i in range(n):
             conn.execute("INSERT INTO fund_basic (code, name, type, is_buyable) "

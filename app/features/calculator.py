@@ -305,6 +305,8 @@ def compute_fund_features(navs: np.ndarray, idx_closes: np.ndarray,
     returns = returns[np.isfinite(returns)]
 
     feat: dict = {}
+    # 打分三因子单一来源（生产与回测 PIT 共用，见 nav_score_factors）
+    feat.update(nav_score_factors(navs))
     window = min(60, len(returns))
     feat["hurst_60d"] = float(calc_hurst(returns[-window:]))
     feat["momentum_20d"] = float((navs[-1] / navs[-20] - 1) * 100) if len(navs) >= 20 else 0.0
@@ -332,8 +334,6 @@ def compute_fund_features(navs: np.ndarray, idx_closes: np.ndarray,
     # 多窗口动量与波动率：让模型自行学习哪个窗口在何种市场状态有效
     feat["mom_5d"] = float((navs[-1] / navs[-6] - 1) * 100) if len(navs) >= 6 else 0.0
     feat["mom_60d"] = float((navs[-1] / navs[-61] - 1) * 100) if len(navs) >= 61 else 0.0
-    # 1 年动量（Carhart 动量，120 日主标尺下有效因子，2026-09-17 因子扫描确认）
-    feat["mom_250d"] = float((navs[-1] / navs[-251] - 1) * 100) if len(navs) >= 251 else 0.0
     if len(returns) >= 20:
         feat["vol_20d"] = float(np.std(returns[-20:]) * np.sqrt(252) * 100)
     else:
@@ -347,21 +347,16 @@ def compute_fund_features(navs: np.ndarray, idx_closes: np.ndarray,
     else:
         feat["downside_vol"] = 0.0
 
-    # 风险调整三指标（业务要求“优先考虑”）：夏普 / 索提诺 / 最大回撤恢复时间。
-    # 统一 60 日窗口；无风险利率取 0（简化，公募基金比较口径一致）。
+    # sortino_60d（索提诺）：sharpe_60d / ttr_60d 已由 nav_score_factors 计算。
+    # 无风险利率取 0（简化，公募基金比较口径一致）。
     if len(returns) >= 60:
         r60 = returns[-60:]
         ann_ret = float(r60.mean() * 252)
-        sd = float(r60.std() * np.sqrt(252))
-        feat["sharpe_60d"] = ann_ret / sd if sd > 1e-10 else 0.0
         neg60 = r60[r60 < 0]
         dsd = float(neg60.std() * np.sqrt(252)) if neg60.size > 0 else 0.0
         feat["sortino_60d"] = ann_ret / dsd if dsd > 1e-10 else 0.0
-        feat["ttr_60d"] = _ttr_days(navs[-61:])
     else:
-        feat["sharpe_60d"] = 0.0
         feat["sortino_60d"] = 0.0
-        feat["ttr_60d"] = 0.0
 
     if len(idx_closes) >= 60 and len(returns) >= 60:
         idx_ret = np.diff(idx_closes) / idx_closes[:-1]
@@ -412,6 +407,32 @@ def _ttr_days(navs) -> float:
     return float(recover[0])
 
 
+
+
+def nav_score_factors(navs: np.ndarray) -> dict[str, float]:
+    """初筛打分三因子（sharpe_60d / mom_250d / ttr_60d）——净值单一来源。
+
+    compute_fund_features（生产）与回测 PIT 重建共用，避免两套公式漂移。
+    与 compute_fund_features 同口径（含缺省值约定）：
+    - sharpe_60d：年化收益 / 年化波动（60 日，无风险利率 0）；sd<=1e-10 或样本<60 → 0.0
+    - mom_250d：一年累计收益（百分数）；样本<251 → 0.0
+    - ttr_60d：最大回撤恢复时间（交易日，_ttr_days）；样本<60 → 0.0
+    """
+    feat: dict[str, float] = {}
+    with np.errstate(divide="ignore", invalid="ignore"):
+        returns = np.diff(navs) / navs[:-1]
+    returns = returns[np.isfinite(returns)]
+    feat["mom_250d"] = float((navs[-1] / navs[-251] - 1) * 100) if len(navs) >= 251 else 0.0
+    if len(returns) >= 60:
+        r60 = returns[-60:]
+        ann_ret = float(r60.mean() * 252)
+        sd = float(r60.std() * np.sqrt(252))
+        feat["sharpe_60d"] = ann_ret / sd if sd > 1e-10 else 0.0
+        feat["ttr_60d"] = _ttr_days(navs[-61:])
+    else:
+        feat["sharpe_60d"] = 0.0
+        feat["ttr_60d"] = 0.0
+    return feat
 
 
 def calc_rbsa(holdings: list[dict], industry_map: dict[str, str] | None = None) -> list[dict]:

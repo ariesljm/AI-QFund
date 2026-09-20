@@ -15,6 +15,7 @@ from app.engine.screen_pipeline import (
     check_data_freshness,
     is_data_failure,
     is_no_opportunity,
+    multifactor_scores,
     screen_top30,
 )
 from app.repo import decision as decision_repo
@@ -170,3 +171,38 @@ class TestDataFreshness:
         monkeypatch.setattr(tc, "expected_trade_date", lambda today=None: None)
         ok, _ = check_data_freshness("2026-09-14")
         assert ok is True
+
+
+class TestMultifactorWeights:
+    """票 05：mom 0.7 / sharpe 0.3 / ttr 退役后的权重行为。"""
+
+    def test_mom_dominates_sharpe(self):
+        """sharpe 与 mom 反相关时，高 mom 者胜（0.7 > 0.3）。"""
+        feats = {
+            "A": {"sharpe_60d": 1.0, "mom_250d": 3.0},   # mom 高、sharpe 低
+            "B": {"sharpe_60d": 2.0, "mom_250d": 2.0},   # 均衡
+            "C": {"sharpe_60d": 3.0, "mom_250d": 1.0},   # sharpe 高、mom 低
+        }
+        s = multifactor_scores(feats)
+        assert s["A"] > s["B"] > s["C"]   # mom 主导排序
+
+    def test_sharpe_still_contributes(self):
+        """sharpe 权重 0.3 非零：高 sharpe 低 mom 者 score 仍 > 0，并非纯 mom。"""
+        feats = {
+            "A": {"sharpe_60d": 1.0, "mom_250d": 3.0},
+            "B": {"sharpe_60d": 2.0, "mom_250d": 2.0},
+            "C": {"sharpe_60d": 3.0, "mom_250d": 1.0},
+        }
+        s = multifactor_scores(feats)
+        assert s["C"] > 0.0    # sharpe 贡献使 C 非零（纯 mom 则 C=0）
+
+    def test_ttr_retired_not_consumed(self):
+        """ttr_60d 退役：ttr 取值差异不影响打分。"""
+        base = {
+            "A": {"sharpe_60d": 1.0, "mom_250d": 3.0},
+            "B": {"sharpe_60d": 2.0, "mom_250d": 2.0},
+            "C": {"sharpe_60d": 3.0, "mom_250d": 1.0},
+        }
+        with_ttr = {c: {**f, "ttr_60d": (1.0 if c == "A" else 999.0)}
+                   for c, f in base.items()}
+        assert multifactor_scores(with_ttr) == multifactor_scores(base)

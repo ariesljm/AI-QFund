@@ -43,3 +43,49 @@ def apply_hard_filters(codes: list[str], facts: dict) -> list[str]:
 def top_n(ranked: list[dict], n: int = POOL_SIZE) -> list[dict]:
     """按 score 降序取 TopN（Top30 候选池）。ranked: [{"code", "score", ...}]。"""
     return sorted(ranked, key=lambda x: x["score"], reverse=True)[:n]
+
+
+def select_diversified(
+    ranked: list[dict],
+    corr_fn,
+    peer_fn,
+    max_corr: float = 0.85,
+    max_same_peer: int = 2,
+    n: int = 5,
+) -> list[dict]:
+    """贪心去相关 + 同类≤2 选 n 只（组合层约束，票 02）。
+
+    ranked: [{"code","final_score",...}] 已按 final_score 降序。
+    corr_fn(c1,c2) -> 相关性 | None（None/不可得 → 不约束相关性）。
+    peer_fn(code) -> 同类标签 | None（RBSA 第一行业；None → 不约束同类）。
+    规则：按分数降序依次纳入；与任一已选相关性 > max_corr、或同类已达
+    max_same_peer 只 → 跳过；凑不齐 n → 回退按分数补满（不因约束导致推荐不足）。
+    """
+    selected: list[dict] = []
+    peer_count: dict[str, int] = {}
+    for cand in ranked:
+        if len(selected) >= n:
+            break
+        code = cand["code"]
+        peer = peer_fn(code)
+        if peer is not None and peer_count.get(peer, 0) >= max_same_peer:
+            continue
+        if any(_over_corr(corr_fn(code, s["code"]), max_corr) for s in selected):
+            continue
+        selected.append(cand)
+        if peer is not None:
+            peer_count[peer] = peer_count.get(peer, 0) + 1
+    if len(selected) < n:                      # 回退纯分数补满
+        chosen = {c["code"] for c in selected}
+        for cand in ranked:
+            if len(selected) >= n:
+                break
+            if cand["code"] not in chosen:
+                selected.append(cand)
+                chosen.add(cand["code"])
+    return selected[:n]
+
+
+def _over_corr(c, threshold: float) -> bool:
+    """相关性是否超阈（None/不可得 → False，不约束）。"""
+    return c is not None and float(c) > threshold

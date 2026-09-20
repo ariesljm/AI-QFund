@@ -8,6 +8,7 @@ screen_top30（候选池）→ LLM 排雷审计（可注入打桩）→ 剪枝/�
 返回 {"date", "top5": [...]} 或 {"date", "empty": "no_opportunity"/"data_failure"}。
 """
 
+from app.engine.screen import select_diversified
 from app.engine.screen_pipeline import screen_top30
 from app.llm.audit import composite_score, prune, top_n, validate_audit
 from app.repo import decision as decision_repo
@@ -76,12 +77,13 @@ def recommend_top5(today: str, audit_fn=None, scorer=None, cid: str = "") -> dic
                        extra={"code": cand["code"], "verdict": verdict, "risk": risk})
         ranked.append({"code": cand["code"],
                        "final_score": composite_score(cand["score"], risk),
-                       "audit": audit})
+                       "audit": audit,
+                       "features": cand.get("features", {})})
     if not ranked:
         log.warn_event("recommend_empty", f"全部 {len(candidates)} 候选被剪枝/审计失败，无推荐",
                        extra={"reason": "data_failure", "vetoed": vetoed})
         return {"date": today, "empty": "data_failure"}   # 全被剪枝/审计失败
-    top5 = top_n(ranked, 5)
+    top5 = _select_top5(ranked, cid=cid)
     for t in top5:
         summary = (t["audit"].get("recommendation_summary") or t["audit"].get("audit_details") or "")[:120]
         log.info_event("recommend_pick", f"Top5 推荐 {t['code']} 复合分={t['final_score']:.3f} 理由：{summary}",
@@ -90,6 +92,56 @@ def recommend_top5(today: str, audit_fn=None, scorer=None, cid: str = "") -> dic
     log.info_event("recommend_done", f"今日推荐 {len(top5)} 只落库（剪枝 {vetoed}）",
                    extra={"top5": [t["code"] for t in top5], "vetoed": vetoed})
     return {"date": today, "top5": [t["code"] for t in top5]}
+
+
+def _select_top5(ranked: list[dict], cid: str = "") -> list[dict]:
+    """票 02：组合层选 5——贪心去相关 + 同类≤2（可配关闭回退纯分数 top_n）。
+
+    ranked: [{"code","final_score","audit","features"}]。按 final_score 降序后
+    走 select_diversified；相关性用最近 60 交易日净值收益，同类用 features
+    快照里的 rbsa_industry_1（RBSA 第一行业）。数据缺失不约束（不误杀）。
+    """
+    from app.config import load_settings
+    from app.repo import nav as nav_repo
+    from app.features.stats import pearson
+
+    ordered = sorted(ranked, key=lambda x: x["final_score"], reverse=True)
+    cfg = load_settings().get("recommend_v2", {})
+    if not cfg.get("portfolio_diversify", False):
+        return top_n(ordered, 5)
+    max_corr = float(cfg.get("portfolio_max_corr", 0.85))
+    max_same = int(cfg.get("portfolio_max_same_peer", 2))
+
+    ret_cache: dict[str, dict[str, float] | None] = {}
+    def _returns(code: str) -> dict[str, float] | None:
+        if code in ret_cache:
+            return ret_cache[code]
+        rows = nav_repo.series(code, limit=61)
+        ret = {}
+        for i in range(1, len(rows)):
+            d, v0 = rows[i - 1]; v1 = rows[i][1]
+            if v0 and v1 and v0 > 0:
+                ret[d] = v1 / v0 - 1.0
+        ret_cache[code] = ret or None
+        return ret_cache[code]
+
+    def corr_fn(c1: str, c2: str) -> float | None:
+        r1, r2 = _returns(c1), _returns(c2)
+        if not r1 or not r2:
+            return None
+        common = sorted(set(r1) & set(r2))
+        if len(common) < 20:
+            return None
+        x = [r1[d] for d in common]; y = [r2[d] for d in common]
+        r, _ = pearson(x, y)
+        return float(r)
+
+    feat_by_code = {r["code"]: r.get("features", {}) for r in ranked}
+    def peer_fn(code: str) -> str | None:
+        return feat_by_code.get(code, {}).get("rbsa_industry_1")
+
+    return select_diversified(ordered, corr_fn, peer_fn,
+                              max_corr=max_corr, max_same_peer=max_same, n=5)
 
 
 def _slices_for(cand: dict) -> dict:

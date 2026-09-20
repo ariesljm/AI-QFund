@@ -17,10 +17,18 @@ from app.repo.base import get_fund_basics, get_latest_features_batch, get_restri
 
 
 def multifactor_scores(feats: dict[str, dict]) -> dict[str, float]:
-    """简单多因子截面打分：sharpe_60d + mom_250d + ttr_60d（反向）等权百分位。
+    """多因子截面打分：mom_250d 0.7 + sharpe_60d 0.3（百分位加权）。
 
+    权重来源：票 03 因子权重研究（docs/backtest/factor-weighting-study.md）——
+    滚动 IC 加权把等权的不显著（p=0.081）救成显著（p=0.0023），稳态最末权重
+    mom≈0.96/sharpe≈0.04/ttr=0；ttr_60d 全 regime 失效已退役（见下方退役留痕）。
     对同一截面（全市场候选）做 rank 归一化，返回 {code: score(0~1)}。
-    缺省值：sharpe/mom 缺失 → 0.0（中性）；ttr 缺失 → 60.0（差）。
+    缺省值：sharpe/mom 缺失 → 0.0（中性）。
+
+    退役留痕（ADR-0009 单向增严不可逆）：ttr_60d 自 2026-09-17 起从打分退役——
+    证据见 docs/backtest/factor-weighting-study.md §二（牛 −0.068 / 震荡 +0.002，
+    全 regime 失效；滚动 IC 自动压至 0）。特征字段 nav_score_factors 仍计算，
+    留作诊断展示，生产打分不再消费。可恢复：恢复等权或重启用需新研究证据。
     """
     codes = [c for c in feats if feats[c]]
     n = len(codes)
@@ -32,10 +40,7 @@ def multifactor_scores(feats: dict[str, dict]) -> dict[str, float]:
 
     sharpe = np.array([feats[c].get("sharpe_60d") or 0.0 for c in codes], dtype=float)
     mom = np.array([feats[c].get("mom_250d") or 0.0 for c in codes], dtype=float)
-    ttr = np.array([feats[c].get("ttr_60d")
-                    if feats[c].get("ttr_60d") is not None else 60.0
-                    for c in codes], dtype=float)
-    score = (_rank(sharpe) + _rank(mom) + (1.0 - _rank(ttr))) / 3.0
+    score = 0.3 * _rank(sharpe) + 0.7 * _rank(mom)
     return {c: float(s) for c, s in zip(codes, score, strict=True)}
 
 

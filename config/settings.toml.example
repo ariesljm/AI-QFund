@@ -32,6 +32,12 @@ lambda = 1.0
 # 生产服务器由挂载的 settings.toml 独立控制（docker-compose 覆盖镜像默认值）。
 enabled = true
 
+# 组合分散化（票 02）：Top5 在纯分数排序后接贪心去相关 + 同类 RBSA 第一行业≤2。
+# 关闭则退化为纯分数 Top5（不破坏 1.x 行为）。
+portfolio_diversify = true
+portfolio_max_corr = 0.85     # 净值收益相关性上限（超此则不纳入）
+portfolio_max_same_peer = 2   # 同一 RBSA 第一行业最多入选只数
+
 # ============ 日志 ============
 [logging]
 # 文件日志级别: DEBUG / INFO / WARNING / ERROR
